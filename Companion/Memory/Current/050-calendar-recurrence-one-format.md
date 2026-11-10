@@ -146,8 +146,11 @@ same design (tabmail-ios #421).
     so the bridge builds the two parts itself.
   - **A time change** (`start_iso`/`end_iso`/`all_day`) applies to the following part only, after its recurrence is
     attached, so Thunderbird's `onStartDateChange` moves its EXDATEs, RDATEs, each non-COUNT rule's UNTIL and the
-    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does (the changed
-    occurrences keep their own times). The new times are read in the user's zone (or the edit's `timezone`) and
+    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does; since #287 the
+    following part then moves as a whole series does (`shiftSeriesWithStart`, *Whole-series time change* below:
+    its changed occurrences still at their slots and its rule's days go with it, which closes #328, where a part
+    moved to another day kept naming the old days; one given its own time keeps it). Superseded: the changed
+    occurrences kept their own times; then (first #287 version) every changed occurrence moved. The new times are read in the user's zone (or the edit's `timezone`) and
     written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`):
     a zoned series' own zone at the same instant, a floating series at the user's clock digits, kept floating (the
     inverse of `asShown`), as Thunderbird's event dialog keeps an event's zone. Read straight in the user's zone,
@@ -160,17 +163,20 @@ same design (tabmail-ios #421).
     of day without `all_day`, or whose all-day end would fall on or before its start, is refused before anything is
     written, asking the user (`allDayEditError`, in the split too; note 034). `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
-    all-day comes with them (and `all_day` is not one of the fields that make a split at a changed occurrence
-    refused, below).
+    all-day comes with them.
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
     time change so they move with the part.
-  - **A split at an occurrence that was changed on its own** carries that occurrence into the following part with
-    its own times and fields, so an edit's title, location, description, busy/free, start or end
-    (`SPLIT_FIELDS_OF_AN_OCCURRENCE`, a start equal to its own included) would not reach it while the edit
-    reported success. Such an edit is refused, naming the way that works: change the occurrence alone
-    (`this_only`), then this and the following ones from the next occurrence. `exdates_add`, `recurrence` and
-    `all_day` alone are allowed there (the edit's `organizer_email` never reaches the split, below; listing it
-    refused every such split, since the edit tool fills it in for every edit that names a calendar).
+  - **A split at an occurrence that was changed on its own** (X) is made in one write (2026-11-10): "from X on, new
+    time" applies the time to X and everything after it, and X keeps its rename. X is carried
+    into the following part with its own fields, then takes the edit there (`applyEditToNamedOccurrence`): with
+    new times, the part's start and end; every field the edit names (title, location, description, busy/free);
+    its own changes the edit does not name are kept. A guest change is not made there: the bridge's one guest merge
+    makes it on every item the split covers, X included (051). Every changed occurrence of the part whose own
+    start, end or place the split changes (X, ones at their slots moved with the part) has its own attendees
+    asked again, each found as stored by moving its RECURRENCE-ID back by the part's start change; one that keeps
+    its own time and place keeps its answers. Superseded (#265): such an edit was refused (`SPLIT_FIELDS_OF_AN_OCCURRENCE`),
+    naming a two-step route (X alone with `this_only`, then the following ones from the next occurrence), which
+    left a partial result if the second step never came. `recurrence: {}` at X is still refused (below).
   - **The following part is a copy of the series (#291),** made as Thunderbird copies an event (`calendar-clipboard.js`
     paste: `item.clone()` and a new id; nothing else is stripped): `master.clone()` with its id cleared, which the calendar
     fills on `addItem` (`onIdChange` then renames its changed occurrences); its recurrence info is replaced by the
@@ -212,11 +218,10 @@ same design (tabmail-ios #421).
     a start relabelled into another zone at the same instant, which on a series kept in a zone with other daylight
     saving dates kept `ACCEPTED` for occurrences an hour from the times answered.
   - **Refused, writing nothing:** an EXRULE (a negative rule, comm-central 161+) the split cannot keep; a rule
-    whose end or count cannot be read; a series that repeats by added dates alone (no rule to divide); a change
-    to an occurrence that was changed on its own (above); an `exdates_add` value that names no occurrence; a rule item that cannot be rewritten (an immutable item throws); a time
+    whose end or count cannot be read; a series that repeats by added dates alone (no rule to divide); an `exdates_add` value that names no occurrence; a rule item that cannot be rewritten (an immutable item throws); a time
     change between all-day and timed when the following part carries an EXDATE, RDATE or changed occurrence, or
     (without a new rule) a rule with UNTIL (RFC 5545 needs them in the start's value type, and moving the start
-    keeps theirs); and `recurrence: {}` at an occurrence that was changed on its own (the one event left would
+    keeps theirs; the same `kindChangeError` as a whole-series edit, below); and `recurrence: {}` at an occurrence that was changed on its own (the one event left would
     lose its changes).
   - The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule in its own
     part order (FREQ, COUNT, INTERVAL above 1, the BY-parts, UNTIL, then WKST unless MO), so such a comparison
@@ -239,8 +244,57 @@ same design (tabmail-ios #421).
   series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
   would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
   restatement is refused too. `{}` (stop repeating) is allowed.
+- **Whole-series time change (#287), as calendar apps make it (Google Calendar is the reference).** Applies to
+  an edit of a repeating event with `start_iso`/`end_iso` whose scope resolves to `all`, unless it stops the
+  repeat (`recurrence: {}`).
+  - **Named from the first occurrence** (a `recurrence_id` whose occurrence's RECURRENCE-ID is the series' start,
+    `isFirstOccurrence`, even if it was moved on its own; or no `recurrence_id` and the new start, or for an end
+    alone the new end, on the series' own date as the read tools show it, `shownEventTimesIso` in
+    `calendar_event_read.js`): a plain shift of every occurrence. Thunderbird's `onStartDateChange` moves
+    EXDATE/RDATE, UNTIL and the RECURRENCE-IDs by the start's change in UTC; `shiftSeriesWithStart` (bridge,
+    after `allDayEditError`) handles the changed occurrences as calendar apps keep the user's edits
+    (2026-11-10): one still at its slot (its own start, moved by that UTC amount, lands on its
+    moved RECURRENCE-ID; changed only in title, notes, place, guests or length) moves by the same amount and keeps
+    its changes; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
+    replaces its slot and shows once). A first occurrence the edit names by `recurrence_id` takes the edit (its
+    times and named fields, `applyEditToNamedOccurrence`), even when given its own time; with no `recurrence_id`
+    none is named. Superseded: (first #287 version) every changed occurrence moved by the shift, one given its own
+    time included (a 9:00 series moved to 10:00 took one moved to 11:00 to 12:00, a time nobody chose); (before
+    #287) the changed occurrences kept their times while their RECURRENCE-IDs moved. And on a move to another day (days counted from the date digits in the old start's zone)
+    the rule's plain BYDAY weekdays and positive BYMONTHDAY days (`ruleShiftedByDays`); a WEEKLY rule with
+    INTERVAL > 1 also moves its WKST (default MO), as ical.js groups the days into weeks from it. Refused,
+    writing nothing, wherever ical.js would expand the shifted rule to other dates than the old ones moved: an
+    ordinal or signed BYDAY, BYSETPOS, BYYEARDAY, BYWEEKNO, a BYMONTHDAY outside 1..28 before or after the move
+    (`DAYS_IN_SHORTEST_MONTH`), a MONTHLY rule on its start's day moved off 1..28 or into another month, a
+    YEARLY one on its start's day on a leap day or moved across the end of February, plain BYDAY with BYMONTH
+    or (MONTHLY/YEARLY) INTERVAL > 1, BYMONTH on a DAILY or WEEKLY rule, a BYMONTH the move leaves, an EXRULE,
+    a time change of a rule with BYHOUR/BYMINUTE/BYSECOND, and a new rule (with `freq`) given with a move to another day (make the move, then
+    the rule, in two edits). A change between all-day and timed (`kindChangeError`, one check for the series
+    and the split's following part, made before the same-start return, since `compare` takes only the date of a
+    DATE) is refused, on its own day as on another, when the series carries an EXDATE, RDATE (any non-rule item)
+    or changed occurrence ("change it in the calendar app"), or, without a new rule, a rule with UNTIL ("give
+    the repeat rule again ... in the same edit"; a new rule is written in the start's value type). Thunderbird's
+    `onStartDateChange` does compute a UTC amount between a DATE (its digits at UTC midnight) and a time, and
+    moves those dates by it in their own value type, so they leave their occurrences: changed occurrences are
+    duplicated, excluded dates come back (also so on main, before #287). A DATE EXDATE removes a timed
+    occurrence by its day (the first 8 characters of the occurrence's own date in its zone, a changed one by its
+    RECURRENCE-ID, bug 734245), as the harness's `seriesOccurrences`
+    now does. Superseded: (first version) the changed occurrences kept their times on such a move while their
+    RECURRENCE-IDs moved; (second) a same-day change was let through and a day move refused only with changed
+    occurrences, advising "make the move first", which led into the same-day breakage.
+  - **Named from a later occurrence:** the edit tool rewrites `edit_scope` to `this_and_following` before the card
+    (`routeSeriesTimeChange`, using `getCalendarEventDetails`' optional `recurrence_id` → `recurrenceIdIsFirst` /
+    `recurrenceIdError`), so the card, the bridge and the result agree; the following part gets the same shift.
+    The bridge refuses an `all` time change named from a later occurrence, naming `this_and_following`.
+  - **Unclear:** no `recurrence_id` and another date → the tool refuses before the card, telling the model to ask
+    "just that date, or that date and every later one".
+  - A `recurrence_id` without `edit_scope` stays `this_only`. Superseded (before #287): an `all` move set the
+    series' start to the given date and kept the rule's days and the changed occurrences' times, so a move named
+    from a later occurrence dropped the earlier ones and shifted UNTIL, EXDATEs and exceptions for attendees.
+  - Daylight saving (open): when the shift itself crosses a change, the UTC amount leaves the moved
+    EXDATEs/RDATEs/RECURRENCE-IDs an hour off the wall-clock occurrences (Thunderbird's own behaviour).
 - **Edit scope (#274):** only `this_only` (explicit, or a `recurrence_id` with no `edit_scope`) edits one
-  occurrence. `edit_scope` `all` edits the series and ignores `recurrence_id`: the bridge's lookup in
+  occurrence. `edit_scope` `all` edits the series and ignores `recurrence_id` (except for a time change, above): the bridge's lookup in
   `modifyCalendarEvent` reads `recurrence_id` (through `occurrenceNamedBy`) only for `this_only`. Before #274 the lookup always resolved the
   occurrence, so an `all` edit with a `recurrence_id` changed (or created) that one exception while the card and the
   result said the whole series. A `recurrence` (a rule, or `{}`) on a `this_only` edit is refused before the card

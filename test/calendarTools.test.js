@@ -373,7 +373,14 @@ describe('calendar_event_edit', () => {
       await settle();
       return ctx.fsmSessions[pid];
     }
-    afterEach(() => browser.tmCalendar.modifyCalendarEvent.mockImplementation(async () => ({ ok: true })));
+    // A time change reads the event first (a repeating series is routed by its
+    // occurrences); evt1 is an event that does not repeat.
+    beforeEach(() => browser.tmCalendar.getCalendarEventDetails.mockImplementation(async (eventId) => (
+      eventId === 'evt1' ? { ok: true, id: 'evt1', isRecurring: false } : { ok: false, error: 'event not found' })));
+    afterEach(() => {
+      browser.tmCalendar.modifyCalendarEvent.mockImplementation(async () => ({ ok: true }));
+      browser.tmCalendar.getCalendarEventDetails.mockReset();
+    });
 
     it('the bridge is asked to check the edit, writing nothing, and its refusal fails the call', async () => {
       const refusal = 'this is an all-day event, and the edit gives a time of day without all_day. Ask the user';

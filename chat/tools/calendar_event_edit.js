@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso } from "../modules/helpers.js";
+import { shownEventTimesIso } from "./calendar_event_read.js";
 import { isClearRecurrence, otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
 
 function normalizeArgs(args = {}) {
@@ -218,6 +219,16 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     }
   }
 
+  // A whole-series time change works as calendar apps do (#287): named from
+  // the series' first occurrence it moves the whole series; named from a later
+  // one it changes that occurrence and the following ones; with no occurrence
+  // named and a date other than the series' own, the user is asked which.
+  const routing = await routeSeriesTimeChange(norm);
+  if (routing) {
+    await failOut(routing);
+    return;
+  }
+
   // An edit of the event's times that the bridge would refuse once it reads
   // the event (an all-day event given a time of day without all_day, an
   // all-day end on or before its start, an event or occurrence it cannot
@@ -308,13 +319,43 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   await core.executeAgentAction();
 }
 
-async function safeFetchEventDetails(eventId, calendarId = null) {
+// A new repeat rule written with a move of the series to another day would be
+// written without the move, so the two are separate edits.
+const NEW_RULE_WITH_DAY_MOVE = "a new repeat rule cannot be given with a move of the series to another day; make the move first, then change the repeat in a second edit (calendar_event_read then shows the moved end)";
+const ASK_WHICH_OCCURRENCES = "ask the user whether they mean just that date, or that date and every later one; then pass recurrence_id (the occurrence's start_iso as calendar_event_read shows it) with edit_scope 'this_only' or 'this_and_following'";
+
+// Routes a time change of a repeating series whose scope resolves to "all":
+// rewrites norm.edit_scope to "this_and_following" when recurrence_id names a
+// later occurrence, and returns a refusal when the user must be asked, or null.
+async function routeSeriesTimeChange(norm) {
+  const scope = norm.edit_scope || (norm.recurrence_id ? "this_only" : "all");
+  if (scope !== "all" || !(norm.start_iso || norm.end_iso)) return null;
+  if ("recurrence" in norm && isClearRecurrence(norm.recurrence)) return null;
+  const details = await safeFetchEventDetails(norm.event_id, norm.calendar_id, norm.recurrence_id);
+  if (!details?.ok) return `could not read this event (${details?.error || "unknown error"}); try again`;
+  if (!details.isRecurring) return null;
+  if (norm.recurrence_id) {
+    if (details.recurrenceIdError) return details.recurrenceIdError;
+    if (!details.recurrenceIdIsFirst) norm.edit_scope = "this_and_following";
+    const movesDay = !!norm.start_iso && norm.start_iso.slice(0, 10) !== norm.recurrence_id.slice(0, 10);
+    if (movesDay && norm.recurrence?.freq) return NEW_RULE_WITH_DAY_MOVE;
+    return null;
+  }
+  const shown = shownEventTimesIso(details);
+  const [given, own] = norm.start_iso ? [norm.start_iso, shown.start_iso] : [norm.end_iso, shown.end_iso];
+  return given.slice(0, 10) === own.slice(0, 10) ? null : ASK_WHICH_OCCURRENCES;
+}
+
+async function safeFetchEventDetails(eventId, calendarId = null, recurrenceId = null) {
   try {
     if (browser?.tmCalendar?.getCalendars && browser?.tmCalendar?.queryCalendarItems) {
       // Use experimental helper if exposed (later we can add a dedicated getEventDetails)
       // For now, try a broad query of today and match id client-side if available in cache
       // but primary path: use a dedicated bridge call if present
       if (typeof browser.tmCalendar.getCalendarEventDetails === "function") {
+        if (recurrenceId) {
+          return await browser.tmCalendar.getCalendarEventDetails(String(eventId), String(calendarId || ""), String(recurrenceId));
+        }
         return calendarId
           ? await browser.tmCalendar.getCalendarEventDetails(String(eventId), String(calendarId))
           : await browser.tmCalendar.getCalendarEventDetails(String(eventId));

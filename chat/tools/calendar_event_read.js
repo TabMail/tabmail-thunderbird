@@ -270,6 +270,21 @@ function buildAttendeeLines(it) {
 }
 
 /**
+ * An event's start_iso and end_iso as this tool shows them, from
+ * getCalendarEventDetails (start/end in ms since epoch): an all-day DATE from
+ * its own digits (#47), a timed one in the user's zone.
+ */
+export function shownEventTimesIso(details) {
+  if (details?.isAllDay && details.startDay) {
+    return { start_iso: `${details.startDay}T00:00:00`, end_iso: `${details.endDay || details.startDay}T00:00:00` };
+  }
+  return {
+    start_iso: details?.start ? toNaiveIso(details.start) : "",
+    end_iso: details?.end ? toNaiveIso(details.end) : "",
+  };
+}
+
+/**
  * Format event details from getCalendarEventDetails API response
  * (different structure from queryCalendarItems)
  */
@@ -282,20 +297,9 @@ function formatFromDetails(details) {
   // Title
   lines.push(`title: ${details.title || "(No title)"}`);
   
-  // Format start/end times (details.start/end are in ms since epoch). An
-  // all-day DATE is frame-free and renders from its own digits (#47).
-  const allDayFrame = !!(details.isAllDay && details.startDay);
-  if (allDayFrame) {
-    lines.push(`start_iso: ${details.startDay}T00:00:00`);
-    lines.push(`end_iso: ${details.endDay || details.startDay}T00:00:00`);
-  } else {
-    if (details.start) {
-      lines.push(`start_iso: ${toNaiveIso(details.start)}`);
-    }
-    if (details.end) {
-      lines.push(`end_iso: ${toNaiveIso(details.end)}`);
-    }
-  }
+  const shown = shownEventTimesIso(details);
+  if (shown.start_iso) lines.push(`start_iso: ${shown.start_iso}`);
+  if (shown.end_iso) lines.push(`end_iso: ${shown.end_iso}`);
   
   lines.push(`all_day: ${details.isAllDay ? "yes" : "no"}`);
   

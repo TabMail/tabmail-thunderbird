@@ -226,9 +226,7 @@ const remove = (...emails) => ({ remove_attendees: emails.map((email) => ({ emai
 // with the guest change and send_invitations in it: what the write would
 // refuse is refused there, with no card and nothing written.
 describe('an edit of the times that would leave no one to invite is refused before the card', () => {
-  // A split at a changed occurrence takes no new times, whoever is invited.
-  const scopes = Object.keys(SCOPES).filter((name) => name !== 'this and following, from a changed occurrence');
-  for (const scopeName of scopes) {
+  for (const scopeName of Object.keys(SCOPES)) {
     it(`${scopeName}: everyone removed, with invitations asked for`, async () => {
       const day = (SCOPES[scopeName].args.recurrence_id || isoAt(1)).slice(0, 10);
       const stored = [guest('ana'), guest('bo')];
