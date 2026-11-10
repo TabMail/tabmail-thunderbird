@@ -663,9 +663,19 @@ function splitRule(rule, master, split, afterSplit, cap) {
 }
 
 // Sets or clears an item's rule (`setRuleOnItem`). `{}` removes the recurrence.
+// An all-day item's start and end are first written with no zone
+// (asAllDayDate): its UNTIL is a bare date, which ical.js compares with each
+// occurrence by instant at offset 0, so a start stored in a zone west of UTC
+// (as TabMail wrote all-day dates before #303) would end the series a day
+// before the day named. Relabelling a DATE moves none of its dates: Thunderbird
+// diffs the two starts in UTC (onStartDateChange), where a DATE keeps its day.
 function applyRecurrenceToItem(item, recurrenceDetails) {
   try {
     if (!recurrenceDetails || typeof recurrenceDetails !== "object") return { applied: false, cleared: false };
+    if (recurrenceDetails.freq && item.startDate?.isDate) {
+      item.startDate = asAllDayDate(item.startDate.clone());
+      if (item.endDate?.isDate) item.endDate = asAllDayDate(item.endDate.clone());
+    }
     const value = buildRRuleValueFromDetails(recurrenceDetails, item);
     if (!value) {
       item.recurrenceInfo = null;

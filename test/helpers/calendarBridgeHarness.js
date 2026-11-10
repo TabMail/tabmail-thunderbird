@@ -92,7 +92,9 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
     return { inSeconds: Math.abs(seconds), isNegative: seconds < 0 };
   };
   dt.addDuration = (dur) => {
-    const ms = (dur.isNegative ? -1 : 1) * dur.inSeconds * 1000;
+    const sign = dur.isNegative ? -1 : 1;
+    // ical.js adds only a duration's whole days to a DATE (Time.adjust).
+    const ms = sign * (dt.isDate ? Math.floor(dur.inSeconds / 86400) * 86400 : dur.inSeconds) * 1000;
     if (dt.isDate || dt.timezone !== LOCAL_ZONE) {
       // ical.js steps the value's own digits and keeps its zone and value type.
       const u = new Date(Date.UTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second) + ms);
@@ -334,7 +336,10 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
     onIdChange: (id) => { for (const ex of changed) ex.id = id; },
     onStartDateChange: (newStart, oldStart) => {
       if (!oldStart) return;
-      const diff = newStart.subtractDate(oldStart);
+      // CalRecurrenceInfo diffs the two starts in UTC, and a DATE converted to
+      // UTC keeps its digits (ical.js relabels it), so a DATE takes part by its day.
+      const inUtc = (dt) => (dt.isDate ? fakeCalDateTime({ ...dt, timezone: UTC_ZONE }) : dt);
+      const diff = inUtc(newStart).subtractDate(inUtc(oldStart));
       for (const r of list) {
         if (r.date) {
           const moved = r.date.clone();
