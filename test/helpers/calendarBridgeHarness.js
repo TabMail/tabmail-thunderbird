@@ -538,7 +538,7 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
   }
   // CalRecurrenceInfo.calculateDates: a changed occurrence replaces its slot,
   // and an EXDATE removes the occurrence with its RECURRENCE-ID, a changed one
-  // included, but only an EXDATE inside the range searched (the range's start
+  // included (by its exact key), but only an EXDATE inside the range searched (the range's start
   // moved back by the series' duration): a changed occurrence moved away from
   // an excluded slot still shows at its own time in a range without the slot.
   const searchStart = rangeStart.clone();
@@ -549,9 +549,15 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
   const removed = new Set(items
     .filter((r) => r.date && r.isNegative && r.date.compare(searchStart) >= 0 && r.date.compare(rangeEnd) < 0)
     .map((r) => ridKey(r.date)));
+  // A DATE EXDATE removes every occurrence on its day, by the first 8
+  // characters of the occurrence's own date in its own zone (bug 734245), a
+  // changed one by its RECURRENCE-ID; a DATE-TIME one only its own instant.
+  const removedDays = new Set([...removed].filter((key) => key.length === 8));
+  const onRemovedDay = (dt) => removedDays.has(dt.toString().slice(0, 8));
   const changed = info.getExceptionIds().map((rid) => info.getExceptionFor(rid))
-    .filter((ex) => !removed.has(ridKey(ex.recurrenceId)));
+    .filter((ex) => !removed.has(ridKey(ex.recurrenceId)) && !onRemovedDay(ex.recurrenceId));
   for (const key of removed) dates.delete(key);
+  for (const [key, dt] of [...dates]) if (onRemovedDay(dt)) dates.delete(key);
   for (const ex of info.getExceptionIds()) dates.delete(ridKey(ex));
   return [
     ...[...dates.values()].map((start) => ({ start, item })),

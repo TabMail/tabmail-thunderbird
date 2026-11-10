@@ -269,6 +269,7 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "occurrenceInstantOn :: getTimezoneService",
   "queryCalendarItemsInternal :: getCalendarManager",
   "sendCalendarInvitations :: getIcsService",
+  "shiftSeriesWithStart :: getTimezoneService",
   "toCalIDateTime :: getTimezoneService",
   "toCalIDateTimeInFrameOf :: getTimezoneService",
   "toEpochMsUTC :: getTimezoneService",

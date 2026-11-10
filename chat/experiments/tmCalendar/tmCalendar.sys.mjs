@@ -326,15 +326,6 @@ const RECURRENCE_FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
 // the user's, so a DATE or a time in another zone is always inside.
 const OCCURRENCE_LOOKUP_REACH_MS = 2 * 86400 * 1000;
 
-// The edit fields that change an occurrence itself (its times or details), as
-// opposed to the series' rule or dates. A changed occurrence keeps its own copy
-// of each, so a split at one cannot apply them to it (splitRecurringEvent).
-// all_day alone changes nothing; a change to or from all-day comes with times.
-// organizer_email is not one: the edit tool fills it in from the calendar for
-// every edit that names one, so it is no change of the occurrence's.
-const SPLIT_FIELDS_OF_AN_OCCURRENCE = ["title", "location", "description", "transparency",
-  "start_iso", "end_iso"];
-
 function pad2(n) { return String(n).padStart(2, "0"); }
 
 // The event's rules as RRULE values, in stored order, from its recurrence info:
@@ -579,6 +570,14 @@ function occurrenceNamedBy(item, iso, field = "recurrence_id") {
   };
 }
 
+// Whether `rid`, a RECURRENCE-ID of `master`'s series, is its first occurrence:
+// the series' own start, read in the series' zone (a RECURRENCE-ID can be stored
+// in another, e.g. UTC). A whole-series time change names this one (#287).
+function isFirstOccurrence(master, rid) {
+  const at = rid.isDate ? rid.clone() : rid.getInTimezone(master.startDate.timezone);
+  return at.compare(master.startDate) <= 0;
+}
+
 // The RECURRENCE-IDs of the occurrences an edit's exdates_add names, each by its
 // start as the read tools show it (occurrenceNamedBy), in the series as it is
 // before the edit. An EXDATE removes an occurrence by its RECURRENCE-ID, which
@@ -610,6 +609,228 @@ function dayDateFrom(date, days) {
   out.resetTo(y, m - 1, d, 0, 0, 0, date.timezone);
   out.isDate = true;
   return out;
+}
+
+// The day-naming parts of a rule a plain shift can move (#287): a weekday list
+// and a list of month days. Any other part that names days (an ordinal or
+// last-of weekday, a set position, a year day, a week number, a month crossed)
+// cannot be moved by a whole number of days and is refused.
+const RULE_SHIFT_WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+// The week start a rule has when it names none (RFC 5545 3.3.10).
+const RULE_DEFAULT_WKST = "MO";
+// The last month day every month has: a rule on a later one skips the shorter
+// months, so a move onto or off one would drop or add occurrences.
+const DAYS_IN_SHORTEST_MONTH = 28;
+const FEBRUARY = 1; // calIDateTime months count from 0
+const LEAP_DAY = 29;
+const SET_TIME_PARTS = /^(BYHOUR|BYMINUTE|BYSECOND)=/i;
+
+// A rule value shifted by `days` days, `{ value }`, or `{ error }` when its
+// occurrences cannot all move by that much. `was` and `now` are the series'
+// start before and after the move, in its own frame. The refusals are the
+// cases where ical.js would, or could, expand the shifted rule to other dates
+// than the old occurrences moved by `days` (a leap day is refused either way).
+function ruleShiftedByDays(value, days, was, now) {
+  const refused = { error: "this series repeats on days its rule names in a way a move cannot carry (for example the second Tuesday, or the last day of the month), so it cannot be moved to another day here; move only its time of day, or tell the user to change its days in their calendar app" };
+  const parts = String(value).split(";").map((p) => p.trim()).filter(Boolean);
+  const valueOf = (key) => {
+    const part = parts.find((p) => p.split("=")[0].toUpperCase() === key);
+    return part === undefined ? null : String(part.split("=")[1] || "").toUpperCase();
+  };
+  const freq = valueOf("FREQ");
+  const interval = Number(valueOf("INTERVAL") || 1);
+  const monthChanged = was.month !== now.month || was.year !== now.year;
+  const shiftDay = (code) => RULE_SHIFT_WEEKDAYS[(((RULE_SHIFT_WEEKDAYS.indexOf(code) + days) % 7) + 7) % 7];
+  const inEveryMonth = (day) => day >= 1 && day <= DAYS_IN_SHORTEST_MONTH;
+  // A rule with no day part repeats on its start's day: monthly on its day of
+  // the month, yearly on its day of the year.
+  const dayFromStart = ["BYDAY", "BYMONTHDAY", "BYYEARDAY", "BYWEEKNO"].every((key) => valueOf(key) === null);
+  if (dayFromStart && freq === "MONTHLY" && (monthChanged || !inEveryMonth(was.day) || !inEveryMonth(now.day))) return refused;
+  if (dayFromStart && freq === "YEARLY") {
+    const isLeapDay = (d) => d.month === FEBRUARY && d.day === LEAP_DAY;
+    const ms = (d) => Date.UTC(d.year, d.month, d.day);
+    const [from, to] = [ms(was), ms(now)].sort((a, b) => a - b);
+    // The end of February moves with the leap years, so a move across it does not
+    // keep the days between the occurrences.
+    const crossesMarch = [was.year, now.year].some((y) => from < Date.UTC(y, FEBRUARY + 1, 1) && Date.UTC(y, FEBRUARY + 1, 1) <= to);
+    if (isLeapDay(was) || isLeapDay(now) || crossesMarch) return refused;
+  }
+  const out = [];
+  for (const part of parts) {
+    const [name, list] = part.split("=");
+    const key = String(name).toUpperCase();
+    if (key === "BYDAY") {
+      // A weekday list moves exactly only where every occurrence's week or
+      // period is cut where the moved days are: not inside named months, and,
+      // when it repeats every few weeks, with its week start moved too (below).
+      if (valueOf("BYMONTH") !== null) return refused;
+      if (interval > 1 && freq !== "WEEKLY" && freq !== "DAILY") return refused;
+      const shifted = [];
+      for (const day of String(list).split(",")) {
+        const code = day.trim().toUpperCase();
+        if (!RULE_SHIFT_WEEKDAYS.includes(code)) return refused;
+        shifted.push(shiftDay(code));
+      }
+      out.push(`BYDAY=${shifted.join(",")}`);
+    } else if (key === "BYMONTHDAY") {
+      const shifted = [];
+      for (const day of String(list).split(",")) {
+        if (!/^\d+$/.test(day.trim())) return refused;
+        const moved = Number(day) + days;
+        if (!inEveryMonth(Number(day)) || !inEveryMonth(moved)) return refused;
+        shifted.push(String(moved));
+      }
+      out.push(`BYMONTHDAY=${shifted.join(",")}`);
+    } else if (key === "BYMONTH") {
+      // Named months keep a monthly or yearly series' days when its start stays
+      // in its month; a daily or weekly one is cut at each month's end.
+      if (monthChanged || (freq !== "MONTHLY" && freq !== "YEARLY")) return refused;
+      out.push(part);
+    } else if (key === "BYSETPOS" || key === "BYYEARDAY" || key === "BYWEEKNO") {
+      return refused;
+    } else if (key === "WKST") {
+      // Written below when it moves.
+    } else {
+      out.push(part);
+    }
+  }
+  // Every few weeks on several days: ical.js groups the days into weeks from
+  // the week start, so the week start moves with the days.
+  const wkst = valueOf("WKST");
+  if (freq === "WEEKLY" && interval > 1 && valueOf("BYDAY") !== null) {
+    out.push(`WKST=${shiftDay(wkst || RULE_DEFAULT_WKST)}`);
+  } else if (wkst !== null) {
+    out.push(`WKST=${wkst}`);
+  }
+  return { value: out.join(";") };
+}
+
+// A series' start that changes between all-day and timed. RFC 5545 needs its
+// excluded and added dates, each UNTIL and its changed occurrences'
+// RECURRENCE-IDs in the start's value type. Thunderbird keeps theirs and moves
+// them by the start's change in UTC (onStartDateChange), which for a DATE and a
+// timed start is their time and zone offset, not whole days, even on the same
+// day: changed occurrences leave their slots and excluded dates come back. A
+// series (or the following part of a split) carrying any of them is refused,
+// with one check for both edits, made before anything else moves. A new rule
+// is written in the start's value type and replaces each UNTIL, so a series
+// whose only such date is its end takes the change with its rule given again
+// (on its own day: a new rule is refused with a move to another day).
+const KIND_CHANGE_ERROR = "changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app";
+const KIND_CHANGE_UNTIL_ERROR = "changing these occurrences between all-day and timed would leave their end date (UNTIL) in the other form; give the repeat rule again, its end included, in the same edit (a move to another day goes first, in its own edit)";
+function kindChangeError(item, oldStart, patch) {
+  const info = item.recurrenceInfo;
+  if (!info || !oldStart || !item.startDate || !!item.startDate.isDate === !!oldStart.isDate) return null;
+  const items = [...(info.getRecurrenceItems({}) || [])];
+  if (items.some((r) => !isRuleItem(r)) || (info.getExceptionIds({}) || []).length > 0) return KIND_CHANGE_ERROR;
+  const untilKept = !patch.recurrence?.freq && items.some((r) => isRuleItem(r) && /\bUNTIL=/i.test(String(r.icalProperty?.value || "")));
+  return untilKept ? KIND_CHANGE_UNTIL_ERROR : null;
+}
+
+// A whole-series time change as a plain shift, as calendar apps make it (#287):
+// called after `item`'s start has moved from `oldStart` (a series, or the
+// following part of a split). Thunderbird has already moved the excluded and
+// added dates, each UNTIL and the changed occurrences' RECURRENCE-IDs by the
+// start's change in UTC (onStartDateChange). This moves the rest the same way:
+// the own start and end of each changed occurrence still at its slot (one given
+// its own time keeps it), and, on a move to another day, the days the rule
+// names. `{ error }` when the
+// move cannot be made; nothing is saved then. A move that keeps the start (an
+// end alone), and one that stops the series repeating, change nothing here.
+function shiftSeriesWithStart(item, oldStart, patch) {
+  const newStart = item.startDate;
+  const info = item.recurrenceInfo;
+  const stopsRepeating = !!patch.recurrence && typeof patch.recurrence === "object" && !patch.recurrence.freq;
+  if (stopsRepeating || !info || !oldStart || !newStart) return {};
+  // Before the same-start return: compare() takes only the date of a DATE.
+  const kindError = kindChangeError(item, oldStart, patch);
+  if (kindError) return { error: kindError };
+  if (newStart.compare(oldStart) === 0) return {};
+  const zone = oldStart.isDate || oldStart.timezone?.tzid === "floating" ? null : oldStart.timezone;
+  const inZone = (dt) => (zone && !dt.isDate ? dt.getInTimezone(zone) : dt);
+  const was = inZone(oldStart), now = inZone(newStart);
+  const days = Math.round((Date.UTC(now.year, now.month, now.day) - Date.UTC(was.year, was.month, was.day)) / 86400000);
+  const timeChanged = !newStart.isDate && (was.hour !== now.hour || was.minute !== now.minute || was.second !== now.second);
+  // A change between all-day and timed reaches here only without changed
+  // occurrences (kindChangeError).
+  const changedIds = [...(info.getExceptionIds({}) || [])];
+  const items = [...(info.getRecurrenceItems({}) || [])];
+  const rules = items.filter((r) => isRuleItem(r) && /\bFREQ=/i.test(String(r.icalProperty?.value || "")));
+  if (timeChanged && rules.some((r) => String(r.icalProperty.value).split(";").some((p) => SET_TIME_PARTS.test(p.trim())))) {
+    return { error: "this series repeats at set hours or minutes, so its time cannot be moved here; tell the user to change it in their calendar app" };
+  }
+  if (days !== 0) {
+    if (patch.recurrence?.freq) {
+      return { error: "a new repeat rule cannot be given with a move of the series to another day; make the move first, then change the repeat in a second edit (calendar_event_read then shows the moved end)" };
+    }
+    if (items.some(isNegativeRuleItem)) {
+      return { error: "this series cancels occurrences by a rule (EXRULE), which a move to another day cannot carry; tell the user to move it in their calendar app" };
+    }
+    const shifted = [];
+    for (const r of rules) {
+      const res = ruleShiftedByDays(r.icalProperty.value, days, was, now);
+      if (res.error) return { error: res.error };
+      shifted.push([r, res.value]);
+    }
+    for (const [r, value] of shifted) if (value !== String(r.icalProperty.value)) writeRuleItem(r, value);
+  }
+  // The changed occurrences, as calendar apps keep the user's edits: one still
+  // at its slot (changed only in its title, notes, place, guests or length)
+  // moves with the series, by the start's change in UTC, the amount Thunderbird
+  // moves its RECURRENCE-ID by (a DATE takes its whole days), and keeps its
+  // changes; one given its own start keeps it, its RECURRENCE-ID alone moved to
+  // its new slot. A RECURRENCE-ID read here has moved already, so a start at
+  // the slot is one that lands on it when moved.
+  if (!changedIds.length) return {};
+  const utc = getTimezoneService().UTC;
+  const diff = newStart.getInTimezone(utc).subtractDate(oldStart.getInTimezone(utc));
+  for (const rid of changedIds) {
+    const ex = info.getExceptionFor(rid);
+    if (!ex?.startDate) continue;
+    const start = ex.startDate.clone();
+    start.addDuration(diff);
+    if (start.compare(rid) !== 0) continue;
+    const moved = ex.clone();
+    moved.startDate = start;
+    if (ex.endDate) {
+      const end = ex.endDate.clone();
+      end.addDuration(diff);
+      moved.endDate = end;
+    }
+    info.modifyException(moved, false);
+  }
+  return {};
+}
+
+// The occurrence an edit names, at `item`'s start (a whole series named from its
+// first occurrence, or the following part of a split from the occurrence it
+// starts at), takes the edit when it was changed on its own: the new times
+// (the series' or part's start and end) and every field the edit names. It
+// keeps its own changes the edit does not name, as calendar apps keep the
+// user's edits. Guest changes are not made here: applyGuestChangeToSeries
+// makes them on every item the edit covers. Returns that occurrence as stored,
+// or null when there is none.
+function applyEditToNamedOccurrence(item, patch) {
+  const info = item.recurrenceInfo;
+  const ex = info?.getExceptionFor(item.startDate);
+  if (!ex) return null;
+  const named = ex.clone();
+  if (patch.start_iso || patch.end_iso) {
+    named.startDate = item.startDate.clone();
+    named.endDate = item.endDate.clone();
+  }
+  if (typeof patch.title === "string" && patch.title) named.title = patch.title;
+  if (typeof patch.location === "string") named.setProperty("LOCATION", patch.location);
+  // A new description replaces the occurrence's in every form (see the split).
+  if (typeof patch.description === "string") {
+    named.descriptionText = patch.description;
+    for (const name of ["X-ALT-DESC", "X-MOZ-HTML", "X-MOZ-ALT-DESC"]) named.deleteProperty(name);
+  }
+  if (typeof patch.transparency === "string") {
+    named.setProperty("TRANSP", patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE");
+  }
+  info.modifyException(named, false);
+  return info.getExceptionFor(item.startDate);
 }
 
 // How one rule of `master`'s series divides at `split`, the first occurrence of
@@ -1607,7 +1828,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             return { ok: false, error: String(e) };
           }
         },
-        async getCalendarEventDetails(event_id, calendar_id = null) {
+        async getCalendarEventDetails(event_id, calendar_id = null, recurrence_id = null) {
           try {
             const Ci = globalThis.Ci; const Cc = globalThis.Cc;
             const mgr = getCalendarManager();
@@ -1678,6 +1899,15 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 } catch (_) { return "busy"; }
               })()
             };
+            // Whether a given recurrence_id names the series' first occurrence: a
+            // whole-series time change names that one, and one named from a
+            // later occurrence is a change from it on (#287).
+            const series = targetEvent.parentItem || targetEvent;
+            if (recurrence_id && series.recurrenceInfo) {
+              const named = occurrenceNamedBy(series, recurrence_id);
+              if (named.error) details.recurrenceIdError = named.error;
+              else details.recurrenceIdIsFirst = isFirstOccurrence(series, named.occurrence.recurrenceId);
+            }
             // Return the event's own id, not re-derived from master
             const returnedId = String(targetEvent.id || targetEvent.parentItem?.id || "");
             return { ok: true, id: returnedId, ...details };
@@ -2066,6 +2296,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // Use proper target selection for editing
             const { base, scope, isOccurrence, hasSeries } = pickEditTarget(item, details);
+            // A whole-series time change is made from the series' first
+            // occurrence (#287); one named from a later occurrence is a change of
+            // it and the following ones (the edit tool routes it there first).
+            const movesSeries = scope === "series" && !!base.recurrenceInfo && !!(patch.start_iso || patch.end_iso)
+              && !(patch.recurrence && typeof patch.recurrence === "object" && !patch.recurrence.freq);
+            if (movesSeries && recurIdStr) {
+              const named = occurrenceNamedBy(base, recurIdStr);
+              if (named.error) return { ok: false, error: named.error };
+              if (!isFirstOccurrence(base, named.occurrence.recurrenceId)) {
+                return { ok: false, error: `recurrence_id ${recurIdStr} is a later occurrence: a time change from it on is edit_scope 'this_and_following' with that recurrence_id; a change of every occurrence names the first one` };
+              }
+            }
             const clone = base.clone();
             tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
 
@@ -2097,6 +2339,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
             const editError = allDayEditError(clone, patch);
             if (editError) return { ok: false, error: editError };
+            if (movesSeries) {
+              const shifted = shiftSeriesWithStart(clone, base.startDate, patch);
+              if (shifted.error) return { ok: false, error: shifted.error };
+              // A first occurrence the edit names takes it, even with its own time.
+              if (recurIdStr) applyEditToNamedOccurrence(clone, patch);
+            }
 
             // The guest change, on every item the edit covers: the event, the
             // one occurrence, or the series and each of its changed occurrences.
@@ -2380,16 +2628,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (named.error) return { ok: false, error: named.error };
             const splitRid = named.occurrence.recurrenceId;
             const splitDt = splitRid.isDate ? splitRid.clone() : splitRid.getInTimezone(master.startDate.timezone);
-            if (splitDt.compare(master.startDate) <= 0) {
+            if (isFirstOccurrence(master, splitRid)) {
               return { ok: false, error: "recurrence_id is the series' first occurrence: to change every occurrence, edit the whole series (edit_scope 'all')" };
-            }
-            // An occurrence that was changed on its own is carried into the
-            // following part with its own time and fields, which the edit's
-            // would not reach. Such an edit is refused; the occurrence can be
-            // changed alone, and the following ones from the next occurrence.
-            if (master.recurrenceInfo.getExceptionFor(splitRid)
-                && SPLIT_FIELDS_OF_AN_OCCURRENCE.some((k) => patch[k] != null)) {
-              return { ok: false, error: `the occurrence at ${splitIso} was changed on its own, so this change would not reach it: change it alone (edit_scope 'this_only'), then this and the following ones from the next occurrence` };
             }
             // The occurrences exdates_add names, in the series as it is before
             // the split; each goes to the part its RECURRENCE-ID falls in.
@@ -2573,6 +2813,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
             const editError = allDayEditError(newEv, patch);
             if (editError) return { ok: false, error: editError };
+            // The following part moves as a whole series does (#287): its rule's
+            // days and its changed occurrences go with its start.
+            const followingShift = shiftSeriesWithStart(newEv, slotStart, patch);
+            if (followingShift.error) return { ok: false, error: followingShift.error };
             // Invitations need someone to invite, once the change is applied.
             if (sendInvites && newEv.getAttendees().length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
@@ -2592,20 +2836,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            // A start that changes between all-day and timed: RFC 5545 needs the
-            // excluded and added dates, each UNTIL and the changed occurrences'
-            // RECURRENCE-IDs in the start's value type, and moving the start
-            // keeps theirs. A following part that carries any of them is refused.
-            if (!!newEv.startDate?.isDate !== isAllDayMaster && newEv.recurrenceInfo) {
-              const info = newEv.recurrenceInfo;
-              const items = [...(info.getRecurrenceItems({}) || [])];
-              const carriesDates = items.some((r) => !isRuleItem(r))
-                || (info.getExceptionIds({}) || []).length > 0
-                || (!newRule && items.some((r) => isRuleItem(r) && /\bUNTIL=/i.test(String(r.icalProperty?.value || ""))));
-              if (carriesDates) {
-                return { ok: false, error: "changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app" };
-              }
-            }
+            // The occurrence the split starts at, when it was changed on its
+            // own, is carried into the following part with its own fields and
+            // takes the edit there, in this one write.
+            if (newEv.recurrenceInfo) applyEditToNamedOccurrence(newEv, patch);
 
             // The attendees answered for the series' times and place. When the
             // split moves the following occurrences (their start or end, all-day
@@ -2621,12 +2855,35 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               || !sameTime(newEv.endDate, slotEnd)
               || (newRule && ruleValuesOfItem(newEv).sort().join("\n") !== carriedRules)
               || (typeof patch.location === "string" && patch.location !== String(master.getProperty("LOCATION") || ""));
-            if (reschedules) {
-              const organizer = attendeeAddress(newEv.organizer?.id);
-              for (const att of newEv.getAttendees()) {
+            const organizer = attendeeAddress(newEv.organizer?.id);
+            const askAgain = (item) => {
+              for (const att of item.getAttendees()) {
                 if (organizer && attendeeAddress(att.id) === organizer) continue;
                 att.participationStatus = "NEEDS-ACTION";
                 att.rsvp = "TRUE";
+              }
+            };
+            if (reschedules) askAgain(newEv);
+            // Each changed occurrence of the part carries its own attendees,
+            // who answered for its own time and place: they are asked again
+            // when the split moves it or changes its place. Its RECURRENCE-ID
+            // moved with the part's start (onStartDateChange), so its stored
+            // self is found by moving it back.
+            const partInfo = newEv.recurrenceInfo;
+            if (partInfo) {
+              const utc = getTimezoneService().UTC;
+              const back = slotStart.getInTimezone(utc).subtractDate(newEv.startDate.getInTimezone(utc));
+              for (const rid of [...(partInfo.getExceptionIds({}) || [])]) {
+                const ex = partInfo.getExceptionFor(rid);
+                const storedRid = rid.clone();
+                storedRid.addDuration(back);
+                const stored = master.recurrenceInfo.getExceptionFor(storedRid);
+                const changed = !stored || !sameTime(ex.startDate, stored.startDate) || !sameTime(ex.endDate, stored.endDate)
+                  || String(ex.getProperty("LOCATION") || "") !== String(stored.getProperty("LOCATION") || "");
+                if (!changed) continue;
+                const asked = ex.clone();
+                askAgain(asked);
+                partInfo.modifyException(asked, false);
               }
             }
 

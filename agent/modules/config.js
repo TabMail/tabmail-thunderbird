@@ -13,7 +13,7 @@ export const SETTINGS = {
     // Sent as X-Client-Protocol: the version the backend picks this add-on's prompts and chat tools at.
     // Raise it, in the change that needs it, to the release that change ships in, once the backend's
     // prompt and tool files for that version are deployed.
-    protocolVersion: "1.11.2",
+    protocolVersion: "1.11.3",
     // Status page URL for server health issues
     statusPageUrl: "https://tabmail.ai/status.html",
     // Health check configuration

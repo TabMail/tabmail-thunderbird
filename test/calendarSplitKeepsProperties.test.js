@@ -164,8 +164,9 @@ describe('the following part of a split keeps the series\' properties', () => {
     });
   }
 
-  // At an occurrence changed on its own, only excluded dates may change; the
-  // organizer the edit tool fills in is no change, and the series' stays.
+  // At an occurrence changed on its own, an edit that only excludes dates keeps
+  // that occurrence as it was; the organizer the edit tool fills in is no
+  // change, and the series' stays.
   it('keeps the series\' organizer on a this-and-following edit at an occurrence changed on its own that only excludes dates', async () => {
     const master = series();
     const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 19), endDate: fakeDateTime('2099-10-15', 20), recurrenceId: fakeDateTime('2099-10-15', 17) });

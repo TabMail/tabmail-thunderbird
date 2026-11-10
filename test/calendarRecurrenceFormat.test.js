@@ -591,6 +591,11 @@ describe('split: the capped rule and the following part\'s rule', () => {
 // excluded and added dates, and changed occurrences. Checked by expanding all
 // three with Thunderbird's own recurrence code (seriesOccurrences), for each
 // kind of start.
+// An occurrence key an hour later. The changed occurrences of these series
+// were given their own times, which a move of the series keeps, as calendar
+// apps keep the user's edits (#287).
+const anHourLater = (k) => (k.startsWith('changed ') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
+
 describe('split: the two parts make the series\' occurrences', () => {
   // Wide enough for every occurrence these series make.
   const RANGE = [fakeDate('2099-09-01'), fakeDate('2101-01-01')];
@@ -847,9 +852,8 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect(fresh.endDate.toString()).toBe('20991015T190000');
     expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T180000']);
     expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T180000']);
-    const hourLater = (k) => (k.startsWith('changed') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
     expect(following.length).toBeGreaterThan(10);
-    expect(occurrenceKeys(fresh)).toEqual(following.map(hourLater).sort());
+    expect(occurrenceKeys(fresh)).toEqual(following.map(anHourLater).sort());
     expect(lastDayAdmitted(fresh.startDate, untilOf(ruleValues(fresh)[0]))).toBe('2099-10-30');
   });
 
@@ -864,7 +868,6 @@ describe('split: the two parts make the series\' occurrences', () => {
     'timed in UTC': () => fakeDateTime(START_DAY, 9, 0, UTC_ZONE),
     'floating': () => fakeDateTime(START_DAY, 9, 0, FLOATING_ZONE),
   };
-  const anHourLater = (k) => (k.startsWith('changed') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
   function timedSeries(makeStart) {
     const start = makeStart();
     return seriesFrom(start, [`FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(start, 60)}`], {
@@ -1143,20 +1146,21 @@ describe('split: the two parts make the series\' occurrences', () => {
   // type, and moving the start between all-day and timed keeps theirs.
   const toAllDay = { recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00', all_day: true };
   const toTimed = { recurrence_id: '2099-10-15T00:00:00', start_iso: '2099-10-15T09:00:00', end_iso: '2099-10-15T10:00:00', all_day: false };
-  for (const [name, make, change] of [
-    ['to all-day, carrying an excluded date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('EXDATE', '20991020T170000')] }), toAllDay],
-    ['to all-day, carrying an added date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('RDATE', '20991020T190000')] }), toAllDay],
-    ['to all-day, carrying a changed occurrence', () => series('FREQ=DAILY', { exceptions: [fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-20', 19), endDate: fakeDateTime('2099-10-20', 20), recurrenceId: fakeDateTime('2099-10-20', 17) })] }), toAllDay],
-    ['to all-day, carrying an end date', () => series(`FREQ=DAILY;UNTIL=${utcUntil('2099-10-30', 17)}`), toAllDay],
-    ['to timed, carrying an excluded date', () => series('FREQ=DAILY', { allDay: true, extraItems: [recurrenceItem('EXDATE', '20991020')] }), toTimed],
+  const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app';
+  const KIND_CHANGE_UNTIL = 'changing these occurrences between all-day and timed would leave their end date (UNTIL) in the other form; give the repeat rule again, its end included, in the same edit (a move to another day goes first, in its own edit)';
+  for (const [name, make, change, error] of [
+    ['to all-day, carrying an excluded date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('EXDATE', '20991020T170000')] }), toAllDay, KIND_CHANGE],
+    ['to all-day, carrying an added date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('RDATE', '20991020T190000')] }), toAllDay, KIND_CHANGE],
+    ['to all-day, carrying a changed occurrence', () => series('FREQ=DAILY', { exceptions: [fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-20', 19), endDate: fakeDateTime('2099-10-20', 20), recurrenceId: fakeDateTime('2099-10-20', 17) })] }), toAllDay, KIND_CHANGE],
+    ['to all-day, carrying an end date', () => series(`FREQ=DAILY;UNTIL=${utcUntil('2099-10-30', 17)}`), toAllDay, KIND_CHANGE_UNTIL],
+    ['to timed, carrying an excluded date', () => series('FREQ=DAILY', { allDay: true, extraItems: [recurrenceItem('EXDATE', '20991020')] }), toTimed, KIND_CHANGE],
   ]) {
     it(`a this-and-following change ${name} is refused and writes nothing`, async () => {
       const master = make();
       const rules = ruleValues(master);
       const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
       const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', ...change });
-      expect(res).toMatchObject({ ok: false });
-      expect(res.error).toMatch(/between all-day and timed/);
+      expect(res).toEqual({ ok: false, error });
       expect(modifications).toEqual([]);
       expect(calendar.items).toEqual([master]);
       expect(ruleValues(master)).toEqual(rules);
@@ -1186,29 +1190,37 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect(ruleValues(master)).toEqual(rules);
   });
 
-  // A changed occurrence is carried into the following part with its own time
-  // and details, so a change to them there would not reach it: the named
-  // occurrence would stay as it was while the edit reports success. (A guest
-  // change does reach it: it is made on each changed occurrence's own list.)
-  for (const [name, change] of [
-    ['a new start', { start_iso: '2099-10-15T18:00:00' }],
-    ['its own start restated', { start_iso: '2099-10-15T19:00:00' }],
-    ['a new end', { end_iso: '2099-10-15T21:00:00' }],
-    ['a new title', { title: 'Renamed' }],
-    ['a new location', { location: 'Room 9' }],
-    ['a new description', { description: 'New agenda' }],
-    ['a new busy/free', { transparency: 'free' }],
+  // A this-and-following change at an occurrence changed on its own is made in
+  // one write: the occurrence the edit names takes it (its new times and every
+  // field the edit names) and keeps its own changes the edit does not name.
+  for (const [name, change, check] of [
+    ['a new start', { start_iso: '2099-10-15T18:00:00' }, (x) => expect(x.title).toBe('Moved')],
+    ['its own start restated', { start_iso: '2099-10-15T19:00:00' }, (x) => expect(x.title).toBe('Moved')],
+    ['a new end', { end_iso: '2099-10-15T21:00:00' }, (x) => expect(x.title).toBe('Moved')],
+    ['a new title', { title: 'Renamed' }, (x) => expect(x.title).toBe('Renamed')],
+    ['a new location', { location: 'Room 9' }, (x) => { expect(x.title).toBe('Moved'); expect(x.getProperty('LOCATION')).toBe('Room 9'); }],
+    ['a new description', { description: 'New agenda' }, (x) => { expect(x.title).toBe('Moved'); expect(x.descriptionText).toBe('New agenda'); }],
+    ['a new busy/free', { transparency: 'free' }, (x) => { expect(x.title).toBe('Moved'); expect(x.getProperty('TRANSP')).toBe('TRANSPARENT'); }],
   ]) {
-    it(`a this-and-following change with ${name} at an occurrence changed on its own is refused and writes nothing`, async () => {
+    it(`a this-and-following change with ${name} at an occurrence changed on its own is made, and that occurrence takes it`, async () => {
       const start = fakeDateTime(START_DAY, 17);
       const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
-      const rules = ruleValues(master);
-      const { res, calendar, modifications } = await split(master, '2099-10-15T19:00:00', change);
-      expect(res).toMatchObject({ ok: false });
-      expect(res.error).toMatch(/changed on its own, so this change would not reach it/);
-      expect(modifications).toEqual([]);
-      expect(calendar.items).toEqual([master]);
-      expect(ruleValues(master)).toEqual(rules);
+      const splitMs = fakeDateTime('2099-10-15', 17).nativeTime / 1000;
+      const earlier = occurrenceKeys(master).filter((k) => !k.startsWith('changed ') && Date.parse(k) < splitMs);
+      const { res, capped, fresh } = await split(master, '2099-10-15T19:00:00', change);
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(occurrenceKeys(capped)).toEqual(earlier);
+      const x = fresh.recurrenceInfo.getExceptionFor(fresh.startDate);
+      expect(x).toBeTruthy();
+      check(x);
+      const timed = !!(change.start_iso || change.end_iso);
+      // With new times it lands at the part's start and end; without, it keeps its own.
+      expect(x.startDate.toString()).toBe(timed ? fresh.startDate.toString() : '20991015T190000');
+      expect(x.endDate.toString()).toBe(timed ? fresh.endDate.toString() : '20991015T200000');
+      // Shown once, at its own start, in place of its slot.
+      const keys = occurrenceKeys(fresh);
+      expect(keys.filter((k) => k.includes(instantKey(x.startDate)))).toEqual([`changed ${instantKey(x.startDate)} ${x.title}`]);
+      expect(keys.filter((k) => k.startsWith('changed '))).toHaveLength(1);
     });
   }
 
