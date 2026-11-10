@@ -16,6 +16,22 @@ reports midnight **in that zone**. Day arithmetic on a DATE therefore uses its d
 (`dayDigitsFrom`, `dayDateFrom`), and comparisons use `compare`, never the epoch, whatever zone
 it carries. The harness's DATE follows its zone too.
 
+**Written with no zone (#303, 2026-11-10):** every all-day value the bridge writes is now a DATE
+with no zone, as Thunderbird's own event dialog writes one (`calendar-item-iframe.js`: for an
+all-day event, `gStartTimezone = gEndTimezone = cal.dtz.floating`). `asAllDayDate(dt)` sets
+`isDate = true` and relabels `dt` floating (`cal.timezoneService.floating`; the digits stay as read,
+a relabel converts nothing). Its callers: `createCalendarEvent` (start and end) and
+`toCalIDateTimeInFrameOf`, which returns it first when `patch.all_day`, so every edit (whole
+series, one occurrence, the following part of a split) and the duration-preservation mirror get a
+floating DATE without the mirror changing. Why it matters beyond display: ical.js compares a rule's
+UNTIL with each occurrence by instant (`toUnixTime`), and a bare-date UNTIL is at offset 0, so west
+of UTC an all-day series with a zoned start lost its last day, and a split of it was refused (the
+earlier part's check, 050). A floating DATE's instant is its digits at offset 0, so the last day is
+admitted. Series stored with a zoned all-day start (TabMail's before #303, or another app's) are
+left as they are (no migration); an edit that restates their dates rewrites them floating, and the
+split's refusal still guards them. Pinned by `test/calendarAllDayHasNoZone.test.js`
+(TZ=America/Vancouver; harness `timezoneService.floating` is `FLOATING_ZONE`).
+
 ## The frame-free contract (PR #48)
 
 - The bridge (`tmCalendar.sys.mjs`) emits `isAllDay`, `startDay`, `endDay` (`YYYY-MM-DD` from the

@@ -600,8 +600,9 @@ function exdatesNamedBy(item, isos) {
 }
 
 // A DATE's day `days` days away, as [YYYY, MM, DD] from its own digits. A DATE's
-// epoch time depends on the zone it carries (an all-day event TabMail creates is
-// a DATE in the user's zone), so all-day day arithmetic never uses it.
+// epoch time depends on the zone it carries (an all-day event TabMail made
+// before #303 is a DATE in the user's zone), so all-day day arithmetic never
+// uses it.
 function dayDigitsFrom(date, days) {
   const d = new Date(Date.UTC(date.year, date.month, date.day + days));
   return [String(d.getUTCFullYear()).padStart(4, "0"), pad2(d.getUTCMonth() + 1), pad2(d.getUTCDate())];
@@ -1158,6 +1159,17 @@ function asShown(calDt) {
   return shown;
 }
 
+// `dt`'s date as an all-day value, written as Thunderbird's event dialog writes
+// one: a DATE with no zone (floating). A DATE that carries a zone has its epoch
+// time at midnight in that zone, and ical.js compares a rule's UNTIL with each
+// occurrence by instant, so west of UTC a series' last day would fall after a
+// bare-date UNTIL naming it and be dropped (#303).
+function asAllDayDate(dt) {
+  dt.isDate = true;
+  dt.timezone = getTimezoneService().floating;
+  return dt;
+}
+
 // toCalIDateTime for an edit of `item`, whose new times it gives in the item's
 // frame, as Thunderbird's event dialog keeps an event's zone: in a zoned item's
 // own zone at the same instant, and for a floating item at the user's clock
@@ -1166,12 +1178,14 @@ function asShown(calDt) {
 // there (a weekday in the series' zone can be another in the user's), and its
 // excluded and added dates and changed occurrences, which Thunderbird moves
 // with the start (onStartDateChange), would no longer meet its occurrences.
-// An all-day value, and an edit to or from all day, are given as read.
+// An all-day value is the date as read, with no zone (asAllDayDate); an edit
+// from all day to timed is given as read.
 function toCalIDateTimeInFrameOf(item, patch) {
   const start = item && item.startDate;
   return (iso, tzId) => {
     const dt = toCalIDateTime(iso, tzId);
-    if (!dt || dt.isDate || patch.all_day || !start || start.isDate) return dt;
+    if (dt && patch.all_day) return asAllDayDate(dt);
+    if (!dt || dt.isDate || !start || start.isDate) return dt;
     const zone = start.timezone;
     if (zone?.tzid !== "floating") return dt.getInTimezone(zone);
     const shown = dt.getInTimezone(getTimezoneService().defaultTimezone);
@@ -1717,8 +1731,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const tzOverride = typeof details.timezone === "string" && details.timezone ? details.timezone : null;
             const start = toCalIDateTime(String(details.start_iso || ""), tzOverride);
             const end = toCalIDateTime(String(details.end_iso || ""), tzOverride);
-            if (start) { if (details.all_day) start.isDate = true; ev.startDate = start; }
-            if (end) { if (details.all_day) end.isDate = true; ev.endDate = end; }
+            if (start) { if (details.all_day) asAllDayDate(start); ev.startDate = start; }
+            if (end) { if (details.all_day) asAllDayDate(end); ev.endDate = end; }
             if (details.location) { try { ev.setProperty("LOCATION", String(details.location)); } catch {} }
             
             // Handle description with optional conference URL
@@ -2342,6 +2356,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // with a bare-DATE UNTIL can end it a day early: ical.js compares
               // by instant, and an all-day start that carries a zone west of
               // UTC falls after an UNTIL of the same day. Refused, not written.
+              // An all-day value TabMail writes has no zone (asAllDayDate), so
+              // this refuses only a series stored with one, such as those
+              // TabMail made before #303 or another app made.
               const lookBack = boundFromIcs(toIcsUntil(new Date(splitDt.nativeTime / 1000 - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
               const ridsNear = (info, keep) => [...(info.getOccurrences(lookBack, afterSplit, 0) || [])]
                 .map((occ) => occ.recurrenceId).filter(keep).map((rid) => rid.nativeTime).sort().join(",");

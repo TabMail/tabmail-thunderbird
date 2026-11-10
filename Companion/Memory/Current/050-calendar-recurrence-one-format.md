@@ -132,8 +132,9 @@ same design (tabmail-ios #421).
     RECURRENCE-ID, or the split is refused before anything is written. ical.js compares a rule's UNTIL by instant
     (`Time.compare`, `toUnixTime`: an occurrence in its start's zone, a DATE at midnight there; a bare-date or
     floating UNTIL at offset 0), so an all-day start that carries a zone west of UTC falls after a bare-date UNTIL
-    of its own day and the cap at the day before the split drops it. Only all-day dates the assistant wrote carry a
-    zone (#303); a split whose day before is no occurrence (a weekly rule) is unaffected.
+    of its own day and the cap at the day before the split drops it. Only all-day dates the assistant wrote before
+    #303 carry a zone (since #303 it writes them floating, `asAllDayDate`, 034), or another app's; a split whose day
+    before is no occurrence (a weekly rule) is unaffected.
   - **Dates and changed occurrences:** EXDATEs, RDATEs and changed occurrences before the split stay on the earlier
     part; those from the split on move to the following part (an RDATE is not bounded by UNTIL, so one left on the
     earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's

@@ -637,7 +637,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   }
   const cal = {
     manager: { getCalendars: () => [calendar] },
-    timezoneService: { UTC: UTC_ZONE, defaultTimezone: LOCAL_ZONE, getTimezone: () => null },
+    timezoneService: { UTC: UTC_ZONE, floating: FLOATING_ZONE, defaultTimezone: LOCAL_ZONE, getTimezone: () => null },
     icsService: { createIcalProperty: (propertyName) => ({ propertyName, value: '' }) },
   };
   const ctx = vm.createContext({
