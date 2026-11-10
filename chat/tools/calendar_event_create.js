@@ -213,6 +213,36 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
     }
   }
 
+  // An all-day end the bridge would refuse (on or before the start) is refused
+  // here, before the confirmation card, so the assistant can correct the
+  // call. The bridge reads the times as the create will and writes nothing
+  // (check_only), so the rule lives in one place. A check that throws is left
+  // to the create itself.
+  if (norm.all_day && norm.end_iso) {
+    let check = null;
+    try {
+      check = await browser.tmCalendar.createCalendarEvent({
+        calendar_id: norm.calendar_id, start_iso: norm.start_iso, end_iso: norm.end_iso, all_day: true,
+        ...(norm.timezone ? { timezone: norm.timezone } : {}), check_only: true,
+      });
+    } catch (e) {
+      log(`[TMDBG Tools] calendar_event_create: pre-card check failed to run: ${e}`, "warn");
+    }
+    if (check && check.ok === false) {
+      const errorMsg = String(check.error || "the calendar refused this event");
+      log(`[TMDBG Tools] calendar_event_create: ${errorMsg}`, "error");
+      try {
+        if (pid && ctx.fsmSessions[pid]) {
+          ctx.fsmSessions[pid].failReason = errorMsg;
+        }
+      } catch (_) {}
+      ctx.state = "exec_fail";
+      const core = await import("../fsm/core.js");
+      await core.executeAgentAction();
+      return;
+    }
+  }
+
   // Auto-extract organizer email from calendar if not provided
   if (!norm.organizer_email && norm.calendar_id) {
     try {
