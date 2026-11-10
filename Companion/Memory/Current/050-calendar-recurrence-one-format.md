@@ -176,7 +176,8 @@ same design (tabmail-ios #421).
     HTML version, the `ALTREP` parameter) and removes `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC`, as an edit does.
     A changed attendee list (`patch.attendees`, delta already applied) keeps the series' entry for each address still
     on it (matched without regard to case, as `getAttendeeById`), in the list's order, and adds the rest at
-    `NEEDS-ACTION` with `RSVP=TRUE`. The organizer is the series' (copied with it, every parameter kept): the edit's
+    `NEEDS-ACTION` with `RSVP=TRUE`, through `setAttendeeList`, the one helper every attendee-list edit uses (#297,
+    [051-calendar-attendee-list-edits-keep-entries.md](051-calendar-attendee-list-edits-keep-entries.md)). The organizer is the series' (copied with it, every parameter kept): the edit's
     `organizer_email`, which the edit tool fills with the calendar's own address whenever it has a `calendar_id`, is
     not passed to the split, as an edit of a whole series never sets one. Superseded: the split used to write it as
     the organizer, which dropped the organizer's parameters (`SENT-BY`, `SCHEDULE-*`) and, on a meeting someone else

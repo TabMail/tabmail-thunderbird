@@ -1092,6 +1092,32 @@ function attendeeAddress(id) {
   return String(id || "").replace(/^mailto:/i, "").trim().toLowerCase();
 }
 
+// Sets an event's attendees to an edit's list (patch.attendees, the edit's
+// additions and removals already applied by the JS layer). Everyone still on
+// the list keeps their entry as stored (their answer, role and other
+// details), in the list's order; the others are added and have not answered
+// yet. Thunderbird's own event dialog keeps the attendees it does not change.
+function setAttendeeList(item, list) {
+  const Ci = globalThis.Ci; const Cc = globalThis.Cc;
+  const current = new Map(item.getAttendees().map((a) => [attendeeAddress(a.id), a]));
+  item.removeAllAttendees();
+  for (const a of list) {
+    const email = String(a?.email || a?.id || "");
+    if (!email) continue;
+    const kept = current.get(attendeeAddress(email));
+    if (kept) {
+      item.addAttendee(kept);
+      continue;
+    }
+    const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
+    att.id = email.startsWith("mailto:") ? email : `mailto:${email}`;
+    if (a?.name) att.commonName = String(a.name);
+    att.participationStatus = "NEEDS-ACTION";
+    att.rsvp = "TRUE";
+    item.addAttendee(att);
+  }
+}
+
 // An all-day value is an RFC 5545 DATE: it has no zone and no instant. ical.js
 // deliberately skips zone conversion for `isDate` values, so `toEpochMsUTC`
 // yields UTC midnight of the calendar date — and every consumer that renders
@@ -2010,23 +2036,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            // Handle attendees updates
+            // Handle attendees updates: everyone still on the list keeps their entry
             if (Array.isArray(patch.attendees)) {
-              // Clear existing attendees and add new ones
               try {
-                const existing = clone.getAttendees();
-                for (const att of existing) {
-                  clone.removeAttendee(att);
-                }
-                for (const a of patch.attendees) {
-                  const email = a?.email || a?.id || a?.address;
-                  if (!email) continue;
-                  const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-                  att.id = String(email).startsWith("mailto:") ? String(email) : `mailto:${String(email)}`;
-                  if (a?.name) try { att.commonName = String(a.name); } catch {}
-                  try { att.rsvp = "TRUE"; } catch {}
-                  try { clone.addAttendee(att); } catch {}
-                }
+                setAttendeeList(clone, patch.attendees);
               } catch (e) {
                 console.warn("[tmCalendar] modifyCalendarEvent: failed to update attendees:", e);
               }
@@ -2385,29 +2398,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
 
             // Attendees: the series', each with its answer and details. A changed
-            // list (patch.attendees, the edit's additions and removals already
-            // applied by the JS layer) keeps the series' entry for everyone still
-            // on it, in the list's order, and adds the others, who have not
-            // answered yet.
-            if (Array.isArray(patch.attendees)) {
-              const onSeries = new Map(newEv.getAttendees().map((a) => [attendeeAddress(a.id), a]));
-              newEv.removeAllAttendees();
-              for (const a of patch.attendees) {
-                const email = String(a?.email || a?.id || "");
-                if (!email) continue;
-                const kept = onSeries.get(attendeeAddress(email));
-                if (kept) {
-                  newEv.addAttendee(kept);
-                  continue;
-                }
-                const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-                att.id = email.startsWith("mailto:") ? email : `mailto:${email}`;
-                if (a?.name) att.commonName = String(a.name);
-                att.participationStatus = "NEEDS-ACTION";
-                att.rsvp = "TRUE";
-                newEv.addAttendee(att);
-              }
-            }
+            // list keeps the series' entry for everyone still on it.
+            if (Array.isArray(patch.attendees)) setAttendeeList(newEv, patch.attendees);
 
             // Recurrence — the master's from the split on: each rule that carries
             // on (splitRule), and the excluded and added dates and changed

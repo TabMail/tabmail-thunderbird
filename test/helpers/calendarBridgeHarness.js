@@ -627,9 +627,13 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       return newItem;
     },
   };
+  // An occurrence, a changed one included, is on its series' calendar
+  // (CalItemBase's calendar getter falls back to its parentItem's).
   for (const master of items) {
     master.calendar = calendar;
     for (const occ of master.recurrenceInfo?.occurrences || []) occ.calendar = calendar;
+    const info = master.recurrenceInfo;
+    for (const rid of info?.getExceptionIds?.() || []) info.getExceptionFor(rid).calendar = calendar;
   }
   const cal = {
     manager: { getCalendars: () => [calendar] },
