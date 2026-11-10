@@ -13,6 +13,7 @@ import { createNewAgentBubble } from "../chat.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso, toIsoNoMs } from "../modules/helpers.js";
+import { recurrenceArgError } from "../modules/recurrence.js";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -48,8 +49,8 @@ function normalizeArgs(args = {}) {
     out.organizer_email = a.organizer_email;
   }
   
-  // Recurrence (pass-through object if provided)
-  if (a && typeof a.recurrence === "object" && a.recurrence) {
+  // Recurrence (pass-through; checked by recurrenceArgError before the card).
+  if (a && a.recurrence !== undefined && a.recurrence !== null) {
     out.recurrence = a.recurrence;
   }
 
@@ -154,6 +155,22 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
   }
 
   const norm = await ensureTimes(normalizeArgs(args));
+
+  // A rule the tool cannot write is refused before the confirmation card, so
+  // the model can correct it instead of a part being silently dropped.
+  const recurrenceError = "recurrence" in norm ? recurrenceArgError(norm.recurrence, { canClear: false }) : null;
+  if (recurrenceError) {
+    log(`[TMDBG Tools] calendar_event_create: ${recurrenceError}`, "error");
+    try {
+      if (pid && ctx.fsmSessions[pid]) {
+        ctx.fsmSessions[pid].failReason = recurrenceError;
+      }
+    } catch (_) {}
+    ctx.state = "exec_fail";
+    const core = await import("../fsm/core.js");
+    await core.executeAgentAction();
+    return;
+  }
 
   // If no calendar_id provided, try to use the default calendar
   if (!norm.calendar_id) {

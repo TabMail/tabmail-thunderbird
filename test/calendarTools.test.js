@@ -54,6 +54,7 @@ globalThis.browser = {
       calendars: [{ id: 'cal1', name: 'Personal', organizer_email: 'me@example.com' }],
     })),
     modifyCalendarEvent: vi.fn(async () => ({ ok: true })),
+    createCalendarEvent: vi.fn(async () => ({ ok: true })),
     deleteCalendarEvent: vi.fn(async () => ({ ok: true })),
   },
   storage: {
@@ -139,6 +140,8 @@ import { run as calendarEventDeleteRun, completeExecution as calendarEventDelete
 import { run as calendarEventEditRun, completeExecution as calendarEventEditComplete } from '../chat/tools/calendar_event_edit.js';
 import { run as calendarReadRun, resetPaginationSessions as calendarReadResetPagination } from '../chat/tools/calendar_read.js';
 import { run as calendarSearchRun, resetPaginationSessions as calendarSearchResetPagination } from '../chat/tools/calendar_search.js';
+import { ctx } from '../chat/modules/context.js';
+import { run as calendarEventCreateRun } from '../chat/tools/calendar_event_create.js';
 
 describe('calendar_event_read', () => {
   beforeEach(() => {
@@ -262,6 +265,79 @@ describe('calendar_event_edit', () => {
     });
   });
 
+  describe('a recurrence the tool cannot write is refused before the confirmation card', () => {
+    const settle = () => new Promise((r) => setTimeout(r, 5));
+    async function runEdit(args, pid) {
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventEditRun(args, { callId: pid });
+      await settle();
+      return ctx.fsmSessions[pid];
+    }
+
+    it('an invalid field fails the call with the field and value, and never reaches the card', async () => {
+      const sess = await runEdit({ event_id: 'found-event', recurrence: { freq: 'WEEKLY', byDay: ['MONDAY'] } }, 'pid-rec-1');
+      expect(sess.failReason).toBe('recurrence.byDay has an invalid value "MONDAY": day codes MO..SU, optionally with a position such as 2TU or -1FR');
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
+    });
+
+    it('restating a stored rule with parts the tool cannot express is refused; a title-only edit is not', async () => {
+      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: { freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' } });
+      try {
+        const sess = await runEdit({ event_id: 'found-event', recurrence: { freq: 'YEARLY', byDay: ['MO'] } }, 'pid-rec-2');
+        expect(sess.failReason).toMatch(/^this series repeats in a way the edit tool cannot express \(BYWEEKNO=20\)/);
+        expect(sess.editEventArgs).toBeUndefined();
+        const ok = await runEdit({ event_id: 'found-event', title: 'Renamed' }, 'pid-rec-3');
+        expect(ok.failReason).toBeUndefined();
+        expect(ok.editEventArgs).toMatchObject({ title: 'Renamed' });
+      } finally {
+        browser.tmCalendar.getCalendarEventDetails.mockReset();
+      }
+    });
+
+    it('a rule reaches the card for the series, on a recurring and on a one-off event, and from an occurrence on', async () => {
+      const rule = { freq: 'WEEKLY', byDay: ['TH'] };
+      const cases = [
+        [{ freq: 'DAILY' }, {}, 'pid-rec-11'],
+        [null, {}, 'pid-rec-12'],
+        [{ freq: 'DAILY' }, { edit_scope: 'this_and_following', recurrence_id: '2099-10-05T09:00:00' }, 'pid-rec-13'],
+      ];
+      for (const [stored, scope, pid] of cases) {
+        browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: stored });
+        try {
+          const sess = await runEdit({ event_id: 'found-event', ...scope, recurrence: rule }, pid);
+          expect(sess.failReason, pid).toBeUndefined();
+          expect(sess.editEventArgs, pid).toMatchObject({ recurrence: rule });
+        } finally {
+          browser.tmCalendar.getCalendarEventDetails.mockReset();
+        }
+      }
+    });
+
+    it('restating a rule is refused when the stored rule cannot be read; the lookup names the calendar', async () => {
+      const sess = await runEdit({ event_id: 'missing-event', calendar_id: 'cal1', recurrence: { freq: 'WEEKLY', byDay: ['MO'] } }, 'pid-rec-7');
+      expect(sess.failReason).toBe("could not read this event's current repeat rule (event not found); try again");
+      expect(sess.editEventArgs).toBeUndefined();
+      expect(browser.tmCalendar.getCalendarEventDetails).toHaveBeenCalledWith('missing-event', 'cal1');
+      const cleared = await runEdit({ event_id: 'missing-event', calendar_id: 'cal1', recurrence: {} }, 'pid-rec-8');
+      expect(cleared.failReason).toBeUndefined();
+    });
+
+    it('a sign without a position is refused, as the format allows a sign only before one', async () => {
+      const sess = await runEdit({ event_id: 'found-event', recurrence: { freq: 'MONTHLY', byDay: ['-TU'] } }, 'pid-rec-9');
+      expect(sess.failReason).toBe('recurrence.byDay has an invalid value "-TU": day codes MO..SU, optionally with a position such as 2TU or -1FR');
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
+    });
+
+    it('`null` recurrence is the same as omitting it', async () => {
+      const sess = await runEdit({ event_id: 'found-event', title: 'Renamed', recurrence: null }, 'pid-rec-4');
+      expect(sess.failReason).toBeUndefined();
+      expect(sess.editEventArgs).not.toHaveProperty('recurrence');
+    });
+  });
+
   describe('completeExecution', () => {
     it('should return error when failReason set', async () => {
       const { ctx } = await import('../chat/modules/context.js');
@@ -296,6 +372,87 @@ describe('calendar_event_edit', () => {
 // ---------------------------------------------------------------------------
 // calendar_read tests
 // ---------------------------------------------------------------------------
+describe('calendar_event_create refuses a recurrence it cannot write before the confirmation card', () => {
+  it('names the field and value, and never stores the create arguments', async () => {
+    const pid = 'pid-create-rec';
+    ctx.fsmSessions[pid] = {};
+    await calendarEventCreateRun(
+      { calendar_id: 'cal1', title: 'Standup', start_iso: '2099-10-01T09:00:00', end_iso: '2099-10-01T09:15:00', recurrence: { freq: 'WEEKLY', byMonth: [13] } },
+      { callId: pid },
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ctx.fsmSessions[pid].failReason).toBe('recurrence.byMonth has an invalid value "13": integers from 1 to 12');
+    expect(ctx.state).toBe('exec_fail');
+    expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
+  });
+
+  it('refuses a recurrence that is not an object, as edit does, rather than creating a single event', async () => {
+    const pid = 'pid-create-rec-string';
+    ctx.fsmSessions[pid] = {};
+    ctx.state = null;
+    await calendarEventCreateRun(
+      { calendar_id: 'cal1', title: 'Standup', start_iso: '2099-10-01T09:00:00', end_iso: '2099-10-01T09:15:00', recurrence: 'FREQ=WEEKLY;BYDAY=MO' },
+      { callId: pid },
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ctx.fsmSessions[pid].failReason).toBe('recurrence has an invalid value "FREQ=WEEKLY;BYDAY=MO": an object of recurrence fields');
+    expect(ctx.state).toBe('exec_fail');
+    expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
+  });
+
+  // A new event has no rule to clear, so `{}` (and a rule without freq) on
+  // create is a request to repeat that names no repeat. Accepting it would
+  // create a one-off event the user believes repeats.
+  // A rule read from a series with parts the tools cannot write (`other`) is
+  // refused too, and the refusal does not tell the model to leave recurrence
+  // out, which would make an event that does not repeat. A value that is not
+  // an object is refused before the card as well.
+  const noRule = [
+    [{}, 'recurrence {} sets no rule: give freq, such as {"freq":"WEEKLY"}, or omit recurrence for an event that does not repeat'],
+    [{ byDay: ['TU'] }, 'recurrence.freq has an invalid value "": one of DAILY, WEEKLY, MONTHLY, YEARLY'],
+    [false, 'recurrence has an invalid value "false": an object of recurrence fields'],
+    [0, 'recurrence has an invalid value "0": an object of recurrence fields'],
+    ['', 'recurrence has an invalid value "": an object of recurrence fields'],
+    [{ freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' }, 'recurrence.other has an invalid value "BYWEEKNO=20": the create tool cannot write these; tell the user to create this series in the calendar app'],
+    [{ freq: 'MONTHLY', byDay: ['+MO'] }, 'recurrence.byDay has an invalid value "+MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
+  ];
+  noRule.forEach(([recurrence, message], i) => {
+    it(`refuses ${JSON.stringify(recurrence)} before the confirmation card`, async () => {
+      const pid = `pid-create-no-rule-${i}`;
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventCreateRun(
+        { calendar_id: 'cal1', title: 'Team sync', start_iso: '2099-10-06T10:00:00', end_iso: '2099-10-06T10:30:00', recurrence },
+        { callId: pid },
+      );
+      await new Promise((r) => setTimeout(r, 5));
+      expect(ctx.fsmSessions[pid].failReason).toBe(message);
+      expect(ctx.state).toBe('exec_fail');
+      expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
+    });
+  });
+
+  it('a rule it can write reaches the confirmation card with every field', async () => {
+    const rules = [
+      { freq: 'MONTHLY', interval: 2, count: 6, byDay: ['2TU', '-1FR'], byMonth: [3, 9], wkst: 'SU' },
+      { freq: 'YEARLY', until: '2099-12-31', byMonthDay: [1, -1], byMonth: [1] },
+    ];
+    for (const [i, recurrence] of rules.entries()) {
+      const pid = `pid-create-rule-${i}`;
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventCreateRun(
+        { calendar_id: 'cal1', title: 'Team sync', start_iso: '2099-10-06T10:00:00', end_iso: '2099-10-06T10:30:00', recurrence },
+        { callId: pid },
+      );
+      await new Promise((r) => setTimeout(r, 5));
+      expect(ctx.fsmSessions[pid].failReason, pid).toBeUndefined();
+      expect(ctx.state, pid).toBe('calendar_event_create_list');
+      expect(ctx.fsmSessions[pid].createEventArgs.recurrence, pid).toEqual(recurrence);
+    }
+  });
+});
+
 describe('calendar_read', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -366,20 +523,23 @@ describe('calendar_search query path keeps cues, timezone and recurrence text', 
     calendarSearchResetPagination();
   });
 
-  it('renders matching rows with AM/PM cues, the timezone header and the RRULE, and excludes non-matching rows', async () => {
+  it('renders matching rows with AM/PM cues, the timezone header and the recurrence fields, and excludes non-matching rows', async () => {
     const day = new Date();
     day.setDate(day.getDate() + 7);
     day.setHours(0, 0, 0, 0);
     const at = (h, m = 0) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0).getTime();
     const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
     browser.tmCalendar.queryCalendarItems.mockResolvedValueOnce([
-      { id: 'w', calendarId: 'cal1', title: 'Weekly sync', startMs: at(9), endMs: at(9, 30), isAllDay: false, isRecurring: true, recurrenceRRule: 'FREQ=WEEKLY;COUNT=4', attendeeList: [] },
+      { id: 'w', calendarId: 'cal1', title: 'Weekly sync', startMs: at(9), endMs: at(9, 30), isAllDay: false, isRecurring: true, recurrence: { freq: 'WEEKLY', count: 4 }, attendeeList: [] },
       { id: 'e', calendarId: 'cal1', title: 'Evening sync', startMs: at(18, 5), endMs: at(19), isAllDay: false, attendeeList: [] },
       { id: 'x', calendarId: 'cal1', title: 'Dentist', startMs: at(14), endMs: at(15), isAllDay: false, attendeeList: [] },
+      // Repeats by dates alone (RDATE), so it has no rule fields to show.
+      { id: 'r', calendarId: 'cal1', title: 'Dated sync', startMs: at(11), endMs: at(11, 30), isAllDay: false, isRecurring: true, attendeeList: [] },
     ]);
     const result = await calendarSearchRun({ query: 'sync', calendar_ids: ['cal1'], from_date: dayKey, to_date: dayKey });
+    expect(result.results).toContain('11:00 (11 a.m.) - 11:30 (11:30 a.m.): Dated sync (↻)\tevent_id: r');
     expect(result.results).toContain(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
-    expect(result.results).toContain('09:00 (9 a.m.) - 09:30 (9:30 a.m.): Weekly sync (↻ FREQ=WEEKLY;COUNT=4)\tevent_id: w');
+    expect(result.results).toContain('09:00 (9 a.m.) - 09:30 (9:30 a.m.): Weekly sync (↻ {"freq":"WEEKLY","count":4})\tevent_id: w');
     expect(result.results).toContain('18:05 (6:05 p.m.) - 19:00 (7 p.m.): Evening sync\tevent_id: e');
     expect(result.results).not.toContain('Dentist');
   });

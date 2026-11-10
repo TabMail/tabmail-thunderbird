@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso } from "../modules/helpers.js";
+import { isClearRecurrence, otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -87,8 +88,9 @@ function normalizeArgs(args = {}) {
     out.organizer_email = a.organizer_email;
   }
   
-  // Recurrence (pass-through object if provided)
-  if (a && typeof a.recurrence === "object") {
+  // Recurrence (pass-through; checked by recurrenceArgError before the card).
+  // `null` is the same as omitting it: keep the rule.
+  if (a && a.recurrence !== undefined && a.recurrence !== null) {
     out.recurrence = a.recurrence;
   }
   
@@ -176,6 +178,30 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
+  // A rule the tool cannot write is refused before the confirmation card, so
+  // the model can correct it instead of a part being silently dropped.
+  if ("recurrence" in norm) {
+    const recurrenceError = recurrenceArgError(norm.recurrence, { canClear: true });
+    if (recurrenceError) {
+      await failOut(recurrenceError);
+      return;
+    }
+  }
+
+  // Restating the rule of a series whose stored rule has parts the tool cannot
+  // express would drop those parts, so that edit is refused too, as is a
+  // restatement when the stored rule cannot be read.
+  if ("recurrence" in norm && !isClearRecurrence(norm.recurrence)) {
+    const stored = await safeFetchEventDetails(norm.event_id, norm.calendar_id);
+    const refusal = stored?.ok
+      ? otherPartsRefusal(norm.recurrence, stored.recurrence)
+      : `could not read this event's current repeat rule (${stored?.error || "unknown error"}); try again`;
+    if (refusal) {
+      await failOut(refusal);
+      return;
+    }
+  }
+
   // calendar_id is OPTIONAL — the bridge (tmCalendar.modifyCalendarEvent) auto-scans
   // every calendar when none is supplied (see tmCalendar.sys.mjs lines 1340-1369).
   // Don't reject here; the schema description tells the LLM the system will resolve
@@ -246,14 +272,16 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   await core.executeAgentAction();
 }
 
-async function safeFetchEventDetails(eventId) {
+async function safeFetchEventDetails(eventId, calendarId = null) {
   try {
     if (browser?.tmCalendar?.getCalendars && browser?.tmCalendar?.queryCalendarItems) {
       // Use experimental helper if exposed (later we can add a dedicated getEventDetails)
       // For now, try a broad query of today and match id client-side if available in cache
       // but primary path: use a dedicated bridge call if present
       if (typeof browser.tmCalendar.getCalendarEventDetails === "function") {
-        return await browser.tmCalendar.getCalendarEventDetails(String(eventId));
+        return calendarId
+          ? await browser.tmCalendar.getCalendarEventDetails(String(eventId), String(calendarId))
+          : await browser.tmCalendar.getCalendarEventDetails(String(eventId));
       }
     }
   } catch (e) {

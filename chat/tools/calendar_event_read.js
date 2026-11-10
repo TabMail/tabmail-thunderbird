@@ -7,6 +7,7 @@
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { toNaiveIso } from "../modules/helpers.js";
+import { formatRecurrenceLine } from "../modules/recurrence.js";
 
 export function resetPaginationSessions() {}
 
@@ -177,9 +178,8 @@ function formatDetailed(it, cal) {
     `end_iso: ${allDayFrame ? `${it.endDay || it.startDay}T00:00:00` : toNaiveIso(it.endMs)}`,
     `all_day: ${it.isAllDay ? "yes" : "no"}`);
   if (it.isRecurring) lines.push(`recurring: yes`);
-  if (typeof it.recurrenceRRule === "string" && it.recurrenceRRule) {
-    lines.push(`RRULE: ${it.recurrenceRRule}`);
-  }
+  const recurrenceLine = formatRecurrenceLine(it.recurrence);
+  if (recurrenceLine) lines.push(recurrenceLine);
   if (it.location) lines.push(`Location: ${it.location}`);
   if (it.organizer) lines.push(`Organizer: ${it.organizer}`);
   if (typeof it.transparency === "string") {
@@ -297,7 +297,8 @@ function formatFromDetails(details) {
   lines.push(`all_day: ${details.isAllDay ? "yes" : "no"}`);
   
   if (details.isRecurring) lines.push(`recurring: yes`);
-  if (details.recurrenceRRule) lines.push(`RRULE: ${details.recurrenceRRule}`);
+  const recurrenceLine = formatRecurrenceLine(details.recurrence);
+  if (recurrenceLine) lines.push(recurrenceLine);
   if (details.location) lines.push(`Location: ${details.location}`);
   if (details.organizer) {
     // Clean up organizer - remove mailto: prefix if present
