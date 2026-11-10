@@ -59,7 +59,7 @@ async function openSettingsPage(helper) {
     },
   };
   const realm = createRealm({
-    files: ['prompts/prompts.js', 'prompts/modules/history.js', 'prompts/modules/utils.js', 'fts/memorySizeLimit.js'],
+    files: ['prompts/prompts.js', 'prompts/modules/history.js', 'prompts/modules/utils.js', 'agent/modules/statusLine.js', 'fts/memorySizeLimit.js'],
     stubs: {
       'agent/modules/utils.js': { log: noop },
       'agent/modules/config.js': { SETTINGS },

@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { getBackendUrl, SETTINGS } from "../agent/modules/config.js";
+import { cancelStatusHide, scheduleStatusHide, STATUS_LINE_CONFIG } from "../agent/modules/statusLine.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { bannerFromWhoami, isZeroQuotaPlan } from "../agent/modules/billingBanner.js";
@@ -1043,6 +1044,10 @@ async function updateVersionStatus() {
 /**
  * Handle manual check for updates
  */
+// The link's own label, read before its first check. A check's result goes back to this label,
+// never to whatever the link showed when it was clicked (an earlier check's result).
+let checkUpdatesIdleLabel = null;
+
 async function handleCheckForUpdates() {
   const checkUpdatesLink = document.getElementById("check-updates-link");
   const versionText = document.getElementById("version-text");
@@ -1054,7 +1059,8 @@ async function handleCheckForUpdates() {
     return;
   }
   
-  const originalText = checkUpdatesLink.textContent;
+  checkUpdatesIdleLabel ??= checkUpdatesLink.textContent;
+  cancelStatusHide(checkUpdatesLink);
   checkUpdatesLink.textContent = "Checking...";
   checkUpdatesLink.classList.add("checking");
   
@@ -1066,11 +1072,9 @@ async function handleCheckForUpdates() {
       console.error("[Popup] tmUpdates.checkForUpdates not available");
       checkUpdatesLink.textContent = "Not available";
       checkUpdatesLink.classList.remove("checking");
-      setTimeout(() => {
-        if (checkUpdatesLink) {
-          checkUpdatesLink.textContent = originalText;
-        }
-      }, 2000);
+      scheduleStatusHide(checkUpdatesLink, () => {
+        checkUpdatesLink.textContent = checkUpdatesIdleLabel;
+      }, STATUS_LINE_CONFIG.updateCheckResultMs);
       return;
     }
     
@@ -1117,23 +1121,19 @@ async function handleCheckForUpdates() {
       checkUpdatesLink.classList.remove("checking");
       console.log("[Popup] No update available, current version:", result.currentVersion);
       // Reset text after a delay
-      setTimeout(() => {
-        if (checkUpdatesLink) {
-          checkUpdatesLink.textContent = originalText;
-        }
-      }, 2000);
+      scheduleStatusHide(checkUpdatesLink, () => {
+        checkUpdatesLink.textContent = checkUpdatesIdleLabel;
+      }, STATUS_LINE_CONFIG.updateCheckResultMs);
     } else if (result.status === "error") {
       console.error("[Popup] Update check error:", result.error);
       checkUpdatesLink.textContent = "Check failed";
       checkUpdatesLink.classList.remove("checking");
-      setTimeout(() => {
-        if (checkUpdatesLink) {
-          checkUpdatesLink.textContent = originalText;
-        }
-      }, 2000);
+      scheduleStatusHide(checkUpdatesLink, () => {
+        checkUpdatesLink.textContent = checkUpdatesIdleLabel;
+      }, STATUS_LINE_CONFIG.updateCheckResultMs);
     } else {
       // Unknown status
-      checkUpdatesLink.textContent = originalText;
+      checkUpdatesLink.textContent = checkUpdatesIdleLabel;
       checkUpdatesLink.classList.remove("checking");
       console.log("[Popup] Unknown update check status:", result.status);
     }
@@ -1141,11 +1141,9 @@ async function handleCheckForUpdates() {
     console.error("[Popup] Failed to check for updates:", e);
     checkUpdatesLink.textContent = "Check failed";
     checkUpdatesLink.classList.remove("checking");
-    setTimeout(() => {
-      if (checkUpdatesLink) {
-        checkUpdatesLink.textContent = originalText;
-      }
-    }, 2000);
+    scheduleStatusHide(checkUpdatesLink, () => {
+      checkUpdatesLink.textContent = checkUpdatesIdleLabel;
+    }, STATUS_LINE_CONFIG.updateCheckResultMs);
   }
 }
 

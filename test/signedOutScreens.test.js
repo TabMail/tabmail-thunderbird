@@ -139,7 +139,7 @@ describe('the templates page while nobody is signed in', () => {
     delete a.store.values.supabaseSession;
     const page = await loadPage(a, {
       html: 'templates/templates.html',
-      files: ['templates/templates.js', 'agent/modules/templateManager.js'],
+      files: ['templates/templates.js', 'agent/modules/templateManager.js', 'agent/modules/statusLine.js'],
       stubs: { 'agent/modules/config.js': { getTemplateWorkerUrl: async () => 'https://templates.example.com' } },
       runtime: {
         sendMessage: async (message) => (message.command === 'templates-load'
@@ -154,7 +154,7 @@ describe('the templates page while nobody is signed in', () => {
 describe("the popup's Prompts and Templates entries", () => {
   const POPUP = {
     html: 'popup/popup.html',
-    files: ['popup/popup.js'],
+    files: ['popup/popup.js', 'agent/modules/statusLine.js'],
     stubs: {
       'agent/modules/config.js': { getBackendUrl: async () => 'https://backend.example.com', SETTINGS: {} },
       'agent/modules/setupChecks.js': { checkSetupConfiguration: async () => ({ ok: true, issues: [] }) },

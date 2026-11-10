@@ -51,11 +51,6 @@ export async function saveReminderSettings(log) {
     $("status").textContent = `Saved: Reminders to show = ${clampedValue}`;
 
     log(`[TMDBG Config] Saved reminder settings: maxRemindersToShow=${clampedValue}`);
-
-    // Clear status after 3 seconds
-    setTimeout(() => {
-      $("status").textContent = "";
-    }, 3000);
   } catch (e) {
     console.warn("[TMDBG Config] saveReminderSettings failed", e);
     $("status").textContent = "Error saving reminder settings";

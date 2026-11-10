@@ -7,6 +7,7 @@
 // delay (`AUTOCOMPLETE_IDLE_MS`). Both live in browser.storage.local; the
 // compose content script reads them and live-updates via storage.onChanged.
 
+import { scheduleStatusHide } from "../../agent/modules/statusLine.js";
 import { $ } from "./dom.js";
 
 // Mirrors compose/modules/config.js → autocompleteDelay.INITIAL_IDLE_MS. Kept
@@ -21,9 +22,9 @@ function flashStatus(msg) {
   const statusEl = $("autocomplete-status-text");
   if (!statusEl) return;
   statusEl.textContent = msg;
-  setTimeout(() => {
+  scheduleStatusHide(statusEl, () => {
     statusEl.textContent = "";
-  }, 3000);
+  });
 }
 
 export async function loadAutocompleteSettings() {

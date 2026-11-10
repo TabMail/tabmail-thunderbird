@@ -11,6 +11,7 @@
  */
 
 import { getTemplateWorkerUrl } from "../agent/modules/config.js";
+import { scheduleStatusHide } from "../agent/modules/statusLine.js";
 import { TEMPLATES_BUSY_ERROR } from "../agent/modules/templateManager.js";
 import { log } from "../agent/modules/utils.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
@@ -1451,10 +1452,10 @@ function showStatus(message, isError = false) {
 
     log(`${PFX}Status: ${message}`);
 
-    setTimeout(() => {
+    scheduleStatusHide(statusEl, () => {
         statusEl.textContent = "";
         statusEl.className = "";
-    }, 3000);
+    });
 }
 
 // --- Auto-Sync Toggle (header button) ---

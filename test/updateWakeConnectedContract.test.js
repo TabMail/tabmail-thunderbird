@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { parse } from 'acorn';
 import { JSDOM } from 'jsdom';
 import { experiment } from './helpers/nativeLifecycleHarness.js';
+import * as statusLine from '../agent/modules/statusLine.js';
 
 const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 const updatesDeclaration = manifest.experiment_apis.tmUpdates;
@@ -206,7 +207,8 @@ describe('manifest-selected update wake contract', () => {
       const x = experiment(updatesDeclaration.parent.script, 'tmUpdates', { windows: [p.win] });
       const { browser, listeners } = startFromManifest(x.api);
       browser.tmUpdates.checkForUpdates = async () => ({ status: 'update_available', version: '1.8.4' });
-      const scope = { browser, document: popup.window.document, console: quietConsole };
+      // The popup module's own state and imports that handleCheckForUpdates reads.
+      const scope = { browser, document: popup.window.document, console: quietConsole, checkUpdatesIdleLabel: null, ...statusLine };
       vm.runInNewContext(`${selectedFunction('popup/popup.js', 'handleCheckForUpdates')}\nglobalThis.check = handleCheckForUpdates;`, scope);
       await scope.check();
       expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({

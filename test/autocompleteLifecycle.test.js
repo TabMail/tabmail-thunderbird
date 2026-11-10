@@ -1612,6 +1612,8 @@ function appearanceWindow(saved) {
  const d=new JSDOM(readFileSync(resolve('config/config.html'),'utf8'),{runScripts:'outside-only'}),w=d.window;windows.push(w);
  w.browser={storage:storageFor(saved),tmPrefs:{hasUserValue:async()=>false,getInt:async()=>0}};
  w.$=id=>w.document.getElementById(id);w.getShowAiSummariesEnabled=async()=>true;
+ // The status-line module the Appearance and Autocomplete writers import, in the same window.
+ runInContext(readFileSync(resolve('agent/modules/statusLine.js'),'utf8').replace(/^export /gm,''),d.getInternalVMContext(),{filename:resolve('agent/modules/statusLine.js')});
  const source=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
  runInContext(source,d.getInternalVMContext(),{filename:resolve('config/modules/appearance.js')});
  return w;
