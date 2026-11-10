@@ -492,7 +492,9 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       if (filter & ITEM_FILTER_TYPE_EVENT) {
         for (const master of items) {
           if ((filter & ITEM_FILTER_INCLUDE_OCCURRENCES) && master.recurrenceInfo) {
-            for (const occ of master.recurrenceInfo.occurrences) if (inRange(occ, start, end)) found.push(occ);
+            // CalMemoryCalendar.getItems: a series' occurrences in the range, as
+            // its recurrence info expands them.
+            found.push(...master.recurrenceInfo.getOccurrences(start, end, 0));
           } else if (inRange(master, start, end)) {
             found.push(master);
           }

@@ -570,15 +570,16 @@ function setRuleOnItem(item, value) {
 // The occurrence of `item`'s series that a recurrence_id names, for every edit
 // that targets occurrences (one occurrence, or this and the following ones).
 // The tools document recurrence_id as the occurrence's start_iso, which the read
-// tools print in the user's zone (or the call's `timezone`, `tzId`), and for an
-// all-day series as its date. Thunderbird's own expansion of the series (every
+// tools print in the user's zone (a floating time at its own digits, asShown),
+// and for an all-day series as its date. It is read in the user's zone whatever
+// `timezone` the edit names: that zone is for the edit's new times. Thunderbird's own expansion of the series (every
 // rule, added and excluded date, and a changed occurrence at its own time)
 // decides which occurrence starts there. `{ occurrence }`, whose recurrenceId is
 // the series' own RECURRENCE-ID for it, or `{ error }` when no occurrence, or
 // more than one, starts there: nothing is ever written for a time that is not
 // an occurrence (getOccurrenceFor would make one up for any time).
-function occurrenceNamedBy(item, iso, tzId) {
-  const at = toCalIDateTime(String(iso || ""), tzId);
+function occurrenceNamedBy(item, iso) {
+  const at = toCalIDateTime(String(iso || ""));
   if (!at) return { error: "invalid recurrence_id format (expected ISO8601)" };
   if (item?.startDate?.isDate) at.isDate = true;
   // A range wide enough for any zone's offset from the user's; only an
@@ -746,8 +747,8 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
             title: String(occurrence.title || ""),
             startDate: String(occurrence.startDate?.toString() || ""),
             endDate: String(occurrence.endDate?.toString() || ""),
-            startMs: toEpochMsUTC(occurrence.startDate),
-            endMs: toEpochMsUTC(occurrence.endDate),
+            startMs: toEpochMsUTC(asShown(occurrence.startDate)),
+            endMs: toEpochMsUTC(asShown(occurrence.endDate)),
             isAllDay,
             startDay: isAllDay ? toDayString(occurrence.startDate) : "",
             endDay: isAllDay ? toDayString(occurrence.endDate) : "",
@@ -1109,6 +1110,21 @@ function allDayNaiveIso(dayStr) {
   return dayStr ? `${dayStr}T00:00:00` : "";
 }
 
+// A value as Thunderbird shows it. A floating time (RFC 5545 local time, no
+// zone) is shown at its own digits on the user's clock, but ical.js gives it
+// offset 0, so its epoch is its digits read as UTC and the read tools would
+// print it shifted by the user's offset; it is relabelled into the user's zone.
+// The edit tools name an occurrence by the start the read tools print, and
+// CalDateTime.compare reads a zoned value against a floating one by its digits,
+// so the start printed for a floating occurrence names it. A DATE and a zoned
+// time are returned as they are.
+function asShown(calDt) {
+  if (!calDt || calDt.isDate || calDt.timezone?.tzid !== "floating") return calDt;
+  const shown = calDt.clone();
+  shown.resetTo(calDt.year, calDt.month, calDt.day, calDt.hour, calDt.minute, calDt.second, getTimezoneService().defaultTimezone);
+  return shown;
+}
+
 function toEpochMsUTC(calDt) {
   try {
     if (!calDt) return null;
@@ -1441,8 +1457,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const details = {
               id: eid,
               title: targetEvent.title || "",
-              start: (() => { try { return targetEvent.startDate ? targetEvent.startDate.nativeTime / 1000 : null; } catch { return null; } })(),
-              end: (() => { try { return targetEvent.endDate ? targetEvent.endDate.nativeTime / 1000 : null; } catch { return null; } })(),
+              start: (() => { try { return targetEvent.startDate ? asShown(targetEvent.startDate).nativeTime / 1000 : null; } catch { return null; } })(),
+              end: (() => { try { return targetEvent.endDate ? asShown(targetEvent.endDate).nativeTime / 1000 : null; } catch { return null; } })(),
               isAllDay: !!(targetEvent.startDate && targetEvent.startDate.isDate),
               startDay: targetEvent.startDate?.isDate ? toDayString(targetEvent.startDate) : "",
               endDay: targetEvent.endDate?.isDate ? toDayString(targetEvent.endDate) : "",
@@ -1788,19 +1804,23 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // Honor an explicit timezone on the modify call so naive ISO
             // patches land in the requested zone, mirroring createCalendarEvent.
-            // recurrence_id is read in it too: it is the occurrence's start_iso.
+            // recurrence_id is not: it is the occurrence's start_iso as the read
+            // tools print it, in the user's zone (occurrenceNamedBy).
             const editTzOverride = typeof patch.timezone === "string" && patch.timezone
               ? patch.timezone
               : (typeof details.timezone === "string" && details.timezone ? details.timezone : null);
 
             // Resolve the exact item: the event, or with a recurrence_id the
             // occurrence of its series that starts there (occurrenceNamedBy),
-            // which refuses a time that is not an occurrence.
+            // which refuses a time that is not an occurrence. The first calendar
+            // that holds the event decides: a refusal there is the answer, and
+            // no other calendar's copy of the id is edited instead.
             const all = Array.from(mgr.getCalendars({}));
-            let item = null, cal = null, lookupError = null;
+            let item = null, cal = null, lookupError = null, parentFound = false;
             const targetIn = (parent) => {
+              parentFound = true;
               if (!recurIdStr) return parent;
-              const named = occurrenceNamedBy(parent, recurIdStr, editTzOverride);
+              const named = occurrenceNamedBy(parent, recurIdStr);
               if (named.error) { lookupError = named.error; return null; }
               return named.occurrence;
             };
@@ -1825,7 +1845,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
 
             // If not found in specific calendar (or no calendar_id provided), search all calendars
-            if (!item) {
+            if (!parentFound) {
               for (const c of all) {
                 try {
                   const parent = await c.getItem(eventId);
@@ -1834,8 +1854,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                   if (item) {
                     cal = c;
                     tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${recurIdStr ? `occurrence for recurrenceId: ${recurIdStr}` : `item: ${eventId}`} in calendar: ${c.id}`);
-                    break;
                   }
+                  break;
                 } catch (e) {
                   console.warn(`[tmCalendar] modifyCalendarEvent: error finding item in calendar ${c.id}:`, e);
                 }
@@ -2165,12 +2185,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // 3. The split point: the occurrence recurrence_id names
             // (occurrenceNamedBy, which refuses a time that is not one). The
-            // series divides at that occurrence's RECURRENCE-ID, in the series'
-            // own frame, so a changed occurrence splits where it belongs and the
-            // following part keeps the series' zone.
-            const named = occurrenceNamedBy(master, splitIso, tzOverride);
+            // series divides at that occurrence's RECURRENCE-ID, read in the
+            // series' own zone (a RECURRENCE-ID can be stored in another, e.g.
+            // UTC), so a changed occurrence splits where it belongs and the
+            // following part keeps the series' zone, in which its rule expands.
+            const named = occurrenceNamedBy(master, splitIso);
             if (named.error) return { ok: false, error: named.error };
-            const splitDt = named.occurrence.recurrenceId.clone();
+            const splitRid = named.occurrence.recurrenceId;
+            const splitDt = splitRid.isDate ? splitRid.clone() : splitRid.getInTimezone(master.startDate.timezone);
             if (splitDt.compare(master.startDate) <= 0) {
               return { ok: false, error: "recurrence_id is the series' first occurrence: to change every occurrence, edit the whole series (edit_scope 'all')" };
             }
@@ -2384,6 +2406,26 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (newRule) {
               const recRes = applyRecurrenceToItem(newEv, patch.recurrence);
               if (recRes.error) return { ok: false, error: `failed to apply the new series' recurrence: ${recRes.error}` };
+              // `{}` makes the following part one event built from the series.
+              // A changed occurrence at the split would lose its changes.
+              if (recRes.cleared && master.recurrenceInfo.getExceptionFor(splitRid)) {
+                return { ok: false, error: `the occurrence at ${splitIso} was changed on its own, and ending the series there would lose its changes; change it in the calendar app` };
+              }
+            }
+
+            // A start that changes between all-day and timed: RFC 5545 needs the
+            // excluded and added dates, each UNTIL and the changed occurrences'
+            // RECURRENCE-IDs in the start's value type, and moving the start
+            // keeps theirs. A following part that carries any of them is refused.
+            if (!!newEv.startDate?.isDate !== isAllDayMaster && newEv.recurrenceInfo) {
+              const info = newEv.recurrenceInfo;
+              const items = [...(info.getRecurrenceItems({}) || [])];
+              const carriesDates = items.some((r) => !isRuleItem(r))
+                || (info.getExceptionIds({}) || []).length > 0
+                || (!newRule && items.some((r) => isRuleItem(r) && /\bUNTIL=/i.test(String(r.icalProperty?.value || ""))));
+              if (carriesDates) {
+                return { ok: false, error: "changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app" };
+              }
             }
 
             // Excluded dates: each goes to the part it falls in, so none is lost.
