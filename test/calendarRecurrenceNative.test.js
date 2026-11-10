@@ -157,12 +157,12 @@ describe('recurrence read and restate against Thunderbird\'s own date and recurr
     });
   }
 
-  // A last day written by the tools. A start in the first hour of a day that
-  // begins at the midnight spring change is left out: the written bound keeps
-  // that day's occurrence too (#280).
+  // A last day written by the tools. At the midnight spring change, a start in
+  // the first hour is left out: the bound written for the day before keeps the
+  // change day's occurrence too (#280).
   for (const { zone, name, month, days, starts } of changes) {
     it(`a last day written around the ${name} change is the last occurrence, and reads back as that day or as \`other\``, async () => {
-      for (const start of starts.filter(([hour]) => zone !== midnight || hour !== 0)) {
+      for (const start of starts.filter(([hour]) => name !== 'spring, at midnight' || hour !== 0)) {
         for (const day of days) {
           const until = dayString(month, day);
           const loaded = nativeBridge('FREQ=DAILY', at(zone, month - 1, 20, ...start), zone);

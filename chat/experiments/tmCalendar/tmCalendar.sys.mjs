@@ -409,9 +409,9 @@ function untilDayFromIcs(value, item) {
   const last = new Date(day);
   const shown = `${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`;
   if (!start || start.isDate) return shown;
-  // Near a daylight saving change the wall clock read above can be an hour
-  // off (Thunderbird's zone conversion can move the instant, and a time in the
-  // skipped hour reads an hour late). The day is shown only when Thunderbird's
+  // Near a daylight saving change the wall clock read above can be off by the
+  // zone's shift (Thunderbird's zone conversion can move the instant, and a
+  // time in the skipped interval reads that much late). The day is shown only when Thunderbird's
   // own comparison, by instant, agrees: the stored bound and the bound the edit
   // tool writes for that day each keep that day's occurrence and not the next
   // day's. Otherwise the bound stays in `other`, and restating it is refused.
