@@ -72,6 +72,14 @@ describe('calendar_event_edit against the real bridge, before the confirmation c
     expect(loaded.modifications).toHaveLength(0);
   });
 
+  it('an all-day event given only an end with a time of day fails the same way, and nothing is written', async () => {
+    const { sess, loaded } = await runEdit(allDayEvent(), { end_iso: '2099-10-06T17:00:00' });
+    expect(sess.failReason).toMatch(/^this is an all-day event, and the edit gives a time of day without all_day\. Ask the user/);
+    expect(ctx.state).toBe('exec_fail');
+    expect(sess.editEventArgs).toBeUndefined();
+    expect(loaded.modifications).toHaveLength(0);
+  });
+
   it('an all-day event given dates at midnight reaches the card', async () => {
     expectCard(await runEdit(allDayEvent(), { start_iso: '2099-10-20T00:00:00', end_iso: '2099-10-22T00:00:00' }),
       { start_iso: '2099-10-20T00:00:00', end_iso: '2099-10-22T00:00:00' });
