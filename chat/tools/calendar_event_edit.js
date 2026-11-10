@@ -178,6 +178,15 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
+  // A rule written onto one occurrence is never expanded by Thunderbird, so the
+  // edit would report success while the series keeps its rule. Refused before
+  // the confirmation card, with the scope resolved as the bridge resolves it.
+  const editsOneOccurrence = (norm.edit_scope || (norm.recurrence_id ? "this_only" : "all")) === "this_only";
+  if (editsOneOccurrence && "recurrence" in norm) {
+    await failOut("recurrence cannot be set on one occurrence (edit_scope 'this_only', or a recurrence_id without edit_scope). To change the repeat rule, use edit_scope 'all' for the whole series, or 'this_and_following' with the recurrence_id to change it from that occurrence on.");
+    return;
+  }
+
   // A rule the tool cannot write is refused before the confirmation card, so
   // the model can correct it instead of a part being silently dropped.
   if ("recurrence" in norm) {

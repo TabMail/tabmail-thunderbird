@@ -302,6 +302,7 @@ describe('calendar_event_edit', () => {
         [{ freq: 'DAILY' }, {}, 'pid-rec-11'],
         [null, {}, 'pid-rec-12'],
         [{ freq: 'DAILY' }, { edit_scope: 'this_and_following', recurrence_id: '2099-10-05T09:00:00' }, 'pid-rec-13'],
+        [{ freq: 'DAILY' }, { edit_scope: 'all', recurrence_id: '2099-10-05T09:00:00' }, 'pid-rec-14'],
       ];
       for (const [stored, scope, pid] of cases) {
         browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: stored });
@@ -312,6 +313,31 @@ describe('calendar_event_edit', () => {
         } finally {
           browser.tmCalendar.getCalendarEventDetails.mockReset();
         }
+      }
+    });
+
+    it('a rule on one occurrence is refused before the card, set or cleared, with the scope explicit or inferred', async () => {
+      const oneOccurrence = [{ edit_scope: 'this_only', recurrence_id: '2099-10-05T09:00:00' }, { recurrence_id: '2099-10-05T09:00:00' }];
+      let n = 0;
+      for (const scope of oneOccurrence) {
+        for (const recurrence of [{ freq: 'WEEKLY', byDay: ['TH'] }, {}]) {
+          const pid = `pid-rec-occ-${n++}`;
+          const sess = await runEdit({ event_id: 'found-event', ...scope, recurrence }, pid);
+          expect(sess.failReason, pid).toBe("recurrence cannot be set on one occurrence (edit_scope 'this_only', or a recurrence_id without edit_scope). To change the repeat rule, use edit_scope 'all' for the whole series, or 'this_and_following' with the recurrence_id to change it from that occurrence on.");
+          expect(ctx.state, pid).toBe('exec_fail');
+          expect(sess.editEventArgs, pid).toBeUndefined();
+        }
+        // The same occurrence edit without a rule reaches the card.
+        const pid = `pid-rec-occ-${n++}`;
+        const ok = await runEdit({ event_id: 'found-event', ...scope, title: 'Renamed' }, pid);
+        expect(ok.failReason, pid).toBeUndefined();
+        expect(ok.editEventArgs, pid).toMatchObject({ title: 'Renamed', recurrence_id: '2099-10-05T09:00:00' });
+        // A `null` recurrence is the same as omitting it, so it puts no rule on the occurrence.
+        const pidNull = `pid-rec-occ-${n++}`;
+        const withNull = await runEdit({ event_id: 'found-event', ...scope, title: 'Renamed', recurrence: null }, pidNull);
+        expect(withNull.failReason, pidNull).toBeUndefined();
+        expect(withNull.editEventArgs, pidNull).toMatchObject({ title: 'Renamed', recurrence_id: '2099-10-05T09:00:00' });
+        expect(withNull.editEventArgs, pidNull).not.toHaveProperty('recurrence');
       }
     });
 
