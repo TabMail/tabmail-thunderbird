@@ -165,7 +165,7 @@ same design (tabmail-ios #421).
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
     time change so they move with the part.
   - **A split at an occurrence that was changed on its own** carries that occurrence into the following part with
-    its own times and fields, so an edit's title, location, description, busy/free, attendees, start or end
+    its own times and fields, so an edit's title, location, description, busy/free, start or end
     (`SPLIT_FIELDS_OF_AN_OCCURRENCE`, a start equal to its own included) would not reach it while the edit
     reported success. Such an edit is refused, naming the way that works: change the occurrence alone
     (`this_only`), then this and the following ones from the next occurrence. `exdates_add`, `recurrence` and
@@ -181,10 +181,11 @@ same design (tabmail-ios #421).
     the calendar's metadata, keyed by the id), so a new id is enough. The edit's fields change only what they name:
     `""` removes a location; a new description is written through `descriptionText` (Thunderbird's setter drops the
     HTML version, the `ALTREP` parameter) and removes `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC`, as an edit does.
-    A changed attendee list (`patch.attendees`, delta already applied) keeps the series' entry for each address still
-    on it (matched without regard to case, as `getAttendeeById`), in the list's order, and adds the rest at
-    `NEEDS-ACTION` with `RSVP=TRUE`, through `setAttendeeList`, the one helper every attendee-list edit uses (#297,
-    [051-calendar-attendee-list-edits-keep-entries.md](051-calendar-attendee-list-edits-keep-entries.md)). The organizer is the series' (copied with it, every parameter kept): the edit's
+    A guest change (`add_attendees`, `remove_attendees`) is applied to the new series and to each changed
+    occurrence carried into it, each on its own list, by the one merge every edit uses (`applyGuestChange`, #332, #333,
+    [051-calendar-attendee-list-edits-keep-entries.md](051-calendar-attendee-list-edits-keep-entries.md)); a guest-only
+    split at a changed occurrence is therefore made. Until then a flat list (`patch.attendees`) was written through
+    `setAttendeeList` (#297) and a changed attendee list at a changed occurrence was refused. The organizer is the series' (copied with it, every parameter kept): the edit's
     `organizer_email`, which the edit tool fills with the calendar's own address whenever it has a `calendar_id`, is
     not passed to the split, as an edit of a whole series never sets one. Superseded: the split used to write it as
     the organizer, which dropped the organizer's parameters (`SENT-BY`, `SCHEDULE-*`) and, on a meeting someone else

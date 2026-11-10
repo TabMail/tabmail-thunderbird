@@ -385,8 +385,9 @@ describe('calendar_event_edit', () => {
       const calls = browser.tmCalendar.modifyCalendarEvent.mock.calls.map(([d]) => d);
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ event_id: 'evt1', calendar_id: 'cal1', start_iso: '2099-10-20T15:00:00', check_only: true });
-      expect(calls[0]).not.toHaveProperty('add_attendees');
-      expect(calls[0]).not.toHaveProperty('send_invitations');
+      // The whole edit is checked, so a refusal that depends on the guests
+      // reads the guests the edit names.
+      expect(calls[0]).toMatchObject({ add_attendees: [{ email: 'a@example.com' }], send_invitations: true });
     });
 
     it('an edit the check passes reaches the card, and an edit giving no times is not checked', async () => {

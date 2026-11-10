@@ -6,7 +6,7 @@
 // attendees keeps everyone still on the list as they were stored (their answer,
 // role and other details), as Thunderbird's own event dialog does, and adds the
 // others unanswered with a request to respond. Pinned through the real bridge
-// for every kind of edit that writes an attendee list: the whole series, one
+// for every kind of edit that changes an attendee list: the whole series, one
 // occurrence, and "this and following" (whose following part, not moved here,
 // keeps the answers).
 
@@ -79,10 +79,10 @@ const entry = (a) => ({
 const SERIES_ENTRIES = seriesAttendees().map(entry);
 const added = (id, commonName) => ({ id, commonName, participationStatus: 'NEEDS-ACTION', rsvp: 'TRUE', role: undefined, userType: undefined, properties: undefined });
 
-async function edit(kind, attendees) {
+async function edit(kind, change) {
   const master = series();
   const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
-  const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...EDITS[kind].args, attendees });
+  const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...EDITS[kind].args, ...change });
   expect(res, res.error).toMatchObject({ ok: true });
   return EDITS[kind].saved({ master, calendar }).getAttendees().map(entry);
 }
@@ -90,13 +90,12 @@ async function edit(kind, attendees) {
 describe('an attendee change keeps everyone still on the list as stored', () => {
   for (const kind of Object.keys(EDITS)) {
     it(`adding an attendee keeps everyone else's answer and details, and adds them unanswered (${kind})`, async () => {
-      const list = [...SERIES_ENTRIES.map((e) => ({ email: e.id.replace('mailto:', ''), name: e.commonName })), { email: 'dana@example.com', name: 'Dana' }];
-      expect(await edit(kind, list)).toEqual([...SERIES_ENTRIES, added('mailto:dana@example.com', 'Dana')]);
+      expect(await edit(kind, { add_attendees: [{ email: 'dana@example.com', name: 'Dana' }] })).toEqual([...SERIES_ENTRIES, added('mailto:dana@example.com', 'Dana')]);
     });
 
-    it(`removing attendees keeps the others' answers and details, matched without regard to case, in the list's order (${kind})`, async () => {
-      const list = [{ email: 'ANA@example.com' }, { email: 'cleo@example.com', name: 'Cleo' }, { email: 'organizer@example.com' }];
-      expect(await edit(kind, list)).toEqual([SERIES_ENTRIES[1], added('mailto:cleo@example.com', 'Cleo'), SERIES_ENTRIES[0]]);
+    it(`removing attendees, matched without regard to case, keeps the others' answers and details in their stored order (${kind})`, async () => {
+      const change = { remove_attendees: [{ email: 'BEN@example.com' }, { email: 'room@example.com' }], add_attendees: [{ email: 'cleo@example.com', name: 'Cleo' }] };
+      expect(await edit(kind, change)).toEqual([SERIES_ENTRIES[0], SERIES_ENTRIES[1], added('mailto:cleo@example.com', 'Cleo')]);
     });
   }
 
@@ -120,8 +119,7 @@ describe('an attendee change keeps everyone still on the list as stored', () => 
     expect(own).not.toEqual(SERIES_ENTRIES.slice(0, 3));
 
     const { api } = loadCalendarBridge(bridgeUrl, { items: [master] });
-    const list = [...own.map((e) => ({ email: e.id.replace('mailto:', '') })), { email: 'dana@example.com' }];
-    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...EDITS['one occurrence'].args, attendees: list });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...EDITS['one occurrence'].args, add_attendees: [{ email: 'dana@example.com' }] });
     expect(res, res.error).toMatchObject({ ok: true });
 
     const saved = EDITS['one occurrence'].saved({ master });
