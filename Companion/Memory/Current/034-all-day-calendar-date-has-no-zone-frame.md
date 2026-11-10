@@ -28,7 +28,10 @@ the digits stay as read, a relabel converts nothing). Its callers:
   item's kind, as the edit tool's schema says ("Leave empty to keep existing"). Before #309 a missing
   `all_day` read as false, so new dates for an all-day event made it a timed one at midnight. This
   is the one place an edit's kind is decided: `applyDurationPreservation` (and its mirror) writes
-  the converter's values as given (`test/calendarEditKeepsAllDay.test.js`);
+  the converter's values as given (`test/calendarEditKeepsAllDay.test.js`). An edit that gives
+  times and leaves an all-day item ending on or before its start (times of one day, which become
+  one date) is refused before anything is written (`allDayEndError`): an all-day end is the day
+  after the last day (RFC 5545 DTEND is exclusive), so it would be a zero-length event;
 - `applyRecurrenceToItem`, which relabels an all-day item's start and end before it writes a rule,
   so a rule-only edit or a split's new rule on a series stored with a zoned start keeps the day its
   bare-date UNTIL names. Relabelling a DATE moves none of the series' dates: Thunderbird's

@@ -1174,6 +1174,18 @@ function asAllDayDate(dt) {
   return dt;
 }
 
+// Why an edit that gave `item` new times leaves an all-day item that ends on or
+// before its start, or null. An all-day end is the day after the last day
+// (RFC 5545: DTEND is exclusive and later than DTSTART), so a start and end on
+// one day (an edit giving an all-day event times of one day, without all_day)
+// would be a zero-length event. Refused, naming both ways to say it.
+function allDayEndError(item, patch) {
+  const s = item.startDate, e = item.endDate;
+  if (!patch.start_iso && !patch.end_iso) return null;
+  if (!s?.isDate || !e || e.compare(s) > 0) return null;
+  return "an all-day event's end_iso is the day after its last day, so it must be later than start_iso: give the next day, or all_day: false for a timed event";
+}
+
 // toCalIDateTime for an edit of `item`, whose new times it gives in the item's
 // frame, as Thunderbird's event dialog keeps an event's zone: in a zoned item's
 // own zone at the same instant, and for a floating item at the user's clock
@@ -1986,6 +1998,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] modifyCalendarEvent: duration preservation failed:", durationResult.error);
             }
+            const endError = allDayEndError(clone, patch);
+            if (endError) return { ok: false, error: endError };
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2469,6 +2483,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] splitRecurringEvent: duration preservation failed:", durationResult.error);
             }
+            const endError = allDayEndError(newEv, patch);
+            if (endError) return { ok: false, error: endError };
 
             // A new rule for the following part (written in its start's value
             // type, after the time change); `{}` stops it repeating.

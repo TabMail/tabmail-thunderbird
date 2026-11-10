@@ -154,7 +154,8 @@ same design (tabmail-ios #421).
     offset plus the change, so excluded, added and changed dates no longer met the occurrences (#301). An all-day
     value (an edit to all day included) is the date as read with no zone (`asAllDayDate`, #303, note 034); an
     edit from all day to timed is written as read. An edit that leaves `all_day` out keeps the item's kind, all-day
-    or timed (the edit tool's "Leave empty to keep existing"; #309, note 034). `all_day` alone
+    or timed (the edit tool's "Leave empty to keep existing"; #309, note 034); one whose all-day end would fall on or
+    before its start is refused before anything is written (`allDayEndError`, in the split too). `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
     all-day comes with them (and `all_day` is not one of the fields that make a split at a changed occurrence
     refused, below).

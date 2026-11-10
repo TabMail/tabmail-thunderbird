@@ -9,7 +9,8 @@
 // real bridge, west of UTC (where an all-day date read as a time is the
 // previous evening at UTC), for every edit that writes new times: a whole
 // event, a series, a new start or end alone, one occurrence, and a "this and
-// following" split.
+// following" split. An edit whose all-day end would fall on or before its
+// start (times of one day) is refused before anything is written.
 
 process.env.TZ = 'America/Vancouver';
 
@@ -173,5 +174,54 @@ describe('the kind changes only when the edit gives all_day', () => {
     const item = await edited(loadCalendarBridge(bridgeUrl, { items: [ev] }), 'evt', { all_day: true, start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${nextDay(MOVED_DAY)}T00:00:00` });
     expectAllDay(item.startDate, MOVED_DAY);
     expectAllDay(item.endDate, nextDay(MOVED_DAY));
+  });
+});
+
+// An all-day end is the day after the last day, so new times of one day for an
+// all-day event would make it zero-length: the edit is refused before anything
+// is written, naming the next day and all_day: false.
+describe('an edit that would end an all-day event on or before its start is refused', () => {
+  const REFUSAL = /end_iso is the day after its last day.*all_day: false/;
+
+  it('times of one day, without all_day', async () => {
+    const loaded = await created();
+    const res = await loaded.api.modifyCalendarEvent({
+      event_id: loaded.res.event_id, calendar_id: 'cal1', start_iso: `${MOVED_DAY}T09:00:00`, end_iso: `${MOVED_DAY}T17:00:00`,
+    });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(REFUSAL);
+    expect(loaded.modifications).toEqual([]);
+    expectAllDay(loaded.calendar.items[0].startDate, START_DAY);
+    expectAllDay(loaded.calendar.items[0].endDate, nextDay(START_DAY));
+  });
+
+  it('all_day: true with the end on the start\'s day', async () => {
+    const ev = fakeEvent({ id: 'evt', title: 'Talk', startDate: fakeDateTime(START_DAY, 17), endDate: fakeDateTime(START_DAY, 18) });
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [ev] });
+    const res = await loaded.api.modifyCalendarEvent({
+      event_id: 'evt', calendar_id: 'cal1', all_day: true, start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${MOVED_DAY}T00:00:00`,
+    });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(REFUSAL);
+    expect(loaded.modifications).toEqual([]);
+  });
+
+  it('"this and following" with times of one day: nothing is written', async () => {
+    const loaded = await createdSeries();
+    const res = await loaded.api.modifyCalendarEvent({
+      event_id: loaded.res.event_id, calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00`,
+      start_iso: `${SPLIT_DAY}T09:00:00`, end_iso: `${SPLIT_DAY}T17:00:00`,
+    });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(REFUSAL);
+    expect(loaded.modifications).toEqual([]);
+    expect(loaded.calendar.items).toHaveLength(1);
+    expect(occurrenceDays(loaded.calendar.items[0])).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
+
+  it('an edit giving no times still saves an all-day event stored with its end on its start', async () => {
+    const ev = fakeEvent({ id: 'evt', title: 'Holiday', startDate: fakeDate(START_DAY), endDate: fakeDate(START_DAY) });
+    const item = await edited(loadCalendarBridge(bridgeUrl, { items: [ev] }), 'evt', { title: 'Renamed' });
+    expect(item.title).toBe('Renamed');
   });
 });
