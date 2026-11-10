@@ -22,11 +22,9 @@ process.env.TZ = 'America/Vancouver';
 import { describe, it, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bridgeUrl = resolve(__dirname, '../chat/experiments/tmCalendar/tmCalendar.sys.mjs');
-const schemaPath = resolve(__dirname, '../chat/experiments/tmCalendar/schema.json');
 
 globalThis.browser = {
   tmCalendar: {},
@@ -63,57 +61,11 @@ const { runStateEditCalendarEventExec, runStateEditCalendarEventList } = await i
 const { streamText } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
 
-// What the flow sends must be what the experiment declares: Thunderbird checks
-// a call against schema.json and refuses an undeclared property, a missing
-// required one, or a value of another type. As Firefox's Schemas.sys.mjs: an
-// integer is a whole number, null on an optional property is absent, and an
-// object takes only its declared properties unless additionalProperties.
-const SCHEMA_FUNCTIONS = JSON.parse(readFileSync(schemaPath, 'utf8')).flatMap((ns) => ns.functions || []);
+// What the flow sends must be what the experiment declares (see
+// helpers/calendarSchemaCheck.js); each bridge call is checked first.
+const { SCHEMA_FUNCTIONS, checkAgainst, checked } = await import('./helpers/calendarSchemaCheck.js');
 const modifyDetails = SCHEMA_FUNCTIONS.find((f) => f.name === 'modifyCalendarEvent').parameters[0];
-function checkAgainst(spec, value, path) {
-  const kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
-  const fits = spec.type === 'integer' ? Number.isInteger(value) : spec.type === kind;
-  if (spec.type && spec.type !== 'any' && !fits) throw new Error(`${path}: ${kind}, declared ${spec.type}`);
-  if (spec.enum && !spec.enum.includes(value)) throw new Error(`${path}: ${value} is not one of ${spec.enum}`);
-  if (kind === 'array' && spec.items) value.forEach((v, i) => checkAgainst(spec.items, v, `${path}[${i}]`));
-  if (kind === 'object' && spec.type === 'object') {
-    const declared = spec.properties || {};
-    for (const key of Object.keys(value)) {
-      const absent = value[key] === undefined || (value[key] === null && declared[key]?.optional);
-      if (key in declared) {
-        if (!absent) checkAgainst(declared[key], value[key], `${path}.${key}`);
-      } else if (spec.additionalProperties) {
-        if (spec.additionalProperties.type !== 'any') checkAgainst(spec.additionalProperties, value[key], `${path}.${key}`);
-      } else {
-        throw new Error(`${path}.${key}: unexpected property`);
-      }
-    }
-    for (const [key, p] of Object.entries(declared)) {
-      if (!p.optional && (value[key] === undefined || value[key] === null)) throw new Error(`${path}.${key}: missing`);
-    }
-  }
-}
-// The bridge, with each call checked against its declared parameters first.
 const schemaErrors = [];
-function checked(api) {
-  const out = {};
-  for (const fn of SCHEMA_FUNCTIONS) {
-    if (typeof api[fn.name] !== 'function') continue;
-    out[fn.name] = (...args) => {
-      try {
-        (fn.parameters || []).forEach((p, i) => {
-          if (args[i] === undefined && p.optional) return;
-          checkAgainst(p, args[i], `${fn.name}.${p.name}`);
-        });
-      } catch (e) {
-        schemaErrors.push(String(e.message));
-        throw e;
-      }
-      return api[fn.name](...args);
-    };
-  }
-  return out;
-}
 
 // A far-future daily series, ten days long (2099 is the dated-test exception:
 // it never goes stale).
@@ -194,7 +146,7 @@ let nextPid = 0;
 async function edit(scopeName, guests, own, change) {
   const scope = SCOPES[scopeName];
   const loaded = loadCalendarBridge(bridgeUrl, { items: [scope.build(guests, own)] });
-  globalThis.browser.tmCalendar = checked(loaded.api);
+  globalThis.browser.tmCalendar = checked(loaded.api, schemaErrors);
   schemaErrors.length = 0;
   const pid = `pid-guests-${nextPid += 1}`;
   ctx.fsmSessions[pid] = {};
@@ -458,7 +410,7 @@ describe('sending invitations with an edit', () => {
 describe('the confirmation card for a guest change', () => {
   async function card(change) {
     const loaded = loadCalendarBridge(bridgeUrl, { items: [oneOff(all())] });
-    globalThis.browser.tmCalendar = checked(loaded.api);
+    globalThis.browser.tmCalendar = checked(loaded.api, schemaErrors);
     const pid = `pid-card-${nextPid += 1}`;
     ctx.fsmSessions[pid] = { editEventArgs: { event_id: 'ser', calendar_id: 'cal1', ...change } };
     const was = ctx.activePid;

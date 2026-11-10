@@ -43,8 +43,8 @@ the digits stay as read, a relabel converts nothing). Its callers:
   `createCalendarEvent` refuses an all-day event whose end is on or before its start, before
   anything is written, with a message that says what to send (the next day as `end_iso`), and the
   create tool gets it before its card the same way (`check_only` on `createCalendarEvent`, sent
-  with the times only). A create's kind is stated, so it has no time-of-day refusal
-  (`test/calendarCreateAllDayEnd.test.js`);
+  with the times (and `timezone` when given), the calendar and `all_day` only). A create's kind
+  is stated, so it has no time-of-day refusal (`test/calendarCreateAllDayEnd.test.js`);
 - `applyRecurrenceToItem`, which relabels an all-day item's start and end before it writes a rule,
   so a rule-only edit or a split's new rule on a series stored with a zoned start keeps the day its
   bare-date UNTIL names. Relabelling a DATE moves none of the series' dates: Thunderbird's

@@ -216,8 +216,10 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
   // An all-day end the bridge would refuse (on or before the start) is refused
   // here, before the confirmation card, so the assistant can correct the
   // call. The bridge reads the times as the create will and writes nothing
-  // (check_only), so the rule lives in one place. A check that throws is left
-  // to the create itself.
+  // (check_only), so the rule lives in one place. A refusal the bridge returns
+  // fails the call here, before the card; a check call that throws (rejects)
+  // is not a refusal and the create goes on to the card, where the write
+  // itself still refuses such an end.
   if (norm.all_day && norm.end_iso) {
     let check = null;
     try {

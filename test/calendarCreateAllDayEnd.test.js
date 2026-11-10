@@ -6,7 +6,9 @@
 // its start would write a zero-length event (an all-day end is the day after
 // the last day). From the create tool's `run`, with the real argument reader,
 // against the real calendar bridge: it fails before the confirmation card and
-// nothing is written; the bridge's own create refuses it too.
+// nothing is written; the bridge's own create refuses it too. Every bridge
+// call is checked against the experiment's schema.json, as Thunderbird checks
+// it (the pre-card check's check_only included).
 
 // West of UTC, so the user's zone is not UTC.
 process.env.TZ = 'America/Vancouver';
@@ -39,6 +41,7 @@ vi.mock('../chat/modules/context.js', () => ({
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}) }));
 
 const { loadCalendarBridge } = await import('./helpers/calendarBridgeHarness.js');
+const { checked } = await import('./helpers/calendarSchemaCheck.js');
 const { run } = await import('../chat/tools/calendar_event_create.js');
 const { ctx } = await import('../chat/modules/context.js');
 
@@ -48,13 +51,14 @@ let nextPid = 0;
 // Runs the tool to the point it either fails or stores the event for the card.
 async function runCreate(args) {
   const loaded = loadCalendarBridge(bridgeUrl, { items: [] });
-  globalThis.browser.tmCalendar = loaded.api;
+  const schemaErrors = [];
+  globalThis.browser.tmCalendar = checked(loaded.api, schemaErrors);
   const pid = `pid-create-${nextPid += 1}`;
   ctx.fsmSessions[pid] = {};
   ctx.state = null;
   await run({ title: 'Offsite', calendar_id: 'cal1', ...args }, { callId: pid });
   await new Promise((r) => setTimeout(r, 5));
-  return { sess: ctx.fsmSessions[pid], loaded };
+  return { sess: ctx.fsmSessions[pid], loaded, schemaErrors };
 }
 
 // 2099 is the dated-test exception (never goes stale).
@@ -66,7 +70,8 @@ describe('calendar_event_create against the real bridge, before the confirmation
     ['its end before its start', { start_iso: '2099-10-20', end_iso: '2099-10-18' }],
   ]) {
     it(`an all-day event with ${name} fails with what to send instead, and nothing is written`, async () => {
-      const { sess, loaded } = await runCreate({ all_day: true, ...args });
+      const { sess, loaded, schemaErrors } = await runCreate({ all_day: true, ...args });
+      expect(schemaErrors).toEqual([]);
       expect(sess.failReason).toMatch(REFUSAL);
       expect(ctx.state).toBe('exec_fail');
       expect(sess.createEventArgs).toBeUndefined();
@@ -81,7 +86,8 @@ describe('calendar_event_create against the real bridge, before the confirmation
     ['a timed event', { start_iso: '2099-10-20T09:00:00', end_iso: '2099-10-20T10:00:00' }],
   ]) {
     it(`${name} reaches the card, with nothing written yet`, async () => {
-      const { sess, loaded } = await runCreate(args);
+      const { sess, loaded, schemaErrors } = await runCreate(args);
+      expect(schemaErrors).toEqual([]);
       expect(sess.failReason).toBeUndefined();
       expect(sess.createEventArgs).toMatchObject({ title: 'Offsite' });
       expect(sess.createEventArgs).not.toHaveProperty('check_only');
@@ -111,8 +117,28 @@ describe('the bridge\'s create', () => {
 
   it('asked only to check, writes nothing for an event it would make', async () => {
     const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [] });
-    const res = await api.createCalendarEvent({ calendar_id: 'cal1', all_day: true, start_iso: '2099-10-20T00:00:00', end_iso: '2099-10-21T00:00:00', check_only: true });
+    const schemaErrors = [];
+    const res = await checked(api, schemaErrors).createCalendarEvent({ calendar_id: 'cal1', all_day: true, start_iso: '2099-10-20T00:00:00', end_iso: '2099-10-21T00:00:00', check_only: true });
+    expect(schemaErrors).toEqual([]);
     expect(res).toEqual({ ok: true });
     expect(calendar.items).toHaveLength(0);
+  });
+
+  // The refusal is for an all-day event with an end: a timed event may end on
+  // its start, and an all-day event given no end is written.
+  it('writes a timed event whose end is on its start', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [] });
+    const res = await api.createCalendarEvent({ title: 'Call', calendar_id: 'cal1', start_iso: '2099-10-20T09:00:00', end_iso: '2099-10-20T09:00:00' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(calendar.items).toHaveLength(1);
+  });
+
+  it('writes an all-day event given no end, its start a date', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [] });
+    const res = await api.createCalendarEvent({ title: 'Offsite', calendar_id: 'cal1', all_day: true, start_iso: '2099-10-20T00:00:00' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(calendar.items).toHaveLength(1);
+    if (calendar.items.length !== 1) return;
+    expect(calendar.items[0].startDate.isDate).toBe(true);
   });
 });
