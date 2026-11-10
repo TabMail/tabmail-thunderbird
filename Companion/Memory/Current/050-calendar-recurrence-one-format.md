@@ -165,9 +165,9 @@ same design (tabmail-ios #421).
     `all_day` alone are allowed there, and so is `organizer_email`: the edit tool fills it in from the calendar for
     every edit that names one, so listing it refused every such split.
   - **The following part is a copy of the series (#291),** made as Thunderbird copies an event (`calendar-clipboard.js`
-    paste: `item.clone()` and a new id; nothing else is stripped): `master.clone()` with its recurrence info cleared
-    (so setting its start moves nothing) and its id cleared, which the calendar fills on `addItem` (`onIdChange` then
-    renames its changed occurrences). It keeps every property and parameter, reminder, category, attachment and
+    paste: `item.clone()` and a new id; nothing else is stripped): `master.clone()` with its id cleared, which the calendar
+    fills on `addItem` (`onIdChange` then renames its changed occurrences); its recurrence info is replaced by the
+    series' from the split on. It keeps every property and parameter, reminder, category, attachment and
     relation, the organizer, and each attendee with every parameter. Until #291 it was a blank `calIEvent` given only
     the title, times, location, plain description, busy/free, attendee addresses and organizer, so everything else was
     lost on every split since the split first shipped. Provider identity lives outside the item (CalDAV href/etag in
@@ -176,12 +176,18 @@ same design (tabmail-ios #421).
     HTML version, the `ALTREP` parameter) and removes `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC`, as an edit does.
     A changed attendee list (`patch.attendees`, delta already applied) keeps the series' entry for each address still
     on it (matched without regard to case, as `getAttendeeById`), in the list's order, and adds the rest at
-    `NEEDS-ACTION` with `RSVP=TRUE`.
-  - **Attendee answers on the following part: one rule shared with iOS (agreed 2026-11-09, Thunderbird parity).** Kept,
-    unless the split reschedules the following occurrences: start, end or duration, all-day vs timed, a zone change
-    that moves the instant, a new rule other than the one carried on, or location. Then every attendee but the
+    `NEEDS-ACTION` with `RSVP=TRUE`. The organizer is the series' (copied with it, every parameter kept): the edit's
+    `organizer_email`, which the edit tool fills with the calendar's own address whenever it has a `calendar_id`, is
+    not passed to the split, as an edit of a whole series never sets one. Superseded: the split used to write it as
+    the organizer, which dropped the organizer's parameters (`SENT-BY`, `SCHEDULE-*`) and, on a meeting someone else
+    organizes, named the user as its organizer.
+  - **Attendee answers on the following part: one rule shared with iOS (Thunderbird parity).** Kept, unless the split
+    reschedules the following occurrences: start, end or duration, all-day vs timed, a zone change (even at the same
+    instant: the later occurrences then follow the new zone's daylight saving time, and Thunderbird's
+    `prepareSequence` hashes DTSTART with its TZID, so it counts as a change), a new rule other than the one carried
+    on, or location. Then every attendee but the
     organizer (same address as ORGANIZER) gets `PARTSTAT=NEEDS-ACTION` and `RSVP=TRUE`, other parameters kept. A value
-    the edit only restates is no change (compared with the split occurrence's slot: `sameTime` on start and end, the
+    the edit only restates is no change (compared with the split occurrence's slot: `sameTime` on start and end, by zone and instant, the
     new rule's values against `splitRule`'s carried values, the location string); a new rule differing from the
     carried one only in form counts as a change, the safe direction (asking again only asks; a kept `ACCEPTED` on a
     moved meeting claims an answer nobody gave). Not a reschedule: title, description, busy/free, `exdates_add`
@@ -193,7 +199,9 @@ same design (tabmail-ios #421).
     The client does it here because the following part is a NEW resource, which a server's reset (for a changed one)
     never reaches. Core Thunderbird has no this-and-following edit to compare with (`promptOccurrenceModification`'s
     MODIFY_FOLLOWING throws NS_ERROR_NOT_IMPLEMENTED). This is the one place a rule is compared, and only to decide
-    whether answers are asked again (see *No rule comparison* below).
+    whether answers are asked again (see *No rule comparison* below). Superseded: the first version kept the answers for
+    a start relabelled into another zone at the same instant, which on a series kept in a zone with other daylight
+    saving dates kept `ACCEPTED` for occurrences an hour from the times answered.
   - **Refused, writing nothing:** an EXRULE (a negative rule, comm-central 161+) the split cannot keep; a rule
     whose end or count cannot be read; a series that repeats by added dates alone (no rule to divide); a change
     to an occurrence that was changed on its own (above); an `exdates_add` value that names no occurrence; a rule item that cannot be rewritten (an immutable item throws); a time
@@ -245,9 +253,11 @@ same design (tabmail-ios #421).
   normalizer, into `exdates_add` for each start kind.
 - `test/calendarSplitKeepsProperties.test.js` pins the following part as a copy of the series (#291): every property
   and parameter, reminder, category, attachment, the organizer and each attendee entry; the edit's fields change only
-  what they name; a changed attendee list; and the attendee-answer rule, kept for each non-rescheduling field and a
-  restated value (a zone relabel at the same instant included), asked again of all but the organizer for each
-  rescheduling one. The harness models CalItemBase for it: `fakeAttendee` (CalAttendee with `clone`), attendees,
+  what they name; the series' organizer stays whatever `organizer_email` the edit names; a changed attendee list; and
+  the attendee-answer rule, kept for each non-rescheduling field and a restated value (all-day and floating series
+  included), asked again of all but the organizer for each rescheduling one, a series relabelled into the user's zone
+  at the same instant included (its later occurrences move at the user's daylight saving change, checked with
+  `seriesOccurrences`). The harness models CalItemBase for it: `fakeAttendee` (CalAttendee with `clone`), attendees,
   organizer, alarms, categories and attachments cloned with the event, property parameters, `setProperty` of an empty
   value deleting the property, and `descriptionText` as DESCRIPTION dropping its `ALTREP`.
 - MONTHLY folds are pinned by occurrence too: `monthlyDays` enumerates RFC 5545 days independently of the bridge, and

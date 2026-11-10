@@ -1156,12 +1156,14 @@ function toCalIDateTimeInFrameOf(item, patch) {
 }
 
 // Whether two event times are the same: two DATEs on the same day, or two
-// date-times at the same instant, a floating time only with another floating
-// one. A time relabelled into another zone at the same instant is the same.
+// date-times at the same instant in the same zone (floating with floating). A
+// time relabelled into another zone is a change even at the same instant: the
+// series' later occurrences follow that zone's daylight saving time, and
+// Thunderbird's prepareSequence compares DTSTART with its TZID.
 function sameTime(a, b) {
   if (!a || !b || !!a.isDate !== !!b.isDate) return false;
   if (a.isDate) return a.compare(b) === 0;
-  return (a.timezone?.tzid === "floating") === (b.timezone?.tzid === "floating") && a.nativeTime === b.nativeTime;
+  return a.timezone?.tzid === b.timezone?.tzid && a.nativeTime === b.nativeTime;
 }
 
 function toEpochMsUTC(calDt) {
@@ -1816,7 +1818,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
               const splitPatch = {};
               for (const k of ["title", "location", "description", "transparency", "attendees",
-                               "send_invitations", "organizer_email", "recurrence",
+                               "send_invitations", "recurrence",
                                "start_iso", "end_iso", "all_day", "exdates_add"]) {
                 if (details[k] !== undefined) splitPatch[k] = details[k];
               }
@@ -2164,8 +2166,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         //   first; for a changed occurrence that is its own start, not its
         //   RECURRENCE-ID), patch (object with fields to apply to the new
         //   series: title, location, description, transparency, attendees,
-        //   send_invitations, organizer_email, recurrence, start_iso, end_iso,
-        //   all_day, exdates_add), timezone? (for start_iso and end_iso)
+        //   send_invitations, recurrence, start_iso, end_iso, all_day,
+        //   exdates_add), timezone? (for start_iso and end_iso)
+        // The new series keeps the series' organizer: an edit names none (the
+        // edit tool fills organizer_email with the calendar's own address, and
+        // an edit of the whole series never sets one either).
         // }
         async splitRecurringEvent(details) {
           try {
@@ -2339,12 +2344,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // 7. Build the new series, the following part: a copy of the series,
             // made as Thunderbird copies an event (calendar-clipboard.js: a
             // clone with a new id), so it keeps every property, reminder,
-            // attachment and attendee the series has. Its id is cleared for the
-            // calendar to give it one when it is added. Its recurrence is the
-            // series' from the split on (below); until then it has none, so
-            // setting its start moves nothing with it.
+            // attachment and attendee the series has, and its organizer. Its id is
+            // cleared for the calendar to give it one when it is added. Its
+            // recurrence is replaced (below) by the series' from the split on.
             const newEv = master.clone();
-            newEv.recurrenceInfo = null;
             newEv.id = null;
 
             // Title
@@ -2404,20 +2407,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 att.rsvp = "TRUE";
                 newEv.addAttendee(att);
               }
-            }
-
-            // Organizer — the series' (copied with it) unless patch provides one
-            try {
-              const orgEmail = (typeof patch.organizer_email === "string" && patch.organizer_email) ? patch.organizer_email : "";
-              if (orgEmail) {
-                const org = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-                org.id = orgEmail.startsWith("mailto:") ? orgEmail : `mailto:${orgEmail}`;
-                org.commonName = (master.organizer && master.organizer.commonName) || orgEmail;
-                org.isOrganizer = true;
-                newEv.organizer = org;
-              }
-            } catch (e) {
-              console.warn("[tmCalendar] splitRecurringEvent: failed to set organizer:", e);
             }
 
             // Recurrence — the master's from the split on: each rule that carries

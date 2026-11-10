@@ -13,11 +13,12 @@
 //   - a changed attendee list keeps the series' entry for everyone still on it
 //     and adds the others, who have not answered yet;
 //   - the attendees' answers are kept unless the split moves the following
-//     occurrences (start, end, all-day or timed, another rule) or changes their
-//     location; then everyone but the organizer is asked again (Thunderbird
-//     asks again on such a change; RFC 6638 3.2.8). A value the split only
-//     restates, or a time relabelled into another zone at the same instant,
-//     changes nothing;
+//     occurrences (start, end, all-day or timed, another zone, another rule) or
+//     changes their location; then everyone but the organizer is asked again
+//     (Thunderbird asks again on such a change; RFC 6638 3.2.8). A value the
+//     split only restates changes nothing; a time relabelled into another zone
+//     moves the later occurrences that zone's daylight saving time reaches;
+//   - the series' organizer stays, whatever organizer_email the edit carries;
 //   - the earlier part keeps its properties and attendees as they were.
 
 // West of UTC, so the user's zone is not UTC.
@@ -31,7 +32,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const bridgeUrl = resolve(__dirname, '../chat/experiments/tmCalendar/tmCalendar.sys.mjs');
 
 const {
-  loadCalendarBridge, fakeAttendee, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem, fixedZone,
+  loadCalendarBridge, fakeAttendee, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem, fixedZone,
+  seriesOccurrences, FLOATING_ZONE, UTC_ZONE,
 } = await import('./helpers/calendarBridgeHarness.js');
 
 // A far-future series (2099 is the dated-test exception: never goes stale),
@@ -45,6 +47,7 @@ const SERIES_PROPERTIES = {
   DESCRIPTION: 'Agenda in the notes',
   'X-ALT-DESC': '<p>Agenda in the <b>notes</b></p>',
   'X-MOZ-HTML': 'true',
+  'X-MOZ-ALT-DESC': '<p>Agenda</p>',
   STATUS: 'CONFIRMED',
   CLASS: 'PRIVATE',
   URL: 'https://example.com/meeting',
@@ -73,7 +76,7 @@ function seriesAttendees() {
 
 function series({ rule = 'FREQ=DAILY', start = fakeDateTime(START_DAY, 17) } = {}) {
   const end = start.clone();
-  end.addDuration({ inSeconds: 3600, isNegative: false });
+  end.addDuration(start.isDate ? { inSeconds: 86400, isNegative: false } : { inSeconds: 3600, isNegative: false });
   const ev = fakeEvent({
     id: 'ser', title: 'Sync', startDate: start, endDate: end,
     properties: SERIES_PROPERTIES, propertyParams: SERIES_PARAMS,
@@ -137,6 +140,18 @@ describe('the following part of a split keeps the series\' properties', () => {
     expect(entries(capped)).toEqual(SERIES_ENTRIES);
   });
 
+  // The edit tool fills organizer_email with the calendar's own address, which
+  // is not always the series' organizer (an invitation from someone else).
+  for (const [label, address] of [['another address', 'me@example.com'], ['the organizer\'s address in another case', 'organizer@example.com']]) {
+    it(`keeps the series' organizer with its details when the edit names ${label}, and asks again everyone but that organizer`, async () => {
+      const { res, capped, fresh } = await split(series(), { organizer_email: address, start_iso: '2099-10-15T19:00:00' });
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(entry(fresh.organizer)).toEqual(entry(capped.organizer));
+      expect(fresh.organizer.properties).toEqual([['SENT-BY', 'mailto:assistant@example.com']]);
+      expect(entries(fresh)).toEqual(ASKED_AGAIN);
+    });
+  }
+
   it('the edit\'s fields change only what they name', async () => {
     const { res, fresh } = await split(series(), { location: 'Room 9', transparency: 'busy' });
     expect(res, res.error).toMatchObject({ ok: true });
@@ -159,7 +174,7 @@ describe('the following part of a split keeps the series\' properties', () => {
   it('an empty location or description removes it', async () => {
     const { res, fresh } = await split(series(), { location: '', description: '' });
     expect(res, res.error).toMatchObject({ ok: true });
-    for (const name of ['LOCATION', 'DESCRIPTION', 'X-ALT-DESC']) expect(fresh.getProperty(name), name).toBeNull();
+    for (const name of ['LOCATION', 'DESCRIPTION', 'X-ALT-DESC', 'X-MOZ-HTML', 'X-MOZ-ALT-DESC']) expect(fresh.getProperty(name), name).toBeNull();
     expect(fresh.getPropertyParameter('DESCRIPTION', 'ALTREP')).toBeNull();
   });
 });
@@ -210,6 +225,7 @@ describe('the attendees\' answers on the following part', () => {
   const ASKED = {
     'a moved start': { start_iso: '2099-10-15T19:00:00' },
     'a moved end': { end_iso: '2099-10-15T19:00:00' },
+    'a later end with its start restated': { start_iso: SPLIT_AT, end_iso: '2099-10-15T19:00:00' },
     'all-day occurrences': { all_day: true, start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00' },
     'another rule': { recurrence: { freq: 'WEEKLY' } },
     'a rule that stops repeating': { recurrence: {} },
@@ -224,13 +240,42 @@ describe('the attendees\' answers on the following part', () => {
     });
   }
 
-  it('are kept for a series in another zone when the start is restated in the user\'s zone, the same instant', async () => {
+  // A start restated in the user's zone is written there, so a series kept in
+  // another zone is relabelled at the same instant. Its later occurrences then
+  // follow the user's daylight saving time: from 2099-11-01 (the end of
+  // daylight time in Vancouver) they fall an hour from the series' own, which
+  // the answers were given for.
+  const RANGE = [fakeDateTime('2099-09-01', 0, 0, UTC_ZONE), fakeDateTime('2100-01-01', 0, 0, UTC_ZONE)];
+  const instants = (item) => seriesOccurrences(item, ...RANGE).map(({ start }) => start.nativeTime);
+  it('are asked again for a series in another zone when the start is restated in the user\'s zone, which moves later occurrences', async () => {
     const start = fakeDateTime(START_DAY, 17, 0, EAST);
+    const seriesInstants = new Set(instants(series({ start })));
     // 17:00 at UTC+9 is 08:00 UTC: 01:00 in Vancouver (daylight time in October).
     const { res, fresh } = await split(series({ start }), { start_iso: '2099-10-15T01:00:00' }, { recurrenceId: '2099-10-15T01:00:00' });
     expect(res, res.error).toMatchObject({ ok: true });
-    expect(entries(fresh)).toEqual(SERIES_ENTRIES);
+    const moved = instants(fresh).filter((t) => !seriesInstants.has(t));
+    expect(moved.length).toBeGreaterThan(0);
+    expect(entries(fresh)).toEqual(ASKED_AGAIN);
   });
+
+  // An all-day series is split and named by its date; a floating one by its
+  // own digits, and a start restated in the user's zone makes it zoned.
+  for (const [label, makeStart, recurrenceId, patch, expected] of [
+    ['kept for an all-day series whose day is restated', () => fakeDate(START_DAY), '2099-10-15T00:00:00',
+      { all_day: true, start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00' }, () => SERIES_ENTRIES],
+    ['asked again for an all-day series moved a day', () => fakeDate(START_DAY), '2099-10-15T00:00:00',
+      { all_day: true, start_iso: '2099-10-16T00:00:00', end_iso: '2099-10-17T00:00:00' }, () => ASKED_AGAIN],
+    ['kept for a floating series given a new title', () => fakeDateTime(START_DAY, 17, 0, FLOATING_ZONE), SPLIT_AT,
+      { title: 'Renamed' }, () => SERIES_ENTRIES],
+    ['asked again for a floating series whose start is restated in the user\'s zone', () => fakeDateTime(START_DAY, 17, 0, FLOATING_ZONE), SPLIT_AT,
+      { start_iso: SPLIT_AT }, () => ASKED_AGAIN],
+  ]) {
+    it(`are ${label}`, async () => {
+      const { res, fresh } = await split(series({ start: makeStart() }), patch, { recurrenceId });
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(entries(fresh)).toEqual(expected());
+    });
+  }
 
   it('are asked again for a series in another zone when the start keeps its digits in the user\'s zone, another instant', async () => {
     const start = fakeDateTime(START_DAY, 17, 0, EAST);
