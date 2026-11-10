@@ -9,8 +9,9 @@
 // real bridge, west of UTC (where an all-day date read as a time is the
 // previous evening at UTC), for every edit that writes new times: a whole
 // event, a series, a new start or end alone, one occurrence, and a "this and
-// following" split. An edit whose all-day end would fall on or before its
-// start (times of one day) is refused before anything is written.
+// following" split. An all-day event given a time of day without all_day, or
+// an all-day end on or before its start, is refused before anything is
+// written, and the assistant is told to ask the user.
 
 process.env.TZ = 'America/Vancouver';
 
@@ -96,13 +97,6 @@ describe('an all-day event edited without all_day stays all-day', () => {
     expectAllDay(item.endDate, nextDay(MOVED_DAY));
   });
 
-  it('a new start with a time of day keeps its date, all-day', async () => {
-    const loaded = await created();
-    const item = await edited(loaded, loaded.res.event_id, { start_iso: `${MOVED_DAY}T15:00:00` });
-    expectAllDay(item.startDate, MOVED_DAY);
-    expectAllDay(item.endDate, nextDay(MOVED_DAY));
-  });
-
   it('an all-day event stored with dates in a zone stays all-day', async () => {
     const ev = fakeEvent({ id: 'evt', title: 'Holiday', startDate: fakeDate(START_DAY, LOCAL_ZONE), endDate: fakeDate(nextDay(START_DAY), LOCAL_ZONE) });
     const item = await edited(loadCalendarBridge(bridgeUrl, { items: [ev] }), 'evt', { start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${nextDay(MOVED_DAY)}T00:00:00` });
@@ -169,6 +163,13 @@ describe('the kind changes only when the edit gives all_day', () => {
     expectTimed(item.endDate, MOVED_DAY, 10);
   });
 
+  it('all_day: true with a time of day keeps the date, all-day', async () => {
+    const loaded = await created();
+    const item = await edited(loaded, loaded.res.event_id, { all_day: true, start_iso: `${MOVED_DAY}T15:00:00` });
+    expectAllDay(item.startDate, MOVED_DAY);
+    expectAllDay(item.endDate, nextDay(MOVED_DAY));
+  });
+
   it('all_day: true makes a timed event all-day', async () => {
     const ev = fakeEvent({ id: 'evt', title: 'Talk', startDate: fakeDateTime(START_DAY, 17), endDate: fakeDateTime(START_DAY, 18) });
     const item = await edited(loadCalendarBridge(bridgeUrl, { items: [ev] }), 'evt', { all_day: true, start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${nextDay(MOVED_DAY)}T00:00:00` });
@@ -177,16 +178,108 @@ describe('the kind changes only when the edit gives all_day', () => {
   });
 });
 
-// An all-day end is the day after the last day, so new times of one day for an
-// all-day event would make it zero-length: the edit is refused before anything
-// is written, naming the next day and all_day: false.
-describe('an edit that would end an all-day event on or before its start is refused', () => {
-  const REFUSAL = /end_iso is the day after its last day.*all_day: false/;
+// A time of day for an all-day event, without all_day, could mean a timed event
+// or that date all day: the edit is refused before anything is written, and the
+// assistant is told to ask the user which. A date at midnight is a date.
+describe('an all-day event given a time of day without all_day is refused, asking the user', () => {
+  const REFUSAL = /all-day event.*time of day without all_day.*Ask the user.*stay all-day.*all_day: false/;
 
-  it('times of one day, without all_day', async () => {
+  async function refused(loaded, fields) {
+    const res = await loaded.api.modifyCalendarEvent({ event_id: loaded.res.event_id, calendar_id: 'cal1', ...fields });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(REFUSAL);
+    expect(loaded.modifications).toEqual([]);
+    return res;
+  }
+
+  it('a new start with a time of day', async () => {
+    const loaded = await created();
+    await refused(loaded, { start_iso: `${MOVED_DAY}T15:00:00` });
+    expectAllDay(loaded.calendar.items[0].startDate, START_DAY);
+    expectAllDay(loaded.calendar.items[0].endDate, nextDay(START_DAY));
+  });
+
+  it('a new end alone with a time of day', async () => {
+    const loaded = await created();
+    await refused(loaded, { end_iso: `${MOVED_DAY}T17:30:00` });
+    expectAllDay(loaded.calendar.items[0].startDate, START_DAY);
+  });
+
+  it('a date start and an end with a time of day', async () => {
+    const loaded = await created();
+    await refused(loaded, { start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${MOVED_DAY}T00:30` });
+  });
+
+  it('times of one day', async () => {
+    const loaded = await created();
+    await refused(loaded, { start_iso: `${MOVED_DAY}T09:00:00`, end_iso: `${MOVED_DAY}T17:00:00` });
+  });
+
+  it('a whole series given a time of day: its days stay', async () => {
+    const loaded = await createdSeries();
+    await refused(loaded, { start_iso: `${nextDay(START_DAY)}T09:00:00` });
+    expect(occurrenceDays(loaded.calendar.items[0])).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
+
+  it('"this and following" with times of one day: nothing is written', async () => {
+    const loaded = await createdSeries();
+    await refused(loaded, {
+      edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00`, start_iso: `${SPLIT_DAY}T09:00:00`, end_iso: `${SPLIT_DAY}T17:00:00`,
+    });
+    expect(loaded.calendar.items).toHaveLength(1);
+    expect(occurrenceDays(loaded.calendar.items[0])).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
+
+  it('one occurrence given a time of day, with an excluded date: nothing is written', async () => {
+    const loaded = await createdSeries();
+    await refused(loaded, {
+      edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00`, start_iso: `${MOVED_DAY}T09:00:00`, exdates_add: ['2099-10-05T00:00:00'],
+    });
+    const [item] = loaded.calendar.items;
+    expect(item.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(occurrenceDays(item)).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
+
+  it('a check before the confirmation card gives the same refusals and writes nothing', async () => {
+    const loaded = await created();
+    await refused(loaded, { start_iso: `${MOVED_DAY}T15:00:00`, check_only: true });
+    const series = await createdSeries();
+    await refused(series, {
+      edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00`, start_iso: `${SPLIT_DAY}T09:00:00`, check_only: true,
+    });
+  });
+
+  it('a check of an edit that would be written passes and writes nothing: whole event, one occurrence, a split', async () => {
+    const loaded = await createdSeries();
+    const moved = { start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${nextDay(MOVED_DAY)}T00:00:00`, check_only: true };
+    for (const scope of [{}, { edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00` }, { edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00` }]) {
+      const res = await loaded.api.modifyCalendarEvent({ event_id: loaded.res.event_id, calendar_id: 'cal1', ...scope, ...moved });
+      expect(res).toEqual({ ok: true });
+    }
+    expect(loaded.modifications).toEqual([]);
+    expect(loaded.calendar.items).toHaveLength(1);
+    expectAllDay(loaded.calendar.items[0].startDate, START_DAY);
+    expect(occurrenceDays(loaded.calendar.items[0])).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
+
+  it('a date at midnight, with or without seconds, is a date', async () => {
+    const loaded = await created();
+    const item = await edited(loaded, loaded.res.event_id, { start_iso: `${MOVED_DAY}T00:00`, end_iso: `${nextDay(MOVED_DAY)}T00:00:00` });
+    expectAllDay(item.startDate, MOVED_DAY);
+    expectAllDay(item.endDate, nextDay(MOVED_DAY));
+  });
+});
+
+// An all-day end is the day after the last day, so an end on or before the
+// start would make the event zero-length: the edit is refused before anything
+// is written, and the assistant is told to ask the user how many days it lasts.
+describe('an edit that would end an all-day event on or before its start is refused', () => {
+  const REFUSAL = /all-day event.*end_iso is the day after its last day.*Ask the user how many days.*all_day: false/;
+
+  it('dates of one day, without all_day', async () => {
     const loaded = await created();
     const res = await loaded.api.modifyCalendarEvent({
-      event_id: loaded.res.event_id, calendar_id: 'cal1', start_iso: `${MOVED_DAY}T09:00:00`, end_iso: `${MOVED_DAY}T17:00:00`,
+      event_id: loaded.res.event_id, calendar_id: 'cal1', start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${MOVED_DAY}T00:00:00`,
     });
     expect(res).toMatchObject({ ok: false });
     expect(res.error).toMatch(REFUSAL);
@@ -206,11 +299,11 @@ describe('an edit that would end an all-day event on or before its start is refu
     expect(loaded.modifications).toEqual([]);
   });
 
-  it('"this and following" with times of one day: nothing is written', async () => {
+  it('"this and following" with dates of one day: nothing is written', async () => {
     const loaded = await createdSeries();
     const res = await loaded.api.modifyCalendarEvent({
       event_id: loaded.res.event_id, calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00`,
-      start_iso: `${SPLIT_DAY}T09:00:00`, end_iso: `${SPLIT_DAY}T17:00:00`,
+      start_iso: `${SPLIT_DAY}T00:00:00`, end_iso: `${SPLIT_DAY}T00:00:00`,
     });
     expect(res).toMatchObject({ ok: false });
     expect(res.error).toMatch(REFUSAL);
@@ -228,11 +321,11 @@ describe('an edit that would end an all-day event on or before its start is refu
     expect(loaded.modifications).toEqual([]);
   });
 
-  it('one occurrence given times of one day, with an excluded date: nothing is written', async () => {
+  it('one occurrence given dates of one day, with an excluded date: nothing is written', async () => {
     const loaded = await createdSeries();
     const res = await loaded.api.modifyCalendarEvent({
       event_id: loaded.res.event_id, calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00`,
-      start_iso: `${MOVED_DAY}T09:00:00`, end_iso: `${MOVED_DAY}T17:00:00`, exdates_add: ['2099-10-05T00:00:00'],
+      start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${MOVED_DAY}T00:00:00`, exdates_add: ['2099-10-05T00:00:00'],
     });
     expect(res).toMatchObject({ ok: false });
     expect(res.error).toMatch(REFUSAL);

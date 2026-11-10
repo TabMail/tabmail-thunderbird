@@ -1219,16 +1219,33 @@ function asAllDayItem(item) {
   }
 }
 
-// Why an edit that gave `item` new times leaves an all-day item that ends on or
-// before its start, or null. An all-day end is the day after the last day
-// (RFC 5545: DTEND is exclusive and later than DTSTART), so a start and end on
-// one day (an edit giving an all-day event times of one day, without all_day)
-// would be a zero-length event. Refused, naming both ways to say it.
-function allDayEndError(item, patch) {
+// Whether an edit's start_iso or end_iso names a time of day. A date alone, or
+// at midnight (the read tools show an all-day date as `${day}T00:00:00`),
+// names none.
+function namesTimeOfDay(iso) {
+  const m = /[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(iso || ""));
+  return !!m && (Number(m[1]) > 0 || Number(m[2]) > 0 || Number(m[3] || 0) > 0);
+}
+
+// Why an edit that gave the all-day `item` new times is refused, or null. The
+// item has its new times and is all-day: it was, and the edit left all_day out
+// or stated it. Nothing has been written yet, and the assistant is told to ask
+// the user, since either way would be a guess:
+// - A time of day without all_day: the user may want it timed, or all-day on
+//   that date, and dropping the time would keep it all-day without asking.
+// - An end on or before the start: an all-day end is the day after the last
+//   day (RFC 5545: DTEND is exclusive and later than DTSTART), so this would
+//   be a zero-length event.
+function allDayEditError(item, patch) {
   const s = item.startDate, e = item.endDate;
   if (!patch.start_iso && !patch.end_iso) return null;
-  if (!s?.isDate || !e || e.compare(s) > 0) return null;
-  return "an all-day event's end_iso is the day after its last day, so it must be later than start_iso: give the next day, or all_day: false for a timed event";
+  if (!s?.isDate) return null;
+  const timed = "become a timed event (all_day: false, with the start time and how long it lasts), then retry with their answer";
+  if (typeof patch.all_day !== "boolean" && (namesTimeOfDay(patch.start_iso) || namesTimeOfDay(patch.end_iso))) {
+    return `this is an all-day event, and the edit gives a time of day without all_day. Ask the user whether it should stay all-day (dates only, with end_iso the day after its last day) or ${timed}`;
+  }
+  if (!e || e.compare(s) > 0) return null;
+  return `this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso. Ask the user how many days it should last, or whether it should ${timed}`;
 }
 
 // toCalIDateTime for an edit of `item`, whose new times it gives in the item's
@@ -1243,6 +1260,8 @@ function allDayEndError(item, patch) {
 // from all day to timed is given as read. An edit that leaves all_day out keeps
 // the item's kind, as the edit tool documents ("Leave empty to keep existing"):
 // read as timed, a new date for an all-day event made it a timed one (#309).
+// An all-day value keeps only the date: a time of day given for an all-day
+// item without all_day is refused once the times are applied (allDayEditError).
 function toCalIDateTimeInFrameOf(item, patch) {
   const start = item && item.startDate;
   const allDay = typeof patch.all_day === "boolean" ? patch.all_day : !!start?.isDate;
@@ -1932,6 +1951,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 recurrence_id: recurIdStr,
                 timezone: details.timezone,
                 patch: splitPatch,
+                check_only: details.check_only,
               });
             }
             if (editScope === "this_only" && !recurIdStr) {
@@ -2049,8 +2069,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] modifyCalendarEvent: duration preservation failed:", durationResult.error);
             }
-            const endError = allDayEndError(clone, patch);
-            if (endError) return { ok: false, error: endError };
+            const editError = allDayEditError(clone, patch);
+            if (editError) return { ok: false, error: editError };
+            // A check before the confirmation card stops here: nothing is written.
+            if (details.check_only) return { ok: true };
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2526,8 +2548,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] splitRecurringEvent: duration preservation failed:", durationResult.error);
             }
-            const endError = allDayEndError(newEv, patch);
-            if (endError) return { ok: false, error: endError };
+            const editError = allDayEditError(newEv, patch);
+            if (editError) return { ok: false, error: editError };
+            // A check before the confirmation card stops here: nothing is written.
+            if (details.check_only) return { ok: true };
 
             // A new rule for the following part (written in its start's value
             // type, after the time change); `{}` stops it repeating.
