@@ -1126,6 +1126,29 @@ function asShown(calDt) {
   return shown;
 }
 
+// toCalIDateTime for an edit of `item`, whose new times it gives in the item's
+// frame, as Thunderbird's event dialog keeps an event's zone: in a zoned item's
+// own zone at the same instant, and for a floating item at the user's clock
+// digits, kept floating (the inverse of asShown). A new start read in the
+// user's zone would otherwise move the item into it: its rule would expand
+// there (a weekday in the series' zone can be another in the user's), and its
+// excluded and added dates and changed occurrences, which Thunderbird moves
+// with the start (onStartDateChange), would no longer meet its occurrences.
+// An all-day value, and an edit to or from all day, are given as read.
+function toCalIDateTimeInFrameOf(item, patch) {
+  const start = item && item.startDate;
+  return (iso, tzId) => {
+    const dt = toCalIDateTime(iso, tzId);
+    if (!dt || dt.isDate || patch.all_day || !start || start.isDate) return dt;
+    const zone = start.timezone;
+    if (zone?.tzid !== "floating") return dt.getInTimezone(zone);
+    const shown = dt.getInTimezone(getTimezoneService().defaultTimezone);
+    const kept = shown.clone();
+    kept.resetTo(shown.year, shown.month, shown.day, shown.hour, shown.minute, shown.second, zone);
+    return kept;
+  };
+}
+
 function toEpochMsUTC(calDt) {
   try {
     if (!calDt) return null;
@@ -1891,7 +1914,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               base,
               clone,
               patch,
-              toCalIDateTime,
+              toCalIDateTime: toCalIDateTimeInFrameOf(base, patch),
               editTzOverride,
               log: (m) => tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: " + m),
             });
@@ -2417,7 +2440,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               base: newEv,
               clone: newEv,
               patch,
-              toCalIDateTime,
+              toCalIDateTime: toCalIDateTimeInFrameOf(newEv, patch),
               editTzOverride: tzOverride,
               log: (m) => tmCalendarDebugLog("[tmCalendar] splitRecurringEvent: " + m),
             });

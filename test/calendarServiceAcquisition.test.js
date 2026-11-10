@@ -237,7 +237,6 @@ const LIVE_CONSTRUCTION_CONTRACTS = [
   "@mozilla.org/calendar/datetime;1",
   "@mozilla.org/calendar/recurrence-rule;1",
   "@mozilla.org/calendar/recurrence-info;1",
-  "@mozilla.org/calendar/recurrence-date;1",
   "@mozilla.org/calendar/ics-serializer;1",
 ];
 
@@ -269,6 +268,7 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "queryCalendarItemsInternal :: getCalendarManager",
   "sendCalendarInvitations :: getIcsService",
   "toCalIDateTime :: getTimezoneService",
+  "toCalIDateTimeInFrameOf :: getTimezoneService",
   "toEpochMsUTC :: getTimezoneService",
   "untilDayFromIcs :: getTimezoneService",
   "untilForRRule :: getTimezoneService",

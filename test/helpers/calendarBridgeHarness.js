@@ -58,6 +58,9 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
   Object.defineProperty(dt, 'nativeTime', { get: () => epochMs() * 1000 });
   dt.getInTimezone = (tz) => {
     if (dt.isDate) return dt.clone(); // ical.js: no conversion for DATE values (a copy)
+    // ical.js (Timezone.convert_time) converts nothing to or from floating
+    // time: the copy keeps its digits and takes the other zone.
+    if (tz === FLOATING_ZONE || dt.timezone === FLOATING_ZONE) return fakeCalDateTime({ ...dt, timezone: tz });
     const offsetMs = tz === UTC_ZONE || tz === FLOATING_ZONE ? 0 : (typeof tz?.offsetMinutes === 'number' ? tz.offsetMinutes * 60000 : null);
     if (offsetMs !== null) {
       const u = new Date(epochMs() + offsetMs);

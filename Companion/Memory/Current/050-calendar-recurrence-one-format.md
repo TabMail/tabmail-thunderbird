@@ -139,9 +139,19 @@ same design (tabmail-ios #421).
     earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's
     `CalRecurrenceInfo.clone` clones items and exceptions) with `item` set to the new event, which makes it the
     changed occurrences' parent; the calendar's id assignment renames them (`onIdChange`).
+  - **Thunderbird has no "this and following" primitive** (`MODIFY_FOLLOWING` throws `NS_ERROR_NOT_IMPLEMENTED`),
+    so the bridge builds the two parts itself.
   - **A time change** (`start_iso`/`end_iso`/`all_day`) applies to the following part only, after its recurrence is
     attached, so Thunderbird's `onStartDateChange` moves its EXDATEs, RDATEs, each non-COUNT rule's UNTIL and the
-    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does. `all_day` alone
+    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does (the changed
+    occurrences keep their own times). The new times are read in the user's zone (or the edit's `timezone`) and
+    written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`):
+    a zoned series' own zone at the same instant, a floating series at the user's clock digits, kept floating (the
+    inverse of `asShown`), as Thunderbird's event dialog keeps an event's zone. Read straight in the user's zone,
+    a new start moved the series into it: its rule expanded there (a Thursday east of UTC can be a Wednesday in
+    the user's zone), and `onStartDateChange`'s offset between a floating and a zoned start was the user's UTC
+    offset plus the change, so excluded, added and changed dates no longer met the occurrences (#301). An all-day
+    value, and an edit to or from all day, are written as read. `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
     all-day comes with them (and `all_day` is not one of the fields that make a split at a changed occurrence
     refused, below).

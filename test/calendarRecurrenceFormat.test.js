@@ -686,6 +686,12 @@ describe('split: the two parts make the series\' occurrences', () => {
         expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(before);
         expect(fresh.startDate.toString(), rule).toBe(at.toString());
         expect(fresh.startDate.timezone, rule).toBe(start.timezone);
+        // The earlier part's end is written in its start's value type (RFC 5545
+        // 3.3.10). A floating start's is still a UTC value, filed as #270.
+        if (kind !== 'floating') {
+          const shape = start.isDate ? /^\d{8}$/ : /^\d{8}T\d{6}Z$/;
+          for (const value of ruleValues(capped).filter((v) => /UNTIL=/.test(v))) expect(untilOf(value), `${rule}: ${value}`).toMatch(shape);
+        }
         for (const rid of fresh.recurrenceInfo.getExceptionIds()) {
           const ex = fresh.recurrenceInfo.getExceptionFor(rid);
           expect(ex.parentItem, rule).toBe(fresh);
@@ -790,6 +796,68 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect(occurrenceKeys(fresh)).toEqual(following.map(hourLater).sort());
     expect(lastDayAdmitted(fresh.startDate, untilOf(ruleValues(fresh)[0]))).toBe('2099-10-30');
   });
+
+  // A new time is read in the user's zone and written in the series' frame (its
+  // own zone at the same instant; floating at the user's clock digits), so the
+  // part, or the whole series, keeps its weekdays, and its excluded and added
+  // dates and changed occurrences move with it and still meet its occurrences.
+  // At 09:00, a start east of UTC is the day before in the user's zone.
+  const TIMED_KINDS = {
+    "timed in the user's zone": () => fakeDateTime(START_DAY, 9),
+    'timed in another zone, east of UTC': () => fakeDateTime(START_DAY, 9, 0, EAST),
+    'timed in UTC': () => fakeDateTime(START_DAY, 9, 0, UTC_ZONE),
+    'floating': () => fakeDateTime(START_DAY, 9, 0, FLOATING_ZONE),
+  };
+  const anHourLater = (k) => (k.startsWith('changed') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
+  function timedSeries(makeStart) {
+    const start = makeStart();
+    return seriesFrom(start, [`FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(start, 60)}`], {
+      extraItems: [
+        recurrenceDate('EXDATE', after(start, 4)), recurrenceDate('EXDATE', after(start, 20)),
+        recurrenceDate('RDATE', after(start, 5, 2)), recurrenceDate('RDATE', after(start, 22, 2)),
+      ],
+      exceptions: [changedAt(start, 6), changedAt(start, 18)],
+    });
+  }
+  for (const [kind, makeStart] of Object.entries(TIMED_KINDS)) {
+    for (const [change, newTime] of [
+      ['a new start', (at) => ({ start_iso: startIsoOf(after(at, 0, 1)) })],
+      ['a new end', (at) => ({ end_iso: startIsoOf(after(at, 0, 2)) })],
+    ]) {
+      it(`a series ${kind}: ${change} an hour later for this and the following occurrences keeps the series' frame and dates`, async () => {
+        const start = makeStart();
+        const ruleDates = timedSeries(makeStart).recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
+        const at = ruleDates[6];
+        const plain = await split(timedSeries(makeStart), startIsoOf(at), {});
+        expect(plain.res, plain.res.error).toMatchObject({ ok: true });
+        const following = occurrenceKeys(plain.fresh);
+        expect(following.filter((k) => k.startsWith('changed '))).toHaveLength(1);
+        const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [timedSeries(makeStart)] });
+        const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), ...newTime(at) });
+        expect(res, res.error).toMatchObject({ ok: true });
+        const capped = calendar.items.find((it) => it.id === 'ser');
+        const fresh = calendar.items.find((it) => it.id !== 'ser');
+        expect(fresh.startDate.timezone).toBe(start.timezone);
+        expect(fresh.startDate.toString()).toBe(after(at, 0, 1).toString());
+        expect(occurrenceKeys(capped)).toEqual(occurrenceKeys(plain.capped));
+        expect(occurrenceKeys(fresh)).toEqual(following.map(anHourLater).sort());
+      });
+
+      it(`a series ${kind}: ${change} an hour later for the whole series keeps the series' frame and dates`, async () => {
+        const start = makeStart();
+        const master = timedSeries(makeStart);
+        const before = occurrenceKeys(master);
+        expect(before.filter((k) => k.startsWith('changed '))).toHaveLength(2);
+        const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+        const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...newTime(start) });
+        expect(res, res.error).toMatchObject({ ok: true });
+        const saved = calendar.items[0];
+        expect(saved.startDate.timezone).toBe(start.timezone);
+        expect(saved.startDate.toString()).toBe(after(start, 0, 1).toString());
+        expect(occurrenceKeys(saved)).toEqual(before.map(anHourLater).sort());
+      });
+    }
+  }
 
   // Thunderbird prints a UTC RECURRENCE-ID with a trailing Z (ical.js Time.toString).
   it('a recurrence_id with Z names that instant, and the following part keeps the series\' zone', async () => {

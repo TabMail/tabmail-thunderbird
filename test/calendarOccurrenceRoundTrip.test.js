@@ -120,6 +120,7 @@ describe('the recurrence_id the read tools print names that occurrence for an ed
       const { api } = loadCalendarBridge(bridgeUrl, { items: [dailySeries(start)] });
       const text = await readOccurrence(api, start);
       expect(field(text, 'start_iso')).toBe(shown);
+      expect(field(text, 'end_iso')).toBe(plusHours(shown, 1));
       expect(field(text, 'recurrence_id')).toBe(shown);
     });
 
@@ -209,6 +210,30 @@ describe('calendar_event_read prints a timed occurrence\'s recurrence_id', () =>
       } finally {
         browser.tmCalendar.queryCalendarItems.mockReset();
         browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
+      }
+    });
+  }
+});
+
+// A read by event_id (getCalendarEventDetails) prints the series' start and
+// end as the user sees them, as the query does, a floating time at its digits.
+describe('calendar_event_read by event_id prints the series\' start and end as the user sees them', () => {
+  for (const [kind, { start: makeStart, shown }] of Object.entries(KINDS)) {
+    it(`a series ${kind}`, async () => {
+      const { api } = loadCalendarBridge(bridgeUrl, { items: [dailySeries(makeStart())] });
+      browser.tmCalendar.getCalendarEventDetails.mockImplementation((...a) => api.getCalendarEventDetails(...a));
+      try {
+        const read = await calendarEventReadRun({ event_id: 'ser', calendar_id: 'cal1' });
+        expect(read.ok, read.error).toBe(true);
+        // The series' first occurrence, 14 days before the shown one (no
+        // daylight saving change between them).
+        const first = plusHours(shown, -(TARGET_DAY - 1) * 24);
+        expect(first.slice(0, 10)).toBe(START_DAY);
+        expect(field(read.results, 'start_iso')).toBe(first);
+        expect(field(read.results, 'end_iso')).toBe(plusHours(first, 1));
+      } finally {
+        browser.tmCalendar.getCalendarEventDetails.mockReset();
+        browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: false, error: 'not found' });
       }
     });
   }
