@@ -122,34 +122,93 @@ export function fakeDateTime(dayStr, hour, minute = 0, timezone = undefined) {
 }
 
 /**
+ * A calIAttendee-like attendee (CalAttendee): its fields, and its other
+ * parameters as properties. `clone` copies them all into a new attendee.
+ */
+export function fakeAttendee({ id, commonName = null, participationStatus = null, rsvp = null, role = null, userType = null, isOrganizer = false, properties = {} }) {
+  const params = new Map(Object.entries(properties));
+  const att = {
+    id, commonName, participationStatus, rsvp, role, userType, isOrganizer,
+    getProperty: (k) => (params.has(k) ? params.get(k) : null),
+    setProperty: (k, v) => { params.set(k, v); },
+    get properties() { return [...params.entries()]; },
+    clone: () => fakeAttendee({
+      id: att.id, commonName: att.commonName, participationStatus: att.participationStatus, rsvp: att.rsvp,
+      role: att.role, userType: att.userType, isOrganizer: att.isOrganizer, properties: Object.fromEntries(params),
+    }),
+  };
+  return att;
+}
+
+/**
  * A calIEvent-like item. `occurrences` (on a master) makes it a recurring
  * series: each occurrence gets `parentItem`, shares the master's id (a
  * RECURRENCE-ID distinguishes them, exactly as in Thunderbird) and its own
- * `recurrenceId`.
+ * `recurrenceId`. Properties follow CalItemBase: setting one to an empty value
+ * deletes it, with its parameters (`propertyParams`, by property name), and
+ * descriptionText is the DESCRIPTION property, whose HTML version (the ALTREP
+ * parameter) setting it drops. Attendees, the organizer, alarms, categories
+ * and attachments are the item's own; an occurrence reads its series'.
  */
-export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, properties = {}, occurrences = null }) {
+export function fakeEvent({
+  id, title, startDate, endDate, recurrenceId = null, properties = {}, propertyParams = {}, occurrences = null,
+  attendees = [], organizer = null, alarms = [], categories = [], attachments = [],
+}) {
   const props = new Map(Object.entries(properties));
+  const params = new Map(Object.entries(propertyParams).map(([k, v]) => [k, { ...v }]));
   let uid = id;
   let start = startDate;
+  let attendeeList = [...attendees];
+  const deleteProperty = (k) => { props.delete(k); params.delete(k); };
   const ev = {
-    title, endDate, recurrenceId, parentItem: null, calendar: null, recurrenceInfo: null,
-    descriptionText: '',
+    title, endDate, recurrenceId, parentItem: null, calendar: null, recurrenceInfo: null, organizer,
     isEvent: () => true,
     getProperty: (k) => (props.has(k) ? props.get(k) : null),
-    setProperty: (k, v) => { props.set(k, v); },
-    deleteProperty: (k) => { props.delete(k); },
-    getAttendees: () => [],
+    setProperty: (k, v) => {
+      if (v || !isNaN(parseInt(v, 10))) props.set(k, v);
+      else deleteProperty(k);
+    },
+    deleteProperty,
+    getPropertyParameter: (k, p) => params.get(k)?.[p] ?? null,
+    setPropertyParameter: (k, p, v) => {
+      const bucket = params.get(k) || {};
+      if (v === null) delete bucket[p]; else bucket[p] = v;
+      params.set(k, bucket);
+    },
+    get descriptionText() { return ev.getProperty('DESCRIPTION'); },
+    set descriptionText(text) {
+      ev.setProperty('DESCRIPTION', text ? text.replace(/\r/g, '') : null);
+      if (text) ev.setPropertyParameter('DESCRIPTION', 'ALTREP', null);
+    },
+    getAttendees: () => [...attendeeList],
+    addAttendee: (att) => { if (att?.id) attendeeList.push(att); },
+    removeAllAttendees: () => { attendeeList = []; },
+    getAlarms: () => [...alarms],
+    getCategories: () => [...categories],
+    getAttachments: () => [...attachments],
     // CalItemBase.createProxy: the series' occurrence at `rid`, starting there
     // and lasting as long as the series' start does.
     createProxy(rid) {
       const end = rid.clone();
       if (ev.endDate) end.addDuration(ev.endDate.subtractDate(ev.startDate));
-      const proxy = fakeEvent({ id: ev.id, title: ev.title, startDate: rid.clone(), endDate: end, recurrenceId: rid.clone(), properties: Object.fromEntries(props) });
+      const proxy = fakeEvent({
+        id: ev.id, title: ev.title, startDate: rid.clone(), endDate: end, recurrenceId: rid.clone(),
+        properties: Object.fromEntries(props), attendees: attendeeList, organizer: ev.organizer, alarms, categories, attachments,
+      });
       proxy.parentItem = ev; proxy.calendar = ev.calendar;
       return proxy;
     },
+    // CalItemBase.cloneItemBaseInto: every property and parameter, and a clone
+    // of each attendee, the organizer, each alarm and attachment.
     clone() {
-      const c = fakeEvent({ id: ev.id, title: ev.title, startDate: ev.startDate.clone(), endDate: ev.endDate.clone(), recurrenceId: ev.recurrenceId?.clone ? ev.recurrenceId.clone() : ev.recurrenceId, properties: Object.fromEntries(props) });
+      const copy = (x) => (typeof x?.clone === 'function' ? x.clone() : x);
+      const c = fakeEvent({
+        id: ev.id, title: ev.title, startDate: ev.startDate.clone(), endDate: ev.endDate.clone(),
+        recurrenceId: ev.recurrenceId?.clone ? ev.recurrenceId.clone() : ev.recurrenceId,
+        properties: Object.fromEntries(props), propertyParams: Object.fromEntries(params),
+        attendees: attendeeList.map(copy), organizer: copy(ev.organizer),
+        alarms: alarms.map(copy), categories, attachments: attachments.map(copy),
+      });
       c.parentItem = ev.parentItem; c.calendar = ev.calendar;
       // CalItemBase.cloneItemBaseInto clones the recurrence info, so a change to
       // the clone's rule never reaches the stored item before modifyItem.
