@@ -364,6 +364,50 @@ describe('calendar_event_edit', () => {
     });
   });
 
+  describe('an edit of the times the bridge would refuse is refused before the confirmation card', () => {
+    const settle = () => new Promise((r) => setTimeout(r, 5));
+    async function runEdit(args, pid) {
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventEditRun(args, { callId: pid });
+      await settle();
+      return ctx.fsmSessions[pid];
+    }
+    afterEach(() => browser.tmCalendar.modifyCalendarEvent.mockImplementation(async () => ({ ok: true })));
+
+    it('the bridge is asked to check the edit, writing nothing, and its refusal fails the call', async () => {
+      const refusal = 'this is an all-day event, and the edit gives a time of day without all_day. Ask the user';
+      browser.tmCalendar.modifyCalendarEvent.mockImplementation(async (d) => (d.check_only ? { ok: false, error: refusal } : { ok: true }));
+      const sess = await runEdit({ event_id: 'evt1', calendar_id: 'cal1', start_iso: '2099-10-20T15:00:00', add_attendees: [{ email: 'a@example.com' }], send_invitations: true }, 'pid-chk-1');
+      expect(sess.failReason).toBe(refusal);
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
+      const calls = browser.tmCalendar.modifyCalendarEvent.mock.calls.map(([d]) => d);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ event_id: 'evt1', calendar_id: 'cal1', start_iso: '2099-10-20T15:00:00', check_only: true });
+      expect(calls[0]).not.toHaveProperty('add_attendees');
+      expect(calls[0]).not.toHaveProperty('send_invitations');
+    });
+
+    it('an edit the check passes reaches the card, and an edit giving no times is not checked', async () => {
+      const ok = await runEdit({ event_id: 'evt1', end_iso: '2099-10-21T00:00:00' }, 'pid-chk-2');
+      expect(ok.failReason).toBeUndefined();
+      expect(ok.editEventArgs).toMatchObject({ end_iso: '2099-10-21T00:00:00' });
+      expect(ok.editEventArgs).not.toHaveProperty('check_only');
+      browser.tmCalendar.modifyCalendarEvent.mockClear();
+      const rename = await runEdit({ event_id: 'evt1', title: 'Renamed' }, 'pid-chk-3');
+      expect(rename.editEventArgs).toMatchObject({ title: 'Renamed' });
+      expect(browser.tmCalendar.modifyCalendarEvent).not.toHaveBeenCalled();
+    });
+
+    it('a check that throws leaves the edit to the bridge', async () => {
+      browser.tmCalendar.modifyCalendarEvent.mockImplementation(async () => { throw new Error('bridge down'); });
+      const sess = await runEdit({ event_id: 'evt1', start_iso: '2099-10-20T00:00:00' }, 'pid-chk-4');
+      expect(sess.failReason).toBeUndefined();
+      expect(sess.editEventArgs).toMatchObject({ start_iso: '2099-10-20T00:00:00' });
+    });
+  });
+
   describe('completeExecution', () => {
     it('should return error when failReason set', async () => {
       const { ctx } = await import('../chat/modules/context.js');

@@ -219,6 +219,30 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     }
   }
 
+  // An edit of the event's times that the bridge would refuse once it reads
+  // the event (an all-day event given a time of day without all_day, an
+  // all-day end on or before its start, an event or occurrence it cannot
+  // find) is refused here, before the confirmation card, so the assistant can
+  // react: ask the user, or correct the call. The bridge runs the same edit up
+  // to the all-day refusals and writes nothing (check_only), so each rule
+  // lives in one place. The guest changes are merged into a list only after
+  // the card, so they and send_invitations (which the bridge checks against
+  // that list) are left out of the check. A check that throws is left to the
+  // edit itself.
+  if (norm.start_iso || norm.end_iso) {
+    const { add_attendees, remove_attendees, send_invitations, ...checkArgs } = norm;
+    let check = null;
+    try {
+      check = await browser.tmCalendar.modifyCalendarEvent({ ...checkArgs, check_only: true });
+    } catch (e) {
+      log(`[TMDBG Tools] calendar_event_edit: pre-card check failed to run: ${e}`, "warn");
+    }
+    if (check && check.ok === false) {
+      await failOut(String(check.error || "the calendar refused this edit"));
+      return;
+    }
+  }
+
   // calendar_id is OPTIONAL — the bridge (tmCalendar.modifyCalendarEvent) auto-scans
   // every calendar when none is supplied (see tmCalendar.sys.mjs lines 1340-1369).
   // Don't reject here; the schema description tells the LLM the system will resolve

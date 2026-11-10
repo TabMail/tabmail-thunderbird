@@ -28,10 +28,18 @@ the digits stay as read, a relabel converts nothing). Its callers:
   item's kind, as the edit tool's schema says ("Leave empty to keep existing"). Before #309 a missing
   `all_day` read as false, so new dates for an all-day event made it a timed one at midnight. This
   is the one place an edit's kind is decided: `applyDurationPreservation` (and its mirror) writes
-  the converter's values as given (`test/calendarEditKeepsAllDay.test.js`). An edit that gives
-  times and leaves an all-day item ending on or before its start (times of one day, which become
-  one date) is refused before anything is written (`allDayEndError`): an all-day end is the day
-  after the last day (RFC 5545 DTEND is exclusive), so it would be a zero-length event;
+  the converter's values as given (`test/calendarEditKeepsAllDay.test.js`). Two edits of an
+  all-day item are refused before anything is written (`allDayEditError`, after the times are
+  applied, in `modifyCalendarEvent` and in the split's following part), and the message tells the
+  assistant to ask the user: a `start_iso` or `end_iso` with a time of day and no `all_day` (the
+  user may want a timed event or that date all day; a date at midnight, `T00:00:00` as the read
+  tools show one, is a date), and an all-day end on or before the start (an all-day end is the day
+  after the last day, RFC 5545 DTEND is exclusive, so it would be a zero-length event). Until this
+  refusal, #309's converter kept such an edit all-day and dropped the time unasked. The edit tool
+  gets these refusals before its confirmation card, so the assistant can ask the user first:
+  `_runEditCalendarEvent` calls `modifyCalendarEvent` with `check_only: true` for an edit that gives
+  times, and the bridge runs the same edit up to this point and returns without writing (the split
+  too), so the rule is not copied into the tool;
 - `applyRecurrenceToItem`, which relabels an all-day item's start and end before it writes a rule,
   so a rule-only edit or a split's new rule on a series stored with a zoned start keeps the day its
   bare-date UNTIL names. Relabelling a DATE moves none of the series' dates: Thunderbird's
