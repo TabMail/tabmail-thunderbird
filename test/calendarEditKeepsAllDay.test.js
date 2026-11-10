@@ -219,6 +219,36 @@ describe('an edit that would end an all-day event on or before its start is refu
     expect(occurrenceDays(loaded.calendar.items[0])).toEqual(daysFrom(START_DAY, LAST_DAY));
   });
 
+  it('a new start alone, past the end of an event stored with its end on its start', async () => {
+    const ev = fakeEvent({ id: 'evt', title: 'Holiday', startDate: fakeDate(START_DAY), endDate: fakeDate(START_DAY) });
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [ev] });
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'evt', calendar_id: 'cal1', start_iso: `${MOVED_DAY}T00:00:00` });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(REFUSAL);
+    expect(loaded.modifications).toEqual([]);
+  });
+
+  it('one occurrence given times of one day, with an excluded date: nothing is written', async () => {
+    const loaded = await createdSeries();
+    const res = await loaded.api.modifyCalendarEvent({
+      event_id: loaded.res.event_id, calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00`,
+      start_iso: `${MOVED_DAY}T09:00:00`, end_iso: `${MOVED_DAY}T17:00:00`, exdates_add: ['2099-10-05T00:00:00'],
+    });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(REFUSAL);
+    expect(loaded.modifications).toEqual([]);
+    const [item] = loaded.calendar.items;
+    expect(item.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(occurrenceDays(item)).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
+
+  it('a timed event given an end on its start is not refused', async () => {
+    const ev = fakeEvent({ id: 'evt', title: 'Talk', startDate: fakeDateTime(START_DAY, 17), endDate: fakeDateTime(START_DAY, 18) });
+    const item = await edited(loadCalendarBridge(bridgeUrl, { items: [ev] }), 'evt', { start_iso: `${MOVED_DAY}T09:00:00`, end_iso: `${MOVED_DAY}T09:00:00` });
+    expectTimed(item.startDate, MOVED_DAY, 9);
+    expectTimed(item.endDate, MOVED_DAY, 9);
+  });
+
   it('an edit giving no times still saves an all-day event stored with its end on its start', async () => {
     const ev = fakeEvent({ id: 'evt', title: 'Holiday', startDate: fakeDate(START_DAY), endDate: fakeDate(START_DAY) });
     const item = await edited(loadCalendarBridge(bridgeUrl, { items: [ev] }), 'evt', { title: 'Renamed' });
