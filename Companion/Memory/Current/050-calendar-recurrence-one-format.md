@@ -231,4 +231,4 @@ same design (tabmail-ios #421).
   spring change at midnight, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that
   sweep). A monthly and a yearly rule with a stored UNTIL read their last day and restate to the same occurrences.
 - Bridge accessor calls (`boundFromIcs`, `occurrenceInstantOn`, `untilForRRule` → `getTimezoneService`;
-  `asShown` → `getTimezoneService`; `writeRuleItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
+  `asShown`, `toCalIDateTimeInFrameOf` → `getTimezoneService`; `writeRuleItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
