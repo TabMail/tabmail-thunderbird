@@ -47,8 +47,17 @@ all-day value is a DATE with no zone, and a date-start rule's UNTIL is a plain d
 with zoned all-day DATEs (TabMail's before #303, or another app's) are not migrated; the next write
 rewrites them. `asAllDayItem(item)` relabels, through `asAllDayDate`, every DATE of an all-day item:
 DTSTART and DTEND, each EXDATE and RDATE date, and each changed occurrence's RECURRENCE-ID and its own
-DTSTART/DTEND when they are dates (the exception is cloned, relabelled, `removeExceptionFor` +
-`modifyException(ex, true)`, as `onStartDateChange` re-keys one). The digits stay, so nothing moves:
+DTSTART/DTEND when they are dates (the exception is cloned, relabelled and stored again with
+`modifyException(ex, true)`, which replaces the entry under the same `getRidKey`, as
+`onStartDateChange` re-keys one). Timed values in those lists (an occurrence moved to a time of day,
+a date-time EXDATE or RDATE) are left as they are. A rule's date-time UNTIL (released versions up to
+v1.11.1 wrote every UNTIL as a UTC date-time from `new Date(until)`, and some apps do) is written as
+a plain date: the bound's date in the start's stored zone, which is the last day Thunderbird shows
+for the zoned series (ical.js compares the bound with each start at midnight in that zone). So a
+bound in the local evening west of UTC does not gain the next day and one at local midnight east of
+UTC does not lose its day. A date-only bound older versions wrote as `T000000Z` keeps the day it
+showed (west of UTC, the day before the date the user gave); restoring the given date there would
+move the other forms, so it is left (awaiting blessing). The digits stay, so nothing moves:
 `onStartDateChange` diffs the starts in UTC, where a DATE keeps its day (diff zero; comm-central also
 converts each RECURRENCE-ID into the new start's or a matching RDATE's zone, which for a DATE is a
 relabel), and `getRidKey` of a zoned DATE is its digits (converted to UTC, a relabel), so a changed
@@ -60,8 +69,9 @@ change). `addExdateToItem` writes an all-day RECURRENCE-ID as a plain date. A on
 (this_only) writes no series dates: the series keeps whatever zone it has, the exception's
 RECURRENCE-ID is the series' slot as stored, and its new dates are plain (`toCalIDateTimeInFrameOf`);
 its `exdates_add` are written plain on the zoned parent (keyed by date, harmless). A rewritten series
-west of UTC regains the day its UNTIL names, which Thunderbird dropped from the zoned copy (the date
-the user and Google read it as); that is the only occurrence change, and the split tests
+west of UTC with a date UNTIL regains the day its UNTIL names, which Thunderbird dropped from the
+zoned copy (the date the user and Google read it as); that is the only occurrence change (a
+date-time UNTIL keeps its last day, above), and the split tests
 compare the parts with the same series written with plain dates. The split's refusal of an earlier
 part that would lose a day before the split (a look-back comparison of RECURRENCE-IDs) is deleted:
 a zoned all-day start was its only trigger, and none reaches it now. Superseded (#303 to #329): values copied from a stored series kept its zone (the split's

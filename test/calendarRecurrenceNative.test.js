@@ -304,3 +304,33 @@ describe('an all-day series stored in a zone west of UTC, against Thunderbird\'s
     expect(days.at(-1)).toBe('20991014');
   });
 });
+
+// Older TabMail versions, and some apps, wrote a date-time UNTIL beside a zoned
+// all-day start. ical.js compares it with each start at midnight in that zone,
+// so the last day shown is the bound's date in the start's zone. Writing the
+// series as plain dates writes that UNTIL as that date, so the last day stays.
+const tokyo = vtimezone('Test/Tokyo',
+  ['DTSTART:20070101T000000', 'RRULE:FREQ=YEARLY;BYMONTH=1;BYDAY=1SU', 'TZOFFSETFROM:+0900', 'TZOFFSETTO:+0900'],
+  ['DTSTART:20070701T000000', 'RRULE:FREQ=YEARLY;BYMONTH=7;BYDAY=1SU', 'TZOFFSETFROM:+0900', 'TZOFFSETTO:+0900']);
+describe('an all-day series stored in a zone with a date-time UNTIL, against Thunderbird\'s own date and recurrence code', () => {
+  for (const { name, zone, until, last } of [
+    { name: 'west of UTC, bound in the local evening', zone: pacific, until: '20991015T065959Z', last: '20991014' },
+    { name: 'west of UTC, bound at UTC midnight', zone: pacific, until: '20991014T000000Z', last: '20991013' },
+    { name: 'east of UTC, bound at local midnight', zone: tokyo, until: '20991013T150000Z', last: '20991014' },
+  ]) {
+    it(`${name} (UNTIL=${until}): an edit of the series keeps its last day and writes UNTIL as that date`, async () => {
+      const day = (d) => new NativeDateTime(new ICAL.Time({ year: 2099, month: 10, day: d, isDate: true }, zone));
+      const stored = fakeEvent({ id: 'ser', title: 'Series', startDate: day(1), endDate: day(2) });
+      stored.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', `FREQ=DAILY;UNTIL=${until}`)]);
+      stored.recurrenceInfo.item = stored;
+      expect(expanded(storedRule({ calendar: { items: [stored] } }), stored.startDate.clone()).at(-1), 'as stored').toBe(last);
+      const loaded = nativeLoaded([stored], zone);
+      const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', title: 'Renamed' });
+      expect(res, res.error).toMatchObject({ ok: true });
+      const [saved] = loaded.calendar.items;
+      expect(storedRule(loaded)).toBe(`FREQ=DAILY;UNTIL=${last}`);
+      expect({ isDate: saved.startDate.isDate, zone: saved.startDate.timezone.tzid }).toEqual({ isDate: true, zone: 'floating' });
+      expect(expanded(storedRule(loaded), saved.startDate).at(-1)).toBe(last);
+    });
+  }
+});

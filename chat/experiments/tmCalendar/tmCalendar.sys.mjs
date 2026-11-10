@@ -1177,8 +1177,14 @@ function asAllDayDate(dt) {
 // stored with zoned DATEs (TabMail's before #303, or another app's) is
 // otherwise expanded by instant against a bare-date UNTIL, which west of UTC
 // ends it a day before the date the UNTIL names (asAllDayDate). Every write of
-// an all-day series goes through here first: an edit of the whole series, a
-// rule written onto one (applyRecurrenceToItem), and both parts of a split.
+// an all-day series' own dates goes through here first: an edit of the whole
+// series, a rule written onto one (applyRecurrenceToItem), and both parts of a
+// split. A one-occurrence edit writes none of the series' dates and leaves it
+// as stored. A rule's date-time UNTIL (older TabMail versions wrote every
+// UNTIL as one, and so do some apps) is written as the plain date of the last
+// day Thunderbird shows now: the bound's date in the start's stored zone, since
+// ical.js compares it with each zoned date at midnight in that zone (RFC 5545
+// 3.3.10: UNTIL takes DTSTART's value type). A date UNTIL is kept as written.
 // Each value keeps its digits, so no occurrence moves: Thunderbird diffs the
 // two starts in UTC (onStartDateChange), where a DATE keeps its day, and keys a
 // changed occurrence and an excluded date by the RECURRENCE-ID's date
@@ -1188,8 +1194,18 @@ function asAllDayDate(dt) {
 function asAllDayItem(item) {
   if (!item?.startDate?.isDate) return;
   const info = item.recurrenceInfo;
+  const zone = item.startDate.timezone?.tzid && item.startDate.timezone.tzid !== "floating"
+    ? item.startDate.timezone : getTimezoneService().UTC;
   for (const r of info?.getRecurrenceItems({}) || []) {
     if (r.date?.isDate) r.date = asAllDayDate(r.date.clone());
+    if (!isRuleItem(r)) continue;
+    const value = String(r.icalProperty?.value || "");
+    const until = /(?:^|;)UNTIL=(\d{8}T\d{6}Z?)(?=;|$)/i.exec(value);
+    const bound = until && boundFromIcs(until[1]);
+    if (!bound) continue;
+    const day = bound.getInTimezone(zone);
+    const date = `${day.year}${pad2(day.month + 1)}${pad2(day.day)}`;
+    writeRuleItem(r, value.replace(until[0], until[0].replace(until[1], date)));
   }
   item.startDate = asAllDayDate(item.startDate.clone());
   if (item.endDate?.isDate) item.endDate = asAllDayDate(item.endDate.clone());
@@ -1199,7 +1215,6 @@ function asAllDayItem(item) {
     ex.recurrenceId = asAllDayDate(rid.clone());
     if (ex.startDate?.isDate) ex.startDate = asAllDayDate(ex.startDate.clone());
     if (ex.endDate?.isDate) ex.endDate = asAllDayDate(ex.endDate.clone());
-    info.removeExceptionFor(rid);
     info.modifyException(ex, true);
   }
 }

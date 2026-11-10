@@ -373,6 +373,81 @@ describe('a series stored with a zoned all-day start', () => {
     expect(zonedAllDayValues(capped)).toEqual([]);
     expect(zonedAllDayValues(fresh)).toEqual([]);
   });
+
+  // An occurrence of an all-day series moved to a time of day, and an excluded
+  // date-time, stay timed: only the series' dates become plain dates.
+  const TIMED_CHANGED = '2099-10-08';
+  const TIMED_EXCLUDED = '2099-10-05';
+  function storedWithTimedValues() {
+    const series = stored();
+    const info = series.recurrenceInfo;
+    const rid = info.getExceptionIds()[0];
+    const ex = info.getExceptionFor(rid).clone();
+    ex.startDate = fakeDateTime(TIMED_CHANGED, 9, 0, LOCAL_ZONE);
+    ex.endDate = fakeDateTime(TIMED_CHANGED, 10, 0, LOCAL_ZONE);
+    info.modifyException(ex, true);
+    for (const r of [...info.getRecurrenceItems()]) if (r.date && r.isNegative) info.deleteRecurrenceItem(r);
+    info.appendRecurrenceItem(recurrenceDate('EXDATE', fakeDateTime(TIMED_EXCLUDED, 0, 0, LOCAL_ZONE)));
+    return series;
+  }
+  const timedValues = (item) => {
+    const info = item.recurrenceInfo;
+    const rid = info.getExceptionIds().find((r) => dayOf(r) === TIMED_CHANGED);
+    const ex = rid && info.getExceptionFor(rid);
+    const exdate = info.getRecurrenceItems().find((r) => r.date && r.isNegative)?.date;
+    const asTimed = (dt) => dt && { isDate: dt.isDate, zone: dt.timezone?.tzid, at: dt.nativeTime };
+    return { rid: rid && { isDate: rid.isDate, zone: rid.timezone?.tzid }, start: asTimed(ex?.startDate), end: asTimed(ex?.endDate), exdate: asTimed(exdate) };
+  };
+  const TIMED_EXPECTED = () => ({
+    rid: { isDate: true, zone: FLOATING_ZONE.tzid },
+    start: { isDate: false, zone: LOCAL_ZONE.tzid, at: fakeDateTime(TIMED_CHANGED, 9, 0, LOCAL_ZONE).nativeTime },
+    end: { isDate: false, zone: LOCAL_ZONE.tzid, at: fakeDateTime(TIMED_CHANGED, 10, 0, LOCAL_ZONE).nativeTime },
+    exdate: { isDate: false, zone: LOCAL_ZONE.tzid, at: fakeDateTime(TIMED_EXCLUDED, 0, 0, LOCAL_ZONE).nativeTime },
+  });
+
+  it('a whole-series edit of its title alone keeps an occurrence moved to a time of day and an excluded date-time timed', async () => {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [storedWithTimedValues()] });
+    const edit = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', title: 'Renamed' });
+    expect(edit).toMatchObject({ ok: true });
+    const item = loaded.calendar.items.find((it) => it.id === 'ser');
+    expectAllDayWithoutZone(item.startDate, START_DAY);
+    expect(timedValues(item)).toEqual(TIMED_EXPECTED());
+  });
+
+  it('a daily split keeps an occurrence moved to a time of day and an excluded date-time timed in the part before it', async () => {
+    const { capped } = await splitStored(storedWithTimedValues(), { title: 'Renamed' });
+    expectAllDayWithoutZone(capped.startDate, START_DAY);
+    expect(timedValues(capped)).toEqual(TIMED_EXPECTED());
+  });
+
+  // East of UTC, a date-time UNTIL at local midnight names that day as the last
+  // one; the split's following part keeps it, written as a plain date.
+  it('east of UTC, a split\'s following part keeps the last day a date-time UNTIL gives it', async () => {
+    const day = (d) => fakeDate(d, EAST);
+    const ev = fakeEvent({ id: 'ser', title: 'Old', startDate: day(START_DAY), endDate: day(nextDay(START_DAY)) });
+    ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY;UNTIL=20991024T150000Z')]);
+    ev.recurrenceInfo.item = ev;
+    expect(occurrenceDays(ev).at(-1), 'as stored').toBe('2099-10-25');
+    const { capped, fresh } = await splitStored(ev, { title: 'Renamed' });
+    expect(occurrenceDays(capped)).toEqual(daysFrom(START_DAY, '2099-10-14'));
+    expect(occurrenceDays(fresh)).toEqual(daysFrom(SPLIT_DAY, '2099-10-25'));
+    const ruleOf = (item) => item.recurrenceInfo.getRecurrenceItems().find((r) => !r.date).icalProperty.value;
+    expect(ruleOf(fresh)).toBe('FREQ=DAILY;UNTIL=20991025');
+    expect(zonedAllDayValues(fresh)).toEqual([]);
+  });
+});
+
+describe('a single all-day event stored with a zone that is given a rule', () => {
+  it('writes its dates as plain dates, so the rule keeps the last day it names', async () => {
+    const ev = fakeEvent({ id: 'one', title: 'Once', startDate: fakeDate(START_DAY, LOCAL_ZONE), endDate: fakeDate(nextDay(START_DAY), LOCAL_ZONE) });
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [ev] });
+    const edit = await loaded.api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', recurrence: { freq: 'DAILY', until: LAST_DAY } });
+    expect(edit).toMatchObject({ ok: true });
+    const item = loaded.calendar.items.find((it) => it.id === 'one');
+    expectAllDayWithoutZone(item.startDate, START_DAY);
+    expectAllDayWithoutZone(item.endDate, nextDay(START_DAY));
+    expect(occurrenceDays(item)).toEqual(daysFrom(START_DAY, LAST_DAY));
+  });
 });
 
 function guardLength(list, n) {
