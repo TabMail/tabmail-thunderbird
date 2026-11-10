@@ -350,6 +350,11 @@ function addExdateToItem(item, isoString, startDateLike) {
 // (absent BYHOUR, BYMINUTE, BYSECOND), which the `until` read relies on.
 const RECURRENCE_FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
 
+// How far either side of a recurrence_id the series is expanded to find the
+// occurrence starting there (occurrenceNamedBy): more than any zone's offset from
+// the user's, so a DATE or a time in another zone is always inside.
+const OCCURRENCE_LOOKUP_REACH_MS = 2 * 86400 * 1000;
+
 function pad2(n) { return String(n).padStart(2, "0"); }
 
 // The event's rules as RRULE values, in stored order, from its recurrence info:
@@ -562,33 +567,57 @@ function setRuleOnItem(item, value) {
   rinfo.appendRecurrenceItem(rule);
 }
 
-// The occurrence a recurrence_id names, as a RECURRENCE-ID of `master`'s series.
-// The read tools show a RECURRENCE-ID as Thunderbird prints it: its digits in
-// its own frame (the series' start's zone, floating, or a DATE for an all-day
-// series), with a trailing `Z` when that frame is UTC. So the digits are read
-// back in the series' frame, not in the user's zone, and a `Z` value as UTC.
-// Null when they are not a date.
-function occurrenceIdInSeries(iso, master) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(Z?))?$/i.exec(String(iso || "").trim());
-  if (!m) return null;
-  const [, y, mo, d, hh = "00", mi = "00", ss = "00", z = ""] = m;
-  const start = master.startDate;
-  const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
-  if (z && !start.isDate) {
-    // A UTC value, in the series' own zone when it has one, so the following
-    // part keeps the series' zone (and its daylight saving changes).
-    dt.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), getTimezoneService().UTC);
-    const zone = zonedStartZone(master);
-    return zone ? dt.getInTimezone(zone) : dt;
-  }
-  dt.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), start.timezone);
-  if (start.isDate) dt.isDate = true;
-  return dt;
+// The occurrence of `item`'s series that a recurrence_id names, for every edit
+// that targets occurrences (one occurrence, or this and the following ones).
+// The tools document recurrence_id as the occurrence's start_iso, which the read
+// tools print in the user's zone (or the call's `timezone`, `tzId`), and for an
+// all-day series as its date. Thunderbird's own expansion of the series (every
+// rule, added and excluded date, and a changed occurrence at its own time)
+// decides which occurrence starts there. `{ occurrence }`, whose recurrenceId is
+// the series' own RECURRENCE-ID for it, or `{ error }` when no occurrence, or
+// more than one, starts there: nothing is ever written for a time that is not
+// an occurrence (getOccurrenceFor would make one up for any time).
+function occurrenceNamedBy(item, iso, tzId) {
+  const at = toCalIDateTime(String(iso || ""), tzId);
+  if (!at) return { error: "invalid recurrence_id format (expected ISO8601)" };
+  if (item?.startDate?.isDate) at.isDate = true;
+  // A range wide enough for any zone's offset from the user's; only an
+  // occurrence that starts exactly there counts.
+  const ms = at.nativeTime / 1000;
+  const from = boundFromIcs(toIcsUntil(new Date(ms - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
+  const to = boundFromIcs(toIcsUntil(new Date(ms + OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
+  if (!from || !to || !item?.recurrenceInfo) return { error: `recurrence_id ${iso} is not the start of an occurrence of this series` };
+  const starting = [...(item.recurrenceInfo.getOccurrences(from, to, 0) || [])]
+    .filter((occ) => occ?.startDate && occ.startDate.compare(at) === 0);
+  if (starting.length === 1) return { occurrence: starting[0] };
+  return {
+    error: starting.length
+      ? `recurrence_id ${iso} is the start of more than one occurrence of this series; change it in the calendar app`
+      : `recurrence_id ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`,
+  };
+}
+
+// A DATE's day `days` days away, as [YYYY, MM, DD] from its own digits. A DATE's
+// epoch time depends on the zone it carries (an all-day event TabMail creates is
+// a DATE in the user's zone), so all-day day arithmetic never uses it.
+function dayDigitsFrom(date, days) {
+  const d = new Date(Date.UTC(date.year, date.month, date.day + days));
+  return [String(d.getUTCFullYear()).padStart(4, "0"), pad2(d.getUTCMonth() + 1), pad2(d.getUTCDate())];
+}
+
+// The DATE `days` days after `date`, in its zone.
+function dayDateFrom(date, days) {
+  const [y, m, d] = dayDigitsFrom(date, days).map(Number);
+  const out = date.clone();
+  out.resetTo(y, m - 1, d, 0, 0, 0, date.timezone);
+  out.isDate = true;
+  return out;
 }
 
 // How one rule of `master`'s series divides at `split`, the first occurrence of
-// the following part (#265). `afterSplit` is the next instant after the split,
-// and `cap` the UNTIL value that ends a rule just before it.
+// the following part (#265). `afterSplit` is just after the split (the next day
+// for an all-day series, the next second otherwise), and `cap` the UNTIL value
+// that ends a rule just before it.
 //   - earlier: the rule's value for the earlier part, capped at the split; null
 //     when the rule already ends before it and stays as it is.
 //   - following: its value for the following part; null when it has nothing
@@ -616,7 +645,9 @@ function splitRule(rule, master, split, afterSplit, cap) {
   if (until !== null) {
     const bound = boundFromIcs(until);
     if (!bound) return { error: `this series' end cannot be read (UNTIL=${until})` };
-    return bound.nativeTime < split.nativeTime ? { earlier: null, following: null, aligned: false } : carriedOn(value);
+    // compare, not epoch times: an all-day split is a DATE, compared by its
+    // digits, and its epoch time depends on its zone.
+    return bound.compare(split) < 0 ? { earlier: null, following: null, aligned: false } : carriedOn(value);
   }
   const count = valueOf("COUNT");
   if (count !== null) {
@@ -1754,11 +1785,26 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
 
             const patch = details.patch || details; // Allow patch to be in details directly
-            
-            // Resolve the exact item using (id, recurrenceId) pair
+
+            // Honor an explicit timezone on the modify call so naive ISO
+            // patches land in the requested zone, mirroring createCalendarEvent.
+            // recurrence_id is read in it too: it is the occurrence's start_iso.
+            const editTzOverride = typeof patch.timezone === "string" && patch.timezone
+              ? patch.timezone
+              : (typeof details.timezone === "string" && details.timezone ? details.timezone : null);
+
+            // Resolve the exact item: the event, or with a recurrence_id the
+            // occurrence of its series that starts there (occurrenceNamedBy),
+            // which refuses a time that is not an occurrence.
             const all = Array.from(mgr.getCalendars({}));
-            let item = null, cal = null;
-            
+            let item = null, cal = null, lookupError = null;
+            const targetIn = (parent) => {
+              if (!recurIdStr) return parent;
+              const named = occurrenceNamedBy(parent, recurIdStr, editTzOverride);
+              if (named.error) { lookupError = named.error; return null; }
+              return named.occurrence;
+            };
+
             // If calendar_id is provided, search that calendar first
             if (calendar_id) {
               const targetCal = all.find(c => String(c.id) === String(calendar_id));
@@ -1766,26 +1812,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 try {
                   const parent = await targetCal.getItem(eventId);
                   if (parent) {
-                    if (recurIdStr) {
-                      // Find specific occurrence from the parent
-                      const rinfo = parent.recurrenceInfo;
-                      if (rinfo) {
-                        // Build a calIDateTime from the recurrenceId string
-                        const rid = toCalIDateTime(recurIdStr);
-                        if (rid) {
-                          // Important: recurrenceId must match the value type (all-day vs date-time)
-                          rid.isDate = !!parent.startDate?.isDate;
-                          const occ = rinfo.getOccurrenceFor(rid);
-                          if (occ) {
-                            item = occ; cal = targetCal;
-                            tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found occurrence for recurrenceId: ${recurIdStr} in calendar: ${calendar_id}`);
-                          }
-                        }
-                      }
-                    } else {
-                      // Non-recurring or series-parent edit
-                      item = parent; cal = targetCal;
-                      tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found master item: ${eventId} in calendar: ${calendar_id}`);
+                    item = targetIn(parent);
+                    if (item) {
+                      cal = targetCal;
+                      tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${recurIdStr ? `occurrence for recurrenceId: ${recurIdStr}` : `item: ${eventId}`} in calendar: ${calendar_id}`);
                     }
                   }
                 } catch (e) {
@@ -1793,52 +1823,32 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 }
               }
             }
-            
+
             // If not found in specific calendar (or no calendar_id provided), search all calendars
             if (!item) {
               for (const c of all) {
                 try {
                   const parent = await c.getItem(eventId);
                   if (!parent) continue;
-
-                  if (recurIdStr) {
-                    // Find specific occurrence from the parent
-                    const rinfo = parent.recurrenceInfo;
-                    if (!rinfo) { continue; } // it wasn't a series after all
-                    // Build a calIDateTime from the recurrenceId string
-                    const rid = toCalIDateTime(recurIdStr);
-                    if (!rid) { continue; }
-                    // Important: recurrenceId must match the value type (all-day vs date-time)
-                    rid.isDate = !!parent.startDate?.isDate;
-                    const occ = rinfo.getOccurrenceFor(rid);
-                    if (!occ) { continue; }
-                    item = occ; cal = c;
-                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found occurrence for recurrenceId: ${recurIdStr} in calendar: ${c.id}`);
-                  } else {
-                    // Non-recurring or series-parent edit
-                    item = parent; cal = c;
-                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found master item: ${eventId} in calendar: ${c.id}`);
+                  item = targetIn(parent);
+                  if (item) {
+                    cal = c;
+                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${recurIdStr ? `occurrence for recurrenceId: ${recurIdStr}` : `item: ${eventId}`} in calendar: ${c.id}`);
+                    break;
                   }
-                  if (item) break;
                 } catch (e) {
                   console.warn(`[tmCalendar] modifyCalendarEvent: error finding item in calendar ${c.id}:`, e);
                 }
               }
             }
-            
-            if (!item) return { ok: false, error: "event not found (id/recurrenceId mismatch)" };
+
+            if (!item) return { ok: false, error: lookupError || "event not found (id/recurrenceId mismatch)" };
 
             // Use proper target selection for editing
             const { base, scope, isOccurrence, hasSeries } = pickEditTarget(item, details);
             const clone = base.clone();
             tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
             
-
-            // Honor an explicit timezone on the modify call so naive ISO
-            // patches land in the requested zone, mirroring createCalendarEvent.
-            const editTzOverride = typeof patch.timezone === "string" && patch.timezone
-              ? patch.timezone
-              : (typeof details.timezone === "string" && details.timezone ? details.timezone : null);
             if (typeof patch.title === "string") clone.title = patch.title;
 
             // Apply start/end with duration preservation when only one side
@@ -2153,39 +2163,38 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               return { ok: false, error: "event is not recurring — use modifyCalendarEvent for one-off events" };
             }
 
-            // 3. The split point: the occurrence recurrence_id names, read in the
-            // series' own frame (occurrenceIdInSeries). The following part
-            // starts there, in the series' zone.
-            const splitDt = occurrenceIdInSeries(splitIso, master);
-            if (!splitDt) return { ok: false, error: "invalid recurrence_id format (expected ISO8601)" };
+            // 3. The split point: the occurrence recurrence_id names
+            // (occurrenceNamedBy, which refuses a time that is not one). The
+            // series divides at that occurrence's RECURRENCE-ID, in the series'
+            // own frame, so a changed occurrence splits where it belongs and the
+            // following part keeps the series' zone.
+            const named = occurrenceNamedBy(master, splitIso, tzOverride);
+            if (named.error) return { ok: false, error: named.error };
+            const splitDt = named.occurrence.recurrenceId.clone();
             if (splitDt.compare(master.startDate) <= 0) {
               return { ok: false, error: "recurrence_id is the series' first occurrence: to change every occurrence, edit the whole series (edit_scope 'all')" };
             }
 
             // 4. Compute UNTIL so the master ends BEFORE `splitDt` (the first
             // occurrence that should belong to the new series), and the bound
-            // just after the split (the next day for an all-day series, in its
-            // own frame; the next second otherwise), which bounds the check that
-            // a rule makes an occurrence at the split.
+            // just after the split (the next day for an all-day series; the next
+            // second otherwise), which bounds the check that a rule makes an
+            // occurrence at the split.
             //
             // RFC 5545 §3.3.10: the UNTIL value type MUST match DTSTART's.
             //   - All-day master (DTSTART is VALUE=DATE) → UNTIL must be a bare
-            //     DATE `YYYYMMDD`. Use (split − 1 day).
+            //     DATE `YYYYMMDD`. Use (split − 1 day), from the DATE's own digits.
             //   - Timed master → UNTIL must be a UTC date-time `…THHMMSSZ`.
             //     Use (split − 1 second).
             // `toIcsUntil` only emits the date-time form, so the all-day branch
             // formats the bare DATE itself.
             const isAllDayMaster = !!master.startDate?.isDate;
-            const splitMs = splitDt.nativeTime / 1000;
-            const digitsOf = (ms) => {
-              const day = new Date(ms);
-              return [day.getUTCFullYear().toString().padStart(4, "0"), pad2(day.getUTCMonth() + 1), pad2(day.getUTCDate())];
-            };
             let untilValue, afterSplit;
             if (isAllDayMaster) {
-              untilValue = digitsOf(splitMs - 86400 * 1000).join("");
-              afterSplit = occurrenceIdInSeries(digitsOf(splitMs + 86400 * 1000).join("-"), master);
+              untilValue = dayDigitsFrom(splitDt, -1).join("");
+              afterSplit = dayDateFrom(splitDt, 1);
             } else {
+              const splitMs = splitDt.nativeTime / 1000;
               untilValue = toIcsUntil(new Date(splitMs - 1000).toISOString());
               afterSplit = boundFromIcs(toIcsUntil(new Date(splitMs + 1000).toISOString()));
             }
@@ -2203,8 +2212,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (!masterItems.some(isSeriesRule)) {
               return { ok: false, error: "master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)" };
             }
-            // A new rule for the following part replaces the rules it would
-            // carry on, so they need not make an occurrence at the split.
+            // A rule carried on must make an occurrence at the split to keep its
+            // dates. A new rule for the following part replaces every rule it
+            // would carry on, so then their alignment does not matter; the split
+            // point is an occurrence of the series either way (step 3).
             const newRule = !!(patch.recurrence && typeof patch.recurrence === "object");
             const plans = [];
             for (const r of masterItems) {
@@ -2212,16 +2223,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const plan = splitRule(r, master, splitDt, afterSplit, untilValue);
               if (plan.error) return { ok: false, error: plan.error };
               if (!newRule && plan.following && !plan.aligned) {
-                return { ok: false, error: `recurrence_id ${splitIso} is not an occurrence of this series' rule ${String(r.icalProperty.value)}, so the part from there on cannot keep its dates; use the recurrence_id of an occurrence as the read tools show it` };
+                return { ok: false, error: `recurrence_id ${splitIso} is not an occurrence of this series' rule ${String(r.icalProperty.value)}, so the part from there on cannot keep its dates; split at an occurrence every rule makes, or give the following part its own recurrence` };
               }
               plans.push(plan);
-            }
-            // The split must be an occurrence of the series: one a rule carries
-            // on from, or an added date.
-            const isAddedDate = (r) => String(r?.icalProperty?.propertyName || "").toUpperCase() === "RDATE";
-            if (!newRule && !plans.some((p) => p && p.following)
-                && !masterItems.some((r) => isAddedDate(r) && r.date && r.date.compare(splitDt) === 0)) {
-              return { ok: false, error: `recurrence_id ${splitIso} is not an occurrence of this series` };
             }
             const fromSplitOn = (dt) => !!dt && dt.compare(splitDt) >= 0;
 

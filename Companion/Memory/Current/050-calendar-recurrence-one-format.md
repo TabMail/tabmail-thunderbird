@@ -97,19 +97,31 @@ same design (tabmail-ios #421).
   `recurrenceInfo`. The split rewrites each rule item through `writeRuleItem` (below).
 - **Split ("this and following") keeps the series (#265).** The two parts together make exactly the occurrences the
   series made. Both are built before anything is written:
-  - **Split point:** `recurrence_id` is read in the series' own frame (`occurrenceIdInSeries`: its digits in the
-    start's zone, floating, or a DATE for an all-day series), as the read tools show it (Thunderbird prints a UTC
-    RECURRENCE-ID with a trailing `Z`, read as that instant and converted to the series' zone); the following part
-    starts there, in the series' zone. A split at or before the first occurrence is refused (edit the whole series).
+  - **Split point: `occurrenceNamedBy`, the one resolver for every edit that names an occurrence** (a split, and an
+    edit of one occurrence, #285). `recurrence_id` is the occurrence's `start_iso` as the read tools print it: in
+    the user's zone (or the call's `timezone`), an all-day occurrence as its date; the read tools print an
+    occurrence's `recurrence_id` as that same value. Thunderbird's own expansion decides which occurrence starts
+    there: `recurrenceInfo.getOccurrences` over `OCCURRENCE_LOOKUP_REACH_MS` either side (every rule, RDATE and
+    EXDATE, and a changed occurrence at its own time), matched with `calIDateTime.compare` (by instant; a DATE by
+    date; floating time by its digits). No occurrence, or more than one, is refused and nothing is written:
+    `getOccurrenceFor` makes up a proxy for any time, and saving that adds an occurrence the series never had (#285).
+    The series divides at the occurrence's RECURRENCE-ID (its slot, in the series' frame), so a changed occurrence
+    splits where it belongs and the following part starts in the series' zone. A split at or before the first
+    occurrence is refused (edit the whole series). Superseded (r1 review of #265): `occurrenceIdInSeries` read
+    `recurrence_id` in the series' own zone, which is not what the read tools print for a series in another zone,
+    and an RDATE scan stood in for the existence check, which a new rule waived.
   - **Each rule (`splitRule`):** a rule whose UNTIL is before the split stays on the earlier part unchanged and is
     not carried on; a COUNT rule whose count is used up before the split likewise. Otherwise the earlier part's copy
-    is capped (UNTIL/COUNT dropped, `UNTIL` = split minus one second, or the day before for an all-day series) and
+    is capped (UNTIL/COUNT dropped, `UNTIL` = split minus one second, or the day before for an all-day series, from
+    the DATE's own digits, `dayDigitsFrom`/`dayDateFrom`: a DATE's epoch time depends on its zone, 034) and
     the following part's copy keeps UNTIL, with COUNT reduced to the occurrences still to come (`getOccurrences`
     from the start up to the split). A rule is expanded from its event's start, so a carried rule must make an
     occurrence at the split (`aligned`, checked with `getOccurrences` over [split, just after]); otherwise the split
-    is refused, since the following part would not keep its dates. The split must be an occurrence of the series:
-    one a rule carries on from, or an added date (RDATE). A new rule for the following part (`recurrence`) replaces
-    the carried rules, so neither check applies to it.
+    is refused, since the following part would not keep its dates. A new rule for the following part (`recurrence`)
+    replaces the carried rules, so their alignment does not matter; the split point is an occurrence either way. A
+    rule's UNTIL is compared with the split by `compare`, never by epoch time: an all-day UNTIL names a date, and
+    west of UTC a DATE's day starts after the UTC midnight that date names, so an epoch comparison dropped a last
+    occurrence on the split day.
   - **Dates and changed occurrences:** EXDATEs, RDATEs and changed occurrences before the split stay on the earlier
     part; those from the split on move to the following part (an RDATE is not bounded by UNTIL, so one left on the
     earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's

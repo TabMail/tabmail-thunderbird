@@ -164,17 +164,20 @@ function formatDetailed(it, cal) {
     `event_id: ${it.id || ""}`,
   ];
   
-  // Show recurrence info for occurrences
-  if (it.isOccurrence && it.recurrenceId) {
-    lines.push(`recurrence_id: ${it.recurrenceId}`);
-  }
-  
   // Use naive ISO format for consistency with LLM input format
   // An all-day DATE is frame-free: render its own digits, never the epoch
   // re-expressed in the user's zone (which names the previous day west of UTC).
   const allDayFrame = !!(it.isAllDay && it.startDay);
+  const startIso = allDayFrame ? `${it.startDay}T00:00:00` : toNaiveIso(it.startMs);
+
+  // An occurrence's recurrence_id is its start, the value the edit tools take
+  // to name it (they find the occurrence of the series that starts there).
+  if (it.isOccurrence && it.recurrenceId) {
+    lines.push(`recurrence_id: ${startIso}`);
+  }
+
   lines.push(`title: ${it.title || "(No title)"}`,
-    `start_iso: ${allDayFrame ? `${it.startDay}T00:00:00` : toNaiveIso(it.startMs)}`,
+    `start_iso: ${startIso}`,
     `end_iso: ${allDayFrame ? `${it.endDay || it.startDay}T00:00:00` : toNaiveIso(it.endMs)}`,
     `all_day: ${it.isAllDay ? "yes" : "no"}`);
   if (it.isRecurring) lines.push(`recurring: yes`);
