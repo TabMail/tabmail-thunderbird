@@ -1036,15 +1036,27 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
  * @param {string} iso - ISO8601 datetime string (preferably without timezone offset)
  * @param {string} [tzId] - Optional IANA tz id (e.g. "America/Los_Angeles"). When
  *   set and the ISO is naive, the wall-clock components are anchored in this
- *   zone instead of the user's TB-default zone. Unknown ids fall back to
- *   defaultTimezone with a warn.
+ *   zone instead of the user's TB-default zone. An id Thunderbird does not
+ *   know throws, naming it: the create or edit that gave it fails with that
+ *   error before anything is saved, so the assistant can correct the zone.
  * @returns {calIDateTime|null} - Thunderbird calendar datetime object or null if invalid
  */
 function toCalIDateTime(iso, tzId) {
+  const tzService = getTimezoneService();
+  // The zone the caller names, resolved outside the try below so a refusal is
+  // never turned into null. Mozilla's calITimezoneService.getTimezone returns
+  // null for an unknown id; guard via the tzid round-trip too.
+  let overrideTimezone = null;
+  if (typeof tzId === "string" && tzId) {
+    const candidate = tzService.getTimezone(tzId);
+    if (!candidate || !candidate.tzid || candidate.tzid === "floating") {
+      throw new Error(`timezone "${tzId}" is not a time zone the calendar knows. Use an IANA time zone id (for example Asia/Tokyo), or leave timezone out for the user's own zone, then retry.`);
+    }
+    overrideTimezone = candidate;
+  }
   try {
     const Ci = globalThis.Ci;
     const Cc = globalThis.Cc;
-    const tzService = getTimezoneService();
     const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
 
     const d = new Date(iso);
@@ -1057,23 +1069,6 @@ function toCalIDateTime(iso, tzId) {
     const hasOffset = /[zZ]|[+\-]\d{2}:?\d{2}$/.test(String(iso));
     if (hasOffset && !iso.endsWith('Z') && !/[+\-]00:?00$/.test(iso)) {
       console.warn(`[tmCalendar] toCalIDateTime: WARNING - ISO string '${iso}' has timezone offset. This may cause DST boundary errors. Use naive format without offset instead.`);
-    }
-
-    // Resolve the override timezone if the caller passed one. Mozilla's
-    // calITimezoneService.getTimezone returns null/UTC for unknown ids on
-    // some builds — guard via tzid round-trip.
-    let overrideTimezone = null;
-    if (typeof tzId === "string" && tzId) {
-      try {
-        const candidate = tzService.getTimezone(tzId);
-        if (candidate && candidate.tzid && candidate.tzid !== "floating") {
-          overrideTimezone = candidate;
-        } else {
-          console.warn(`[tmCalendar] toCalIDateTime: unknown tzId '${tzId}', falling back to defaultTimezone`);
-        }
-      } catch (e) {
-        console.warn(`[tmCalendar] toCalIDateTime: getTimezone('${tzId}') threw, falling back: ${e}`);
-      }
     }
 
     let timezone;
