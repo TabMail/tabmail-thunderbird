@@ -209,25 +209,25 @@ describe('the following part of a split keeps the series\' properties', () => {
 });
 
 describe('a changed attendee list on the following part', () => {
-  const LIST = [{ email: 'ANA@example.com' }, { email: 'cleo@example.com', name: 'Cleo' }, { email: 'organizer@example.com' }];
+  const CHANGE = { remove_attendees: [{ email: 'BEN@example.com' }, { email: 'room@example.com' }], add_attendees: [{ email: 'cleo@example.com', name: 'Cleo' }] };
 
-  it('keeps the series\' entry for everyone still on it, matched without regard to case, adds the others unanswered, in the list\'s order', async () => {
-    const { res, fresh } = await split(series(), { attendees: LIST });
+  it('keeps the series\' entry for everyone still on it, matched without regard to case, and adds the others unanswered', async () => {
+    const { res, fresh } = await split(series(), CHANGE);
     expect(res, res.error).toMatchObject({ ok: true });
     expect(entries(fresh)).toEqual([
+      SERIES_ENTRIES[0],
       SERIES_ENTRIES[1],
       { id: 'mailto:cleo@example.com', commonName: 'Cleo', participationStatus: 'NEEDS-ACTION', rsvp: 'TRUE', role: undefined, userType: undefined, properties: undefined },
-      SERIES_ENTRIES[0],
     ]);
   });
 
   it('and a moved part asks again everyone it keeps but the organizer', async () => {
-    const { res, fresh } = await split(series(), { attendees: LIST, start_iso: '2099-10-15T19:00:00' });
+    const { res, fresh } = await split(series(), { ...CHANGE, start_iso: '2099-10-15T19:00:00' });
     expect(res, res.error).toMatchObject({ ok: true });
     expect(entries(fresh).map((e) => [e.id, e.participationStatus, e.rsvp])).toEqual([
+      ['mailto:organizer@example.com', 'ACCEPTED', 'FALSE'],
       ['mailto:ana@example.com', 'NEEDS-ACTION', 'TRUE'],
       ['mailto:cleo@example.com', 'NEEDS-ACTION', 'TRUE'],
-      ['mailto:organizer@example.com', 'ACCEPTED', 'FALSE'],
     ]);
   });
 });

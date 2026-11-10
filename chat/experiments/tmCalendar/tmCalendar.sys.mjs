@@ -332,7 +332,7 @@ const OCCURRENCE_LOOKUP_REACH_MS = 2 * 86400 * 1000;
 // all_day alone changes nothing; a change to or from all-day comes with times.
 // organizer_email is not one: the edit tool fills it in from the calendar for
 // every edit that names one, so it is no change of the occurrence's.
-const SPLIT_FIELDS_OF_AN_OCCURRENCE = ["title", "location", "description", "transparency", "attendees",
+const SPLIT_FIELDS_OF_AN_OCCURRENCE = ["title", "location", "description", "transparency",
   "start_iso", "end_iso"];
 
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -1087,35 +1087,64 @@ function formatAttendees(attArr) {
   } catch (_) { return []; }
 }
 
-// An attendee's address without "mailto:", in lower case: Thunderbird matches
+// An address without "mailto:", in the case it was written. Spaces around it
+// and a repeated "mailto:" are dropped, so a stored id and an address an edit
+// gives are read the same way.
+function addressAsWritten(id) {
+  let s = String(id || "").trim();
+  while (/^mailto:/i.test(s)) s = s.slice(7).trim();
+  return s;
+}
+// The address attendees are matched by, in lower case: Thunderbird matches
 // attendees by address without regard to case (getAttendeeById).
 function attendeeAddress(id) {
-  return String(id || "").replace(/^mailto:/i, "").trim().toLowerCase();
+  return addressAsWritten(id).toLowerCase();
 }
 
-// Sets an event's attendees to an edit's list (patch.attendees, the edit's
-// additions and removals already applied by the JS layer). Everyone still on
-// the list keeps their entry as stored (their answer, role and other
-// details), in the list's order; the others are added and have not answered
-// yet. Thunderbird's own event dialog keeps the attendees it does not change.
-function setAttendeeList(item, list) {
+// An edit's guest change, or null when it gives none.
+function guestChangeOf(patch) {
+  const add = Array.isArray(patch.add_attendees) ? patch.add_attendees : [];
+  const remove = Array.isArray(patch.remove_attendees) ? patch.remove_attendees : [];
+  return add.length || remove.length ? { add, remove } : null;
+}
+
+// Applies an edit's guest change to one item's own list, the only place the
+// change is merged. Removals come first: "*" alone removes everyone, an
+// address removes that guest whatever its case. Each addition not already
+// listed is then appended once, in the order given, as a guest who has not
+// answered. Everyone who stays keeps their entry as stored (their answer,
+// role and other details), as Thunderbird's own event dialog does.
+function applyGuestChange(item, { add, remove }) {
   const Ci = globalThis.Ci; const Cc = globalThis.Cc;
-  const current = new Map(item.getAttendees().map((a) => [attendeeAddress(a.id), a]));
+  const clearAll = remove.some((r) => String(r?.email ?? "").trim() === "*");
+  const gone = new Set(remove.map((r) => attendeeAddress(r?.email)).filter((a) => a && a !== "*"));
+  const kept = clearAll ? [] : item.getAttendees().filter((a) => !gone.has(attendeeAddress(a.id)));
+  const listed = new Set(kept.map((a) => attendeeAddress(a.id)));
   item.removeAllAttendees();
-  for (const a of list) {
-    const email = String(a?.email || a?.id || "");
-    if (!email) continue;
-    const kept = current.get(attendeeAddress(email));
-    if (kept) {
-      item.addAttendee(kept);
-      continue;
-    }
+  for (const a of kept) item.addAttendee(a);
+  for (const a of add) {
+    const address = attendeeAddress(a?.email);
+    if (!address || address === "*" || listed.has(address)) continue;
+    listed.add(address);
     const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-    att.id = email.startsWith("mailto:") ? email : `mailto:${email}`;
+    att.id = `mailto:${addressAsWritten(a.email)}`;
     if (a?.name) att.commonName = String(a.name);
     att.participationStatus = "NEEDS-ACTION";
     att.rsvp = "TRUE";
     item.addAttendee(att);
+  }
+}
+
+// Applies an edit's guest change to a series and to each occurrence of it
+// that was changed on its own: such an occurrence has its own guest list,
+// which keeps its own differences apart from what the change names.
+function applyGuestChangeToSeries(series, change) {
+  applyGuestChange(series, change);
+  const info = series.recurrenceInfo;
+  for (const rid of [...(info?.getExceptionIds({}) || [])]) {
+    const ex = info.getExceptionFor(rid).clone();
+    applyGuestChange(ex, change);
+    info.modifyException(ex, true);
   }
 }
 
@@ -1940,8 +1969,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
               // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
               const splitPatch = {};
-              for (const k of ["title", "location", "description", "transparency", "attendees",
-                               "send_invitations", "recurrence",
+              for (const k of ["title", "location", "description", "transparency",
+                               "add_attendees", "remove_attendees", "send_invitations", "recurrence",
                                "start_iso", "end_iso", "all_day", "exdates_add"]) {
                 if (details[k] !== undefined) splitPatch[k] = details[k];
               }
@@ -1961,13 +1990,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // series and ignores recurrence_id, so the lookup below reads it
             // only for "this_only".
             const occurrenceIdStr = editScope === "this_only" ? recurIdStr : "";
-
-            // Validate attendees when invitations are requested
-            const sendInvites = !!details.send_invitations;
-            const attendees = Array.isArray(details.attendees) ? details.attendees : [];
-            if (sendInvites && attendees.length === 0) {
-              return { ok: false, error: "send_invitations=true requires at least one attendee" };
-            }
 
             const patch = details.patch || details; // Allow patch to be in details directly
 
@@ -2071,6 +2093,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
             const editError = allDayEditError(clone, patch);
             if (editError) return { ok: false, error: editError };
+
+            // The guest change, on every item the edit covers: the event, the
+            // one occurrence, or the series and each of its changed occurrences.
+            const guestChange = guestChangeOf(patch);
+            if (guestChange) {
+              if (scope === "series") applyGuestChangeToSeries(clone, guestChange);
+              else applyGuestChange(clone, guestChange);
+            }
+            // Invitations need someone to invite, once the change is applied.
+            if (details.send_invitations && clone.getAttendees().length === 0) {
+              return { ok: false, error: "send_invitations=true requires at least one attendee" };
+            }
             // A check before the confirmation card stops here: nothing is written.
             if (details.check_only) return { ok: true };
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
@@ -2141,15 +2175,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 }
               } catch (e) {
                 console.warn("[tmCalendar] modifyCalendarEvent: failed to set description:", e);
-              }
-            }
-
-            // Handle attendees updates: everyone still on the list keeps their entry
-            if (Array.isArray(patch.attendees)) {
-              try {
-                setAttendeeList(clone, patch.attendees);
-              } catch (e) {
-                console.warn("[tmCalendar] modifyCalendarEvent: failed to update attendees:", e);
               }
             }
 
@@ -2308,12 +2333,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             if (!eventId) return { ok: false, error: "event_id is required" };
             if (!splitIso) return { ok: false, error: "recurrence_id is required for splitRecurringEvent" };
-
-            // Validate attendees when invitations are requested
-            const patchAttendees = Array.isArray(patch.attendees) ? patch.attendees : [];
-            if (sendInvites && patchAttendees.length === 0) {
-              return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
-            }
 
             // 1. Locate the master event (series parent) — scan all calendars if no hint.
             const allCals = Array.from(mgr.getCalendars({}));
@@ -2499,10 +2518,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               newEv.setProperty("TRANSP", patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE");
             }
 
-            // Attendees: the series', each with its answer and details. A changed
-            // list keeps the series' entry for everyone still on it.
-            if (Array.isArray(patch.attendees)) setAttendeeList(newEv, patch.attendees);
-
             // Recurrence — the master's from the split on: each rule that carries
             // on (splitRule), and the excluded and added dates and changed
             // occurrences from the split on. The clone's changed occurrences take
@@ -2524,6 +2539,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
               newEv.recurrenceInfo = followingInfo;
               asAllDayItem(newEv);
+              // The guest change, on the new series and each changed occurrence
+              // it carries; the earlier part keeps its guests.
+              const guestChange = guestChangeOf(patch);
+              if (guestChange) applyGuestChangeToSeries(newEv, guestChange);
               // Before the time change below, which moves them with the part.
               for (const rid of exdates.rids) if (fromSplitOn(rid)) addExdateToItem(newEv, rid);
             } catch (re) {
@@ -2550,6 +2569,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
             const editError = allDayEditError(newEv, patch);
             if (editError) return { ok: false, error: editError };
+            // Invitations need someone to invite, once the change is applied.
+            if (sendInvites && newEv.getAttendees().length === 0) {
+              return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
+            }
             // A check before the confirmation card stops here: nothing is written.
             if (details.check_only) return { ok: true };
 

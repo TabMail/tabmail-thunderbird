@@ -54,9 +54,8 @@ function normalizeArgs(args = {}) {
   // Attendees are delta-based (calendar_event_edit-v1.5.21+):
   //   add_attendees: [{email, name?}] — appended to existing list
   //   remove_attendees: [{email}]   — dropped from existing list ("*" = clear all)
-  // The FSM exec state resolves these against the event's current attendee list and
-  // produces the flat `attendees` payload that browser.tmCalendar.modifyCalendarEvent
-  // expects. Legacy whole-list `attendees` is intentionally NOT accepted here; the
+  // They go to browser.tmCalendar.modifyCalendarEvent as given; the bridge applies
+  // them to each item the edit covers. Legacy whole-list `attendees` is intentionally NOT accepted here; the
   // backend version-pins older clients to the v1.5.7 schema instead.
   if (Array.isArray(a.add_attendees)) {
     out.add_attendees = a.add_attendees
@@ -225,15 +224,11 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   // find) is refused here, before the confirmation card, so the assistant can
   // react: ask the user, or correct the call. The bridge runs the same edit up
   // to the all-day refusals and writes nothing (check_only), so each rule
-  // lives in one place. The guest changes are merged into a list only after
-  // the card, so they and send_invitations (which the bridge checks against
-  // that list) are left out of the check. A check that throws is left to the
-  // edit itself.
+  // lives in one place. A check that throws is left to the edit itself.
   if (norm.start_iso || norm.end_iso) {
-    const { add_attendees, remove_attendees, send_invitations, ...checkArgs } = norm;
     let check = null;
     try {
-      check = await browser.tmCalendar.modifyCalendarEvent({ ...checkArgs, check_only: true });
+      check = await browser.tmCalendar.modifyCalendarEvent({ ...norm, check_only: true });
     } catch (e) {
       log(`[TMDBG Tools] calendar_event_edit: pre-card check failed to run: ${e}`, "warn");
     }

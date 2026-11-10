@@ -178,26 +178,33 @@ describe('runStateEditCalendarEventExec — edit_scope dispatch', () => {
     expect(args.location).toBe('Room 5');
   });
 
-  it('this_and_following + add_attendees: resolves delta into flat attendees before the bridge call', async () => {
-    setEditArgs({
-      event_id: 'evt-1',
-      edit_scope: 'this_and_following',
-      recurrence_id: RID,
-      add_attendees: [{ email: 'alice@example.com', name: 'Alice' }],
+  // The guest change goes to the bridge as given: the bridge applies it to
+  // each item the edit covers, so the flow neither reads the stored guests nor
+  // merges.
+  for (const scope of ['this_only', 'this_and_following', 'all']) {
+    it(`${scope} + a guest change: passed to the bridge as given, with no merge in the flow`, async () => {
+      const change = { add_attendees: [{ email: 'alice@example.com', name: 'Alice' }], remove_attendees: [{ email: 'existing@example.com' }] };
+      setEditArgs({ event_id: 'evt-1', edit_scope: scope, recurrence_id: RID, ...change });
+
+      await runStateEditCalendarEventExec();
+
+      expect(getCalendarEventDetailsMock).not.toHaveBeenCalled();
+      expect(modifyMock).toHaveBeenCalledTimes(1);
+      const args = modifyMock.mock.calls[0][0];
+      expect(args).toMatchObject({ edit_scope: scope, recurrence_id: RID, ...change });
+      expect(args).not.toHaveProperty('attendees');
     });
+  }
+
+  it('an empty guest change is not sent', async () => {
+    setEditArgs({ event_id: 'evt-1', title: 'Renamed', add_attendees: [], remove_attendees: [] });
 
     await runStateEditCalendarEventExec();
 
-    expect(getCalendarEventDetailsMock).toHaveBeenCalled();
     expect(modifyMock).toHaveBeenCalledTimes(1);
     const args = modifyMock.mock.calls[0][0];
-    expect(Array.isArray(args.attendees)).toBe(true);
-    const emails = args.attendees.map((a) => a.email);
-    expect(emails).toContain('existing@example.com');
-    expect(emails).toContain('alice@example.com');
-    // Delta keys are stripped by the FSM exec (already resolved into attendees).
-    expect(args.add_attendees).toBeUndefined();
-    expect(args.remove_attendees).toBeUndefined();
+    expect(args).not.toHaveProperty('add_attendees');
+    expect(args).not.toHaveProperty('remove_attendees');
   });
 
   it('fails fast when edit_scope requires recurrence_id but none is provided', async () => {
@@ -213,59 +220,6 @@ describe('runStateEditCalendarEventExec — edit_scope dispatch', () => {
     expect(splitMock).not.toHaveBeenCalled();
     expect(fsmCtx.state).toBe('exec_fail');
     expect(fsmCtx.fsmSessions['pid-test'].failReason).toMatch(/recurrence_id/);
-  });
-
-  it('this_only + add_attendees: delta resolves against SERIES master (documented limitation)', async () => {
-    // Coverage for the documented limitation: when edit_scope="this_only",
-    // the attendee delta is merged against the master's attendee list (via
-    // getCalendarEventDetails), not against any pre-existing occurrence
-    // override. This is what the schema description warns about. The test
-    // exists so the limitation can't be silently widened — e.g., if someone
-    // changes the merge base for this_only to "empty" thinking it should
-    // start fresh, this test catches it.
-    setEditArgs({
-      event_id: 'evt-1',
-      edit_scope: 'this_only',
-      recurrence_id: RID,
-      add_attendees: [{ email: 'alice@example.com', name: 'Alice' }],
-    });
-
-    await runStateEditCalendarEventExec();
-
-    // The mock's getCalendarEventDetails returns attendeeList=[{existing@}]
-    // (the SERIES master attendees), so the merged list must include both.
-    expect(getCalendarEventDetailsMock).toHaveBeenCalled();
-    expect(modifyMock).toHaveBeenCalledTimes(1);
-    const args = modifyMock.mock.calls[0][0];
-    // Bridge receives edit_scope so it can route to the occurrence override path.
-    expect(args.edit_scope).toBe('this_only');
-    expect(args.recurrence_id).toBe(RID);
-    // Attendee merge base was the SERIES master, not an occurrence-specific list.
-    const emails = (args.attendees || []).map((a) => a.email);
-    expect(emails).toContain('existing@example.com'); // inherited from master
-    expect(emails).toContain('alice@example.com');    // the delta's add
-    expect(args.add_attendees).toBeUndefined();
-    expect(args.remove_attendees).toBeUndefined();
-  });
-
-  it('this_only + remove_attendees clear-all: applies empty list to the occurrence override', async () => {
-    // Regression: "remove everyone from just this occurrence" should produce
-    // attendees=[] for the bridge. The "*" sentinel bypasses the safety net
-    // that would otherwise refuse to wipe attendees when base is unknown.
-    setEditArgs({
-      event_id: 'evt-1',
-      edit_scope: 'this_only',
-      recurrence_id: RID,
-      remove_attendees: [{ email: '*' }],
-    });
-
-    await runStateEditCalendarEventExec();
-
-    expect(modifyMock).toHaveBeenCalledTimes(1);
-    const args = modifyMock.mock.calls[0][0];
-    expect(args.edit_scope).toBe('this_only');
-    expect(Array.isArray(args.attendees)).toBe(true);
-    expect(args.attendees.length).toBe(0);
   });
 });
 

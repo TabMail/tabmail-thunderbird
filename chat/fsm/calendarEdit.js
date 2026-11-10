@@ -140,19 +140,14 @@ function formatChangesForDisplay(editArgs, currentDetails) {
         lines.push(`  ${oldT} → **${newT}**`);
       }
     }
-    // Delta-based attendees (v1.5.21+). Compute the projected merged list against
-    // the event's current attendee list (d.attendeeList) and show old → new count
-    // plus the actual people being added/removed.
+    // The guest change, as the people added and removed. The calendar bridge
+    // applies it to each item the edit covers, whose lists can differ, so no
+    // count is shown.
     const cardAddsCount = (Array.isArray(a.add_attendees) ? a.add_attendees : []).length;
     const cardRemovesCount = (Array.isArray(a.remove_attendees) ? a.remove_attendees : []).length;
     const hasAttendeeDelta = cardAddsCount > 0 || cardRemovesCount > 0;
     if (hasAttendeeDelta) {
-      const base = Array.isArray(d.attendeeList) ? d.attendeeList : [];
-      const merged = applyAttendeeDelta(base, a.add_attendees || [], a.remove_attendees || []);
-      const oldCount = base.length;
-      const newCount = merged.length;
       lines.push(`**Attendees:**`);
-      lines.push(`  ${oldCount} invitee(s) → **${newCount} invitee(s)**`);
       const adds = (a.add_attendees || []).filter((p) => p && p.email && p.email !== "*");
       const removes = (a.remove_attendees || []).filter((p) => p && p.email);
       adds.slice(0, 3).forEach((att) => {
@@ -191,56 +186,6 @@ function formatChangesForDisplay(editArgs, currentDetails) {
   } catch (e) {
     return "(Failed to format changes)";
   }
-}
-
-/// Strip an optional `mailto:` URI prefix from an attendee email (case-insensitive).
-/// TB attendee.id frequently arrives in `mailto:foo@bar.com` form via getCalendarEventDetails.
-function stripMailto(raw) {
-  const s = String(raw || "").trim();
-  return /^mailto:/i.test(s) ? s.replace(/^mailto:/i, "") : s;
-}
-
-/// Apply an add/remove delta on top of `base` attendees. Removals are matched
-/// case-insensitively on email (after stripping `mailto:`). A remove list containing
-/// `{email: "*"}` clears every base entry. Adds are appended after removes and de-duped
-/// case-insensitively against whatever's left. When the same email appears in `base`
-/// and `adds` with a different name, the base entry's name is kept.
-/// Mirrors `email_reply.js applyDelta` and iOS `CalendarToolHelpers.applyAttendeeDelta`.
-export function applyAttendeeDelta(base, adds, removes) {
-  const baseList = Array.isArray(base) ? base : [];
-  const addList = Array.isArray(adds) ? adds : [];
-  const removeList = Array.isArray(removes) ? removes : [];
-
-  const clearAll = removeList.some(
-    (r) => String(r?.email || "").trim() === "*"
-  );
-  const removeSet = new Set(
-    removeList
-      .map((r) => stripMailto(r?.email).toLowerCase())
-      .filter((e) => e && e !== "*")
-  );
-
-  const filtered = clearAll
-    ? []
-    : baseList.filter((r) => !removeSet.has(stripMailto(r?.email).toLowerCase()));
-
-  // Carry forward base entries with their stored name; emit {email, name}.
-  const result = filtered.map((r) => ({
-    email: stripMailto(r?.email),
-    name: String(r?.name || ""),
-  }));
-  const seen = new Set(result.map((r) => r.email.toLowerCase()));
-
-  for (const add of addList) {
-    const email = stripMailto(add?.email);
-    if (!email || email === "*") continue;
-    const key = email.toLowerCase();
-    if (!seen.has(key)) {
-      result.push({ email, name: String(add?.name || "") });
-      seen.add(key);
-    }
-  }
-  return result;
 }
 
 async function fetchEventDetails(eventId) {
@@ -387,81 +332,12 @@ export async function runStateEditCalendarEventExec() {
     return;
   }
 
-  // calendar_event_edit-v1.5.21+: attendees arrive as add/remove deltas. Re-fetch
-  // the event right before applying so we merge against the freshest attendee list
-  // (the cached editEventDetails from the confirm step may be seconds-to-minutes stale),
-  // then collapse the delta into a flat `attendees` array — which is what the
-  // tmCalendar.modifyCalendarEvent bridge expects.
-  const addsCount = (Array.isArray(editArgs.add_attendees) ? editArgs.add_attendees : []).length;
-  const removesCount = (Array.isArray(editArgs.remove_attendees) ? editArgs.remove_attendees : []).length;
-  const hasAttendeeDelta = addsCount > 0 || removesCount > 0;
-  if (hasAttendeeDelta) {
-    let base = [];
-    let baseSource = "empty";
-    try {
-      const fresh = await fetchEventDetails(editArgs.event_id);
-      if (fresh && fresh.ok && Array.isArray(fresh.attendeeList)) {
-        base = fresh.attendeeList;
-        baseSource = "fresh";
-      } else if (Array.isArray(execSess?.editEventDetails?.attendeeList)) {
-        // Fallback to the confirm-time snapshot if the re-fetch failed; better than
-        // resolving against an empty list (which would silently drop existing attendees).
-        base = execSess.editEventDetails.attendeeList;
-        baseSource = "cached";
-      }
-    } catch (e) {
-      log(`[CalendarEdit] re-fetch for attendee merge failed (using cached): ${e}`, "warn");
-      if (Array.isArray(execSess?.editEventDetails?.attendeeList)) {
-        base = execSess.editEventDetails.attendeeList;
-        baseSource = "cached";
-      }
-    }
-
-    // Safety net: if we have NO base info, abort UNLESS the delta is an
-    // explicit clear-all (remove "*"). Reason: without knowing the current
-    // attendee list, the merge result would also collapse to an unknown
-    // truth — an adds-only delta would emit `attendees: [adds]` and wipe
-    // anything we didn't know about, and a removes-specific delta would
-    // emit `attendees: []` (the wipe). Clear-all is intentional wipe so
-    // it's safe to apply regardless of base. The user/LLM can retry once
-    // the calendar is reachable.
-    const isClearAll = (Array.isArray(editArgs.remove_attendees) ? editArgs.remove_attendees : []).some(
-      (r) => String(r?.email || "").trim() === "*"
-    );
-    if (baseSource === "empty" && !isClearAll) {
-      agentBubble.classList.remove("loading");
-      const failMsg =
-        "Could not load the current attendee list for this event — refusing to edit attendees blindly, as the merge could overwrite the existing list. Please retry once the calendar is reachable.";
-      streamText(agentBubble, failMsg);
-      try {
-        if (execPid) ctx.fsmSessions[execPid].failReason = failMsg;
-      } catch (_) {}
-      log(`[CalendarEdit] aborted attendee delta — base unknown (+${addsCount}/-${removesCount}, clearAll=${isClearAll})`, "error");
-      ctx.state = "exec_fail";
-      const core = await import("./core.js");
-      await core.executeAgentAction();
-      return;
-    }
-
-    const merged = applyAttendeeDelta(
-      base,
-      editArgs.add_attendees || [],
-      editArgs.remove_attendees || []
-    );
-    editArgs = { ...editArgs, attendees: merged };
-    delete editArgs.add_attendees;
-    delete editArgs.remove_attendees;
-    log(
-      `[CalendarEdit] resolved attendee delta (${baseSource}): base=${base.length} +${addsCount} -${removesCount} → ${merged.length}`
-    );
-  } else {
-    // No actual delta (empty arrays or absent keys) — strip the keys so they
-    // don't reach modifyCalendarEvent (which doesn't read them anyway, but
-    // keeping the editArgs clean avoids surprise downstream).
-    if (Array.isArray(editArgs.add_attendees) || Array.isArray(editArgs.remove_attendees)) {
+  // A guest change goes to the calendar bridge as given: it applies the
+  // change to each item the edit covers. Empty lists are left out.
+  for (const key of ["add_attendees", "remove_attendees"]) {
+    if (Array.isArray(editArgs[key]) && editArgs[key].length === 0) {
       editArgs = { ...editArgs };
-      delete editArgs.add_attendees;
-      delete editArgs.remove_attendees;
+      delete editArgs[key];
     }
   }
 

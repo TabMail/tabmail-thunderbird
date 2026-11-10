@@ -1188,7 +1188,8 @@ describe('split: the two parts make the series\' occurrences', () => {
 
   // A changed occurrence is carried into the following part with its own time
   // and details, so a change to them there would not reach it: the named
-  // occurrence would stay as it was while the edit reports success.
+  // occurrence would stay as it was while the edit reports success. (A guest
+  // change does reach it: it is made on each changed occurrence's own list.)
   for (const [name, change] of [
     ['a new start', { start_iso: '2099-10-15T18:00:00' }],
     ['its own start restated', { start_iso: '2099-10-15T19:00:00' }],
@@ -1197,7 +1198,6 @@ describe('split: the two parts make the series\' occurrences', () => {
     ['a new location', { location: 'Room 9' }],
     ['a new description', { description: 'New agenda' }],
     ['a new busy/free', { transparency: 'free' }],
-    ['a changed attendee list', { attendees: [{ email: 'ana@example.com' }] }],
   ]) {
     it(`a this-and-following change with ${name} at an occurrence changed on its own is refused and writes nothing`, async () => {
       const start = fakeDateTime(START_DAY, 17);
