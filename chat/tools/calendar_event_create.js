@@ -154,11 +154,17 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
     return;
   }
 
-  const norm = await ensureTimes(normalizeArgs(args));
+  const read = normalizeArgs(args);
+  const badDate = ["start_iso", "end_iso"].find((f) => typeof args?.[f] === "string" && args[f].trim() && !read[f]);
+  const norm = await ensureTimes(read);
 
-  // A rule the tool cannot write is refused before the confirmation card, so
-  // the model can correct it instead of a part being silently dropped.
-  const recurrenceError = "recurrence" in norm ? recurrenceArgError(norm.recurrence, { canClear: false }) : null;
+  // A date the tool cannot read, or a rule it cannot write, is refused before
+  // the confirmation card, so the model can correct it instead of the date
+  // being guessed or a part being silently dropped.
+  // (toNaiveIso gives null for a date it cannot read.)
+  const recurrenceError = badDate
+    ? `${badDate} "${args[badDate]}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS, or YYYY-MM-DD for a date, then retry.`
+    : ("recurrence" in norm ? recurrenceArgError(norm.recurrence, { canClear: false }) : null);
   if (recurrenceError) {
     log(`[TMDBG Tools] calendar_event_create: ${recurrenceError}`, "error");
     try {

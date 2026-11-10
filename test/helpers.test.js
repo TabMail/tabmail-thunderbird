@@ -349,14 +349,18 @@ describe('toNaiveIso', () => {
     expect(result).not.toMatch(/[+-]\d{2}:\d{2}$/);
   });
 
-  it('returns a valid naive ISO for invalid input (falls back to now)', () => {
-    const result = toNaiveIso('not-a-date');
-    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+  it('reads a bare date as that calendar date at midnight, in any zone', () => {
+    expect(toNaiveIso('2099-10-20')).toBe('2099-10-20T00:00:00');
+    expect(toNaiveIso(' 2099-01-01 ')).toBe('2099-01-01T00:00:00');
+    expect(toNaiveIso('2099-10-20T00:00:00')).toBe('2099-10-20T00:00:00');
   });
 
-  it('returns a valid naive ISO for non-date types (falls back to now)', () => {
-    const result = toNaiveIso({});
-    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+  it('returns null for input that is not a date and time, never the current time', () => {
+    expect(toNaiveIso('not-a-date')).toBeNull();
+    expect(toNaiveIso('2099-13-45')).toBeNull();
+    expect(toNaiveIso('')).toBeNull();
+    expect(toNaiveIso({})).toBeNull();
+    expect(toNaiveIso(NaN)).toBeNull();
   });
 
   it('uses local time components (not UTC)', () => {

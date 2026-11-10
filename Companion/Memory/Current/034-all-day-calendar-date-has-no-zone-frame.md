@@ -94,8 +94,10 @@ UNTIL's day, the rewritten one keeps it)
   row and on `getCalendarEventDetails`. `startMs`/`endMs` stay UTC midnight; they are still the sort
   key for timed items.
 - An all-day `RECURRENCE-ID` is a DATE too. The bridge emits it as `${day}T00:00:00`
-  (`allDayNaiveIso`), the one shape `toNaiveIso` round-trips unchanged; a bare `YYYY-MM-DD` re-parses
-  as UTC midnight and shifts a day west of UTC.
+  (`allDayNaiveIso`), the shape `toNaiveIso` round-trips unchanged. `toNaiveIso` reads a bare `YYYY-MM-DD` from the model
+  as that date at `T00:00:00` (#313; before, `new Date` read it as UTC midnight, a day early west of
+  UTC), and returns null for input that is not a date, which the create and edit tools refuse before
+  the card instead of using the current time.
 - Consumers key an all-day row by `startDay`, never by the epoch: `calendar_search` uses
   `localMidnightOfDay(startDay)` for the day key and ordering; `calendar_event_read` renders
   `start_iso`/`end_iso` as `${day}T00:00:00` and matches a `start_iso` lookup on the day.
