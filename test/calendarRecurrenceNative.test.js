@@ -273,3 +273,34 @@ describe('an all-day series the assistant creates, against Thunderbird\'s own da
     expect(days.at(-1)).toBe('20991031');
   });
 });
+
+// A split caps the part before it with a bare-date UNTIL, the day before the
+// split, and an edit writes the last day it is given as one. An all-day series
+// stored with its dates in a zone west of UTC (as TabMail wrote them before it
+// wrote plain dates, or as another app does) starts each day after the UTC
+// midnight that UNTIL names, so ical.js, which compares UNTIL by instant, ends
+// it a day before the date named. An edit of the series writes its dates as
+// plain dates, which keep that day. (The split, and excluded and added dates,
+// run on the harness's fakes, whose recurrence code does not take Thunderbird's
+// dates.)
+describe('an all-day series stored in a zone west of UTC, against Thunderbird\'s own date and recurrence code', () => {
+  it('an edit of the series writes its dates as plain dates, so its bare-date UNTIL keeps the day it names, which the zoned start loses', async () => {
+    const day = (d) => new NativeDateTime(new ICAL.Time({ year: 2099, month: 10, day: d, isDate: true }, pacific));
+    const stored = fakeEvent({ id: 'ser', title: 'Series', startDate: day(1), endDate: day(2) });
+    stored.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY;UNTIL=20991014')]);
+    stored.recurrenceInfo.item = stored;
+    const zonedStart = stored.startDate.clone();
+    expect(expanded(storedRule({ calendar: { items: [stored] } }), zonedStart).at(-1), 'as stored').toBe('20991013');
+    const loaded = nativeLoaded([stored], pacific);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', title: 'Renamed' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const [saved] = loaded.calendar.items;
+    expect(storedRule(loaded)).toBe('FREQ=DAILY;UNTIL=20991014');
+    const asWritten = (dt) => ({ isDate: dt.isDate, zone: dt.timezone.tzid, day: dt.icalString });
+    expect(asWritten(saved.startDate)).toEqual({ isDate: true, zone: 'floating', day: '20991001' });
+    expect(asWritten(saved.endDate)).toEqual({ isDate: true, zone: 'floating', day: '20991002' });
+    const days = expanded(storedRule(loaded), saved.startDate);
+    expect(days).toHaveLength(14);
+    expect(days.at(-1)).toBe('20991014');
+  });
+});

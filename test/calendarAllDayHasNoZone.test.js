@@ -16,9 +16,11 @@
 //   - a "this and following" split of a series TabMail created, which is not
 //     refused and keeps every occurrence on one side or the other;
 //   - a series stored with a zoned all-day start (as TabMail wrote them before):
-//     a rule written onto it (a rule-only edit, a split's new rule) keeps the
-//     day it names, and an edit that restates its dates moves none of its
-//     excluded dates or changed occurrences.
+//     an edit of the whole series (its rule, its dates, or its title alone) and
+//     a split (both parts) write every all-day value as a plain date with the
+//     same day (start, end, excluded and added dates, and each changed
+//     occurrence's RECURRENCE-ID, start and end), so a rule keeps the last day
+//     its UNTIL names, a daily split is not refused, and none of its dates move.
 
 // West of UTC, where a zoned DATE's midnight is after the same day's UTC one.
 process.env.TZ = 'America/Vancouver';
@@ -208,39 +210,63 @@ describe('"this and following" split of a series TabMail created', () => {
 });
 
 // A series as TabMail stored an all-day one before #303: its dates are DATEs in
-// the user's zone, with an excluded date and an occurrence changed on its own.
-function storedZonedSeries(rule, { excluded, changed }) {
+// the user's zone, with an excluded date, an added date and an occurrence
+// changed on its own, each event `days` days long.
+function storedZonedSeries(rule, { excluded, added, changed, days = 1 }) {
   const day = (d) => fakeDate(d, LOCAL_ZONE);
-  const ev = fakeEvent({ id: 'ser', title: 'Old', startDate: day(START_DAY), endDate: day(nextDay(START_DAY)) });
-  const exception = fakeEvent({ id: 'ser', title: 'Changed', startDate: day(changed), endDate: day(nextDay(changed)), recurrenceId: day(changed) });
-  ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', rule), recurrenceDate('EXDATE', day(excluded))], { exceptions: [exception] });
+  const after = (d, n) => { let out = d; for (let i = 0; i < n; i++) out = nextDay(out); return out; };
+  const ev = fakeEvent({ id: 'ser', title: 'Old', startDate: day(START_DAY), endDate: day(after(START_DAY, days)) });
+  const exception = fakeEvent({ id: 'ser', title: 'Changed', startDate: day(changed), endDate: day(after(changed, days)), recurrenceId: day(changed) });
+  ev.recurrenceInfo = fakeRecurrenceInfo([
+    recurrenceItem('RRULE', rule), recurrenceDate('EXDATE', day(excluded)), recurrenceDate('RDATE', day(added)),
+  ], { exceptions: [exception] });
   ev.recurrenceInfo.item = ev;
   return ev;
 }
 const exceptionDays = (item) => item.recurrenceInfo.getExceptionIds().map(dayOf).sort();
 const excludedDays = (item) => item.recurrenceInfo.getRecurrenceItems().filter((r) => r.date && r.isNegative).map((r) => dayOf(r.date)).sort();
+const addedDays = (item) => item.recurrenceInfo.getRecurrenceItems().filter((r) => r.date && !r.isNegative).map((r) => dayOf(r.date)).sort();
 const without = (days, ...gone) => days.filter((d) => !gone.includes(d));
+const dayCount = (from, to) => Math.round((Date.UTC(to.year, to.month, to.day) - Date.UTC(from.year, from.month, from.day)) / 86400000);
+
+// Every all-day value an item holds that still carries a zone: its start and
+// end, its excluded and added dates, and each changed occurrence's
+// RECURRENCE-ID, start and end. A plain date has none.
+function zonedAllDayValues(item) {
+  const info = item.recurrenceInfo;
+  const values = [['DTSTART', item.startDate], ['DTEND', item.endDate]];
+  for (const r of info?.getRecurrenceItems() || []) if (r.date) values.push([r.icalProperty.propertyName, r.date]);
+  for (const rid of info?.getExceptionIds() || []) {
+    const ex = info.getExceptionFor(rid);
+    values.push(['RECURRENCE-ID', ex.recurrenceId], ['changed DTSTART', ex.startDate], ['changed DTEND', ex.endDate]);
+  }
+  return values.filter(([, dt]) => dt?.isDate && dt.timezone !== FLOATING_ZONE).map(([name, dt]) => `${name} ${dayOf(dt)} ${dt.timezone.tzid}`);
+}
 
 describe('a series stored with a zoned all-day start', () => {
-  const DAILY = { rule: 'FREQ=DAILY;UNTIL=20991031', excluded: '2099-10-05', changed: '2099-10-08' };
+  const DAILY = { rule: 'FREQ=DAILY;UNTIL=20991031', excluded: '2099-10-05', added: '2099-11-10', changed: '2099-10-08' };
   const stored = () => storedZonedSeries(DAILY.rule, DAILY);
+  const datesOf = (item) => ({ excluded: excludedDays(item), added: addedDays(item), changed: exceptionDays(item) });
+  const DAILY_DATES = { excluded: [DAILY.excluded], added: [DAILY.added], changed: [DAILY.changed] };
 
   it('precondition: as stored, west of UTC, it ends a day before its UNTIL', () => {
-    expect(occurrenceDays(stored())).toEqual(without(daysFrom(START_DAY, '2099-10-30'), DAILY.excluded));
+    expect(occurrenceDays(stored())).toEqual([...without(daysFrom(START_DAY, '2099-10-30'), DAILY.excluded), DAILY.added]);
+    expect(zonedAllDayValues(stored())).toHaveLength(7);
   });
 
-  it('a rule-only edit keeps the last day it names, and moves none of its dates', async () => {
+  it('a rule-only edit keeps the last day it names, moves none of its dates, and writes every one as a plain date', async () => {
     const loaded = loadCalendarBridge(bridgeUrl, { items: [stored()] });
     const edit = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'DAILY', until: '2099-10-25' } });
     expect(edit).toMatchObject({ ok: true });
     const item = loaded.calendar.items.find((it) => it.id === 'ser');
     expectAllDayWithoutZone(item.startDate, START_DAY);
     expectAllDayWithoutZone(item.endDate, nextDay(START_DAY));
-    expect(occurrenceDays(item)).toEqual(without(daysFrom(START_DAY, '2099-10-25'), DAILY.excluded));
-    expect({ excluded: excludedDays(item), changed: exceptionDays(item) }).toEqual({ excluded: [DAILY.excluded], changed: [DAILY.changed] });
+    expect(occurrenceDays(item)).toEqual([...without(daysFrom(START_DAY, '2099-10-25'), DAILY.excluded), DAILY.added]);
+    expect(datesOf(item)).toEqual(DAILY_DATES);
+    expect(zonedAllDayValues(item)).toEqual([]);
   });
 
-  it('a whole-series edit restating its dates moves none of its dates, and keeps the last day its UNTIL names', async () => {
+  it('a whole-series edit restating its dates moves none of its dates, keeps the last day its UNTIL names, and writes every one as a plain date', async () => {
     const loaded = loadCalendarBridge(bridgeUrl, { items: [stored()] });
     const edit = await loaded.api.modifyCalendarEvent({
       event_id: 'ser', calendar_id: 'cal1', all_day: true, start_iso: `${START_DAY}T00:00:00`, end_iso: `${nextDay(START_DAY)}T00:00:00`,
@@ -248,8 +274,25 @@ describe('a series stored with a zoned all-day start', () => {
     expect(edit).toMatchObject({ ok: true });
     const item = loaded.calendar.items.find((it) => it.id === 'ser');
     expectAllDayWithoutZone(item.startDate, START_DAY);
-    expect(occurrenceDays(item)).toEqual(without(daysFrom(START_DAY, LAST_DAY), DAILY.excluded));
-    expect({ excluded: excludedDays(item), changed: exceptionDays(item) }).toEqual({ excluded: [DAILY.excluded], changed: [DAILY.changed] });
+    expect(occurrenceDays(item)).toEqual([...without(daysFrom(START_DAY, LAST_DAY), DAILY.excluded), DAILY.added]);
+    expect(datesOf(item)).toEqual(DAILY_DATES);
+    expect(zonedAllDayValues(item)).toEqual([]);
+  });
+
+  it('a whole-series edit of its title alone writes every date as a plain date, keeping each day and the last day its UNTIL names', async () => {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [stored()] });
+    const edit = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', title: 'Renamed' });
+    expect(edit).toMatchObject({ ok: true });
+    const item = loaded.calendar.items.find((it) => it.id === 'ser');
+    expect(item.title).toBe('Renamed');
+    expectAllDayWithoutZone(item.startDate, START_DAY);
+    expectAllDayWithoutZone(item.endDate, nextDay(START_DAY));
+    expect(occurrenceDays(item)).toEqual([...without(daysFrom(START_DAY, LAST_DAY), DAILY.excluded), DAILY.added]);
+    expect(datesOf(item)).toEqual(DAILY_DATES);
+    expect(zonedAllDayValues(item)).toEqual([]);
+    const changed = item.recurrenceInfo.getExceptionFor(fakeDate(DAILY.changed));
+    expect(changed).toMatchObject({ title: 'Changed' });
+    expect(changed.parentItem).toBe(item);
   });
 
   it('a one-occurrence edit restating its dates changes that occurrence alone', async () => {
@@ -267,37 +310,68 @@ describe('a series stored with a zoned all-day start', () => {
     expectAllDayWithoutZone(one.startDate, '2099-10-12');
   });
 
-  // Weekly, so the day before the split is no occurrence and the earlier part's
-  // check (which refuses a zoned daily series) lets the split through.
-  const WEEKLY = { rule: 'FREQ=WEEKLY;UNTIL=20991031', excluded: '2099-10-22', changed: '2099-10-08' };
-  async function splitStored(patch) {
-    const loaded = loadCalendarBridge(bridgeUrl, { items: [storedZonedSeries(WEEKLY.rule, WEEKLY)] });
+  async function splitStored(series, patch) {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [series] });
     const res = await loaded.api.modifyCalendarEvent({
       event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00`, ...patch,
     });
-    expect(res).toMatchObject({ ok: true });
+    expect(res, res.error).toMatchObject({ ok: true });
     return {
       capped: loaded.calendar.items.find((it) => it.id === 'ser'),
       fresh: loaded.calendar.items.find((it) => it.id !== 'ser'),
     };
   }
 
+  // Daily, so the day before the split is an occurrence: the capped part's
+  // bare-date UNTIL names it, and it stays because the part's start is a plain date.
+  it('a daily split keeps every day on one side or the other, each part written as plain dates', async () => {
+    const { capped, fresh } = await splitStored(stored(), { title: 'Renamed' });
+    expect(occurrenceDays(capped)).toEqual(without(daysFrom(START_DAY, '2099-10-14'), DAILY.excluded));
+    expect(occurrenceDays(fresh)).toEqual([...daysFrom(SPLIT_DAY, LAST_DAY), DAILY.added]);
+    expect(datesOf(capped)).toEqual({ excluded: [DAILY.excluded], added: [], changed: [DAILY.changed] });
+    expect(datesOf(fresh)).toEqual({ excluded: [], added: [DAILY.added], changed: [] });
+    expect(zonedAllDayValues(capped)).toEqual([]);
+    expect(zonedAllDayValues(fresh)).toEqual([]);
+  });
+
+  const WEEKLY = { rule: 'FREQ=WEEKLY;UNTIL=20991031', excluded: '2099-10-22', added: '2099-10-24', changed: '2099-10-08' };
+  const storedWeekly = (days = 1) => storedZonedSeries(WEEKLY.rule, { ...WEEKLY, days });
+
   it('a split giving the following part a new rule keeps the last day it names', async () => {
-    const { capped, fresh } = await splitStored({ recurrence: { freq: 'WEEKLY', until: '2099-11-05' } });
+    const { capped, fresh } = await splitStored(storedWeekly(), { recurrence: { freq: 'WEEKLY', until: '2099-11-05' } });
     expectAllDayWithoutZone(fresh.startDate, SPLIT_DAY);
-    expect(occurrenceDays(fresh)).toEqual([SPLIT_DAY, '2099-10-29', '2099-11-05']);
+    expect(occurrenceDays(fresh)).toEqual([SPLIT_DAY, WEEKLY.added, '2099-10-29', '2099-11-05']);
     expect(excludedDays(fresh)).toEqual([WEEKLY.excluded]);
     expect(occurrenceDays(capped)).toEqual([START_DAY, WEEKLY.changed]);
     expect(exceptionDays(capped)).toEqual([WEEKLY.changed]);
+    expect(zonedAllDayValues(capped)).toEqual([]);
+    expect(zonedAllDayValues(fresh)).toEqual([]);
   });
 
   it('a split restating the following part\'s dates moves none of its dates', async () => {
-    const { capped, fresh } = await splitStored({ all_day: true, start_iso: `${SPLIT_DAY}T00:00:00`, end_iso: `${nextDay(SPLIT_DAY)}T00:00:00` });
+    const { capped, fresh } = await splitStored(storedWeekly(), { all_day: true, start_iso: `${SPLIT_DAY}T00:00:00`, end_iso: `${nextDay(SPLIT_DAY)}T00:00:00` });
     expectAllDayWithoutZone(fresh.startDate, SPLIT_DAY);
-    expect(occurrenceDays(fresh)).toEqual([SPLIT_DAY, '2099-10-29']);
+    expect(occurrenceDays(fresh)).toEqual([SPLIT_DAY, WEEKLY.added, '2099-10-29']);
     expect(excludedDays(fresh)).toEqual([WEEKLY.excluded]);
     expect(occurrenceDays(capped)).toEqual([START_DAY, WEEKLY.changed]);
     expect(exceptionDays(capped)).toEqual([WEEKLY.changed]);
+    expect(zonedAllDayValues(capped)).toEqual([]);
+    expect(zonedAllDayValues(fresh)).toEqual([]);
+  });
+
+  it('a split of a series of three-day events keeps three days for each event of both parts', async () => {
+    const { capped, fresh } = await splitStored(storedWeekly(3), { title: 'Renamed' });
+    for (const part of [capped, fresh]) {
+      expect(dayCount(part.startDate, part.endDate)).toBe(3);
+      const changed = part.recurrenceInfo.getExceptionIds().map((rid) => part.recurrenceInfo.getExceptionFor(rid));
+      for (const ex of changed) expect(dayCount(ex.startDate, ex.endDate)).toBe(3);
+      for (const o of seriesOccurrences(part, fakeDate(START_DAY), fakeDate(RANGE_END))) expect(dayCount(o.start, (o.item.recurrenceId ? o.item : o.item.createProxy(o.start)).endDate)).toBe(3);
+    }
+    expectAllDayWithoutZone(fresh.endDate, '2099-10-18');
+    expect(occurrenceDays(capped)).toEqual([START_DAY, WEEKLY.changed]);
+    expect(occurrenceDays(fresh)).toEqual([SPLIT_DAY, WEEKLY.added, '2099-10-29']);
+    expect(zonedAllDayValues(capped)).toEqual([]);
+    expect(zonedAllDayValues(fresh)).toEqual([]);
   });
 });
 
