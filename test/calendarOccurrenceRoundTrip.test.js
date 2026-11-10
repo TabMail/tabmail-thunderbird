@@ -7,7 +7,8 @@
 // read through the bridge's query and the read tool's own formatter, and the
 // printed recurrence_id goes back through the edit tool's normalizer into the
 // bridge. An edit of that occurrence alone, and a split there ("this and
-// following"), each land on that occurrence, for a series in the user's zone,
+// following"), each land on that occurrence, and a changed occurrence's printed
+// start, given as an excluded date, removes it, for a series in the user's zone,
 // in a zone east of UTC, in UTC, and floating (RFC 5545 local time, shown at
 // its own digits on the user's clock).
 
@@ -84,10 +85,10 @@ const KINDS = {
   'floating': { start: () => fakeDateTime(START_DAY, 17, 0, FLOATING_ZONE), shown: `2099-10-${TARGET_DAY}T17:00:00` },
 };
 
-function dailySeries(start) {
+function dailySeries(start, { exceptions = [] } = {}) {
   const endDate = fakeCalDateTime({ ...start, hour: start.hour + 1 });
   const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate });
-  ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY')]);
+  ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY')], { exceptions });
   ev.recurrenceInfo.item = ev;
   return ev;
 }
@@ -156,6 +157,37 @@ describe('the recurrence_id the read tools print names that occurrence for an ed
       expect(fresh.startDate.toString()).toBe(ridOf(start));
       expect(fresh.startDate.timezone).toBe(start.timezone);
       expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+    });
+  }
+});
+
+// exdates_add takes an occurrence's start as the read prints it. A changed
+// occurrence starts elsewhere than its RECURRENCE-ID, by which Thunderbird
+// removes it.
+const MOVED_HOURS = 2;
+const plusHours = (naiveIso, hours) => localIso(new Date(naiveIso).getTime() + hours * 3600000);
+const movedStart = (start) => fakeCalDateTime({ ...start, day: TARGET_DAY, hour: start.hour + MOVED_HOURS });
+const movedOccurrence = (start) => fakeEvent({
+  id: 'ser', title: 'Moved', startDate: movedStart(start),
+  endDate: fakeCalDateTime({ ...start, day: TARGET_DAY, hour: start.hour + MOVED_HOURS + 1 }),
+  recurrenceId: fakeCalDateTime({ ...start, day: TARGET_DAY }),
+});
+
+describe('the start the read tools print excludes that occurrence', () => {
+  for (const [kind, { start: makeStart, shown }] of Object.entries(KINDS)) {
+    it(`a series ${kind}: a changed occurrence, excluded by the start the read prints, is removed`, async () => {
+      const start = makeStart();
+      const master = dailySeries(start, { exceptions: [movedOccurrence(start)] });
+      const before = occurrenceKeys(master);
+      const movedKey = instantKey(movedStart(start));
+      expect(before).toContain(movedKey);
+      const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const text = await readOccurrence(api, start);
+      expect(field(text, 'start_iso')).toBe(plusHours(shown, MOVED_HOURS));
+      const args = editExports.normalizeArgs({ event_id: field(text, 'event_id'), edit_scope: 'all', exdates_add: [field(text, 'start_iso')] });
+      const res = await api.modifyCalendarEvent(args);
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(occurrenceKeys(calendar.items[0])).toEqual(before.filter((k) => k !== movedKey));
     });
   }
 });

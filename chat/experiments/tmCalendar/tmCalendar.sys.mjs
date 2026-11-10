@@ -303,40 +303,16 @@ function extractExdatesFromItem(item) {
   } catch (_) { return ""; }
 }
 
-function ensureRecurrenceInfo(item) {
-  try {
-    const Ci = globalThis.Ci; const Cc = globalThis.Cc;
-    if (item.recurrenceInfo) return item.recurrenceInfo;
-    const rinfo = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
-    rinfo.item = item;
-    item.recurrenceInfo = rinfo;
-    return rinfo;
-  } catch (_) { return null; }
-}
-
-function addExdateToItem(item, isoString, startDateLike) {
-  try {
-    const Ci = globalThis.Ci; const Cc = globalThis.Cc;
-    const rinfo = ensureRecurrenceInfo(item);
-    if (!rinfo) return false;
-    // Build calIDateTime aligned with the event's value type
-    const base = startDateLike || item.startDate;
-    const isAllDay = !!base?.isDate;
-    let caldt = toCalIDateTime(String(isoString));
-    if (!caldt) return false;
-    try { if (isAllDay) caldt.isDate = true; } catch (_) {}
-    // Create negative recurrence date (EXDATE)
-    const exd = Cc["@mozilla.org/calendar/recurrence-date;1"].createInstance(Ci.calIRecurrenceDate);
-    exd.isNegative = true; // EXDATE
-    exd.date = caldt;
-    if (typeof rinfo.appendRecurrenceItem === "function") rinfo.appendRecurrenceItem(exd);
-    else if (typeof rinfo.addRecurrenceItem === "function") rinfo.addRecurrenceItem(exd);
-    try { tmCalendarDebugLog("[tmCalendar] addExdateToItem: added", exd.icalProperty?.value || caldt.toString()); } catch (_) {}
-    return true;
-  } catch (e) {
-    try { console.warn("[tmCalendar] addExdateToItem failed:", e); } catch (_) {}
-    return false;
-  }
+// Excludes the occurrence whose RECURRENCE-ID is `rid` (an EXDATE), written in
+// the series' zone, as the split point is. Thunderbird removes an occurrence, a
+// changed one included, by its RECURRENCE-ID (CalRecurrenceInfo.calculateDates).
+function addExdateToItem(item, rid) {
+  const Ci = globalThis.Ci; const Cc = globalThis.Cc;
+  const exd = Cc["@mozilla.org/calendar/recurrence-date;1"].createInstance(Ci.calIRecurrenceDate);
+  exd.isNegative = true; // EXDATE
+  exd.date = rid.isDate ? rid.clone() : rid.getInTimezone(item.startDate.timezone);
+  item.recurrenceInfo.appendRecurrenceItem(exd);
+  tmCalendarDebugLog("[tmCalendar] addExdateToItem: added", exd.icalProperty?.value || exd.date.toString());
 }
 
 // -------- Recurrence: one format for reading and writing --------
@@ -354,6 +330,13 @@ const RECURRENCE_FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
 // occurrence starting there (occurrenceNamedBy): more than any zone's offset from
 // the user's, so a DATE or a time in another zone is always inside.
 const OCCURRENCE_LOOKUP_REACH_MS = 2 * 86400 * 1000;
+
+// The edit fields that change an occurrence itself (its times or details), as
+// opposed to the series' rule or dates. A changed occurrence keeps its own copy
+// of each, so a split at one cannot apply them to it (splitRecurringEvent).
+// all_day alone changes nothing; a change to or from all-day comes with times.
+const SPLIT_FIELDS_OF_AN_OCCURRENCE = ["title", "location", "description", "transparency", "attendees",
+  "organizer_email", "start_iso", "end_iso"];
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
@@ -568,7 +551,8 @@ function setRuleOnItem(item, value) {
 }
 
 // The occurrence of `item`'s series that a recurrence_id names, for every edit
-// that targets occurrences (one occurrence, or this and the following ones).
+// that targets occurrences (one occurrence, or this and the following ones), and
+// that an exdates_add value names (`field`, for the error).
 // The tools document recurrence_id as the occurrence's start_iso, which the read
 // tools print in the user's zone (a floating time at its own digits, asShown),
 // and for an all-day series as its date. It is read in the user's zone whatever
@@ -578,24 +562,39 @@ function setRuleOnItem(item, value) {
 // the series' own RECURRENCE-ID for it, or `{ error }` when no occurrence, or
 // more than one, starts there: nothing is ever written for a time that is not
 // an occurrence (getOccurrenceFor would make one up for any time).
-function occurrenceNamedBy(item, iso) {
+function occurrenceNamedBy(item, iso, field = "recurrence_id") {
   const at = toCalIDateTime(String(iso || ""));
-  if (!at) return { error: "invalid recurrence_id format (expected ISO8601)" };
+  if (!at) return { error: `invalid ${field} format (expected ISO8601)` };
   if (item?.startDate?.isDate) at.isDate = true;
   // A range wide enough for any zone's offset from the user's; only an
   // occurrence that starts exactly there counts.
   const ms = at.nativeTime / 1000;
   const from = boundFromIcs(toIcsUntil(new Date(ms - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
   const to = boundFromIcs(toIcsUntil(new Date(ms + OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
-  if (!from || !to || !item?.recurrenceInfo) return { error: `recurrence_id ${iso} is not the start of an occurrence of this series` };
+  if (!from || !to || !item?.recurrenceInfo) return { error: `${field} ${iso} is not the start of an occurrence of this series` };
   const starting = [...(item.recurrenceInfo.getOccurrences(from, to, 0) || [])]
     .filter((occ) => occ?.startDate && occ.startDate.compare(at) === 0);
   if (starting.length === 1) return { occurrence: starting[0] };
   return {
     error: starting.length
-      ? `recurrence_id ${iso} is the start of more than one occurrence of this series; change it in the calendar app`
-      : `recurrence_id ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`,
+      ? `${field} ${iso} is the start of more than one occurrence of this series; change it in the calendar app`
+      : `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`,
   };
+}
+
+// The RECURRENCE-IDs of the occurrences an edit's exdates_add names, each by its
+// start as the read tools show it (occurrenceNamedBy), in the series as it is
+// before the edit. An EXDATE removes an occurrence by its RECURRENCE-ID, which
+// for a changed occurrence is not its start. `{ rids }`, or `{ error }` when a
+// value names no occurrence: nothing is written then.
+function exdatesNamedBy(item, isos) {
+  const rids = [];
+  for (const iso of isos) {
+    const named = occurrenceNamedBy(item, iso, "exdates_add");
+    if (named.error) return { error: named.error };
+    rids.push(named.occurrence.recurrenceId);
+  }
+  return { rids };
 }
 
 // A DATE's day `days` days away, as [YYYY, MM, DD] from its own digits. A DATE's
@@ -1864,10 +1863,22 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             if (!item) return { ok: false, error: lookupError || "event not found (id/recurrenceId mismatch)" };
 
+            // The occurrences exdates_add names, in the series as it is before
+            // the edit; a value that names none is refused before anything is written.
+            const exdates = Array.isArray(details.exdates_add) ? exdatesNamedBy(item.parentItem || item, details.exdates_add) : { rids: [] };
+            if (exdates.error) return { ok: false, error: exdates.error };
+
             // Use proper target selection for editing
             const { base, scope, isOccurrence, hasSeries } = pickEditTarget(item, details);
             const clone = base.clone();
             tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
+
+            // An edit of the series excludes them before its time change, which
+            // moves them with the series (onStartDateChange), as its other dates.
+            if (scope === "series") {
+              for (const rid of exdates.rids) addExdateToItem(clone, rid);
+              if (exdates.rids.length) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", exdates.rids.length);
+            }
             
             if (typeof patch.title === "string") clone.title = patch.title;
 
@@ -1985,30 +1996,16 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
             }
 
-            // EXDATE additions (exclude specific occurrences) - route to correct target
-            if (Array.isArray(details.exdates_add) && details.exdates_add.length) {
-              if (scope !== "series") {
-                // Switch to parent just for EXDATE edits
-                const parent = item.parentItem || item;
-                const parentOld = parent.clone();
-                let added = 0;
-                for (const iso of details.exdates_add) {
-                  try { if (addExdateToItem(parent, String(iso), parent.startDate)) added += 1; } catch (_) {}
-                }
-                tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
-                await parent.calendar.modifyItem(parent, parentOld);
-              } else {
-                // We're already editing the series, add to clone
-                try {
-                  let added = 0;
-                  for (const iso of details.exdates_add) {
-                    try { if (addExdateToItem(clone, String(iso), clone.startDate)) added += 1; } catch (_) {}
-                  }
-                  tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", added);
-                } catch (xe) {
-                  console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe);
-                }
+            // EXDATE additions on an edit of one occurrence go to its series.
+            if (exdates.rids.length && scope !== "series") {
+              const parent = item.parentItem || item;
+              const parentOld = parent.clone();
+              let added = 0;
+              for (const rid of exdates.rids) {
+                try { addExdateToItem(parent, rid); added += 1; } catch (xe) { console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe); }
               }
+              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
+              await parent.calendar.modifyItem(parent, parentOld);
             }
 
             // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
@@ -2122,9 +2119,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         // (best-effort).
         //
         // details = {
-        //   event_id, calendar_id?, recurrence_id (required: the RECURRENCE-ID of
-        //   the first occurrence that should belong to the NEW series, as the
-        //   read tools show it), patch (object with fields to apply to the new
+        //   event_id, calendar_id?, recurrence_id (required: the start, as the
+        //   read tools show it, of the occurrence that becomes the NEW series'
+        //   first; for a changed occurrence that is its own start, not its
+        //   RECURRENCE-ID), patch (object with fields to apply to the new
         //   series: title, location, description, transparency, attendees,
         //   send_invitations, organizer_email, recurrence, start_iso, end_iso,
         //   all_day, exdates_add), timezone? (for start_iso and end_iso)
@@ -2196,6 +2194,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (splitDt.compare(master.startDate) <= 0) {
               return { ok: false, error: "recurrence_id is the series' first occurrence: to change every occurrence, edit the whole series (edit_scope 'all')" };
             }
+            // An occurrence that was changed on its own is carried into the
+            // following part with its own time and fields, which the edit's
+            // would not reach. Such an edit is refused; the occurrence can be
+            // changed alone, and the following ones from the next occurrence.
+            if (master.recurrenceInfo.getExceptionFor(splitRid)
+                && SPLIT_FIELDS_OF_AN_OCCURRENCE.some((k) => patch[k] != null)) {
+              return { ok: false, error: `the occurrence at ${splitIso} was changed on its own, so this change would not reach it: change it alone (edit_scope 'this_only'), then this and the following ones from the next occurrence` };
+            }
+            // The occurrences exdates_add names, in the series as it is before
+            // the split; each goes to the part its RECURRENCE-ID falls in.
+            const exdates = Array.isArray(patch.exdates_add) ? exdatesNamedBy(master, patch.exdates_add) : { rids: [] };
+            if (exdates.error) return { ok: false, error: exdates.error };
 
             // 4. Compute UNTIL so the master ends BEFORE `splitDt` (the first
             // occurrence that should belong to the new series), and the bound
@@ -2269,6 +2279,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               for (const rid of [...(earlierInfo.getExceptionIds({}) || [])]) {
                 if (fromSplitOn(rid)) earlierInfo.removeExceptionFor(rid);
               }
+              for (const rid of exdates.rids) if (!fromSplitOn(rid)) addExdateToItem(cappedClone, rid);
             } catch (re) {
               console.error("[tmCalendar] splitRecurringEvent: aborting — capping the earlier part failed:", re);
               return { ok: false, error: `failed to apply capped RRULE: ${re}` };
@@ -2367,7 +2378,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               followingInfo.item = newEv;
               [...(followingInfo.getRecurrenceItems({}) || [])].forEach((r, i) => {
                 if (plans[i]) {
-                  if (newRule) return;
                   if (!plans[i].following) followingInfo.deleteRecurrenceItem(r);
                   else if (plans[i].following !== String(r.icalProperty.value)) writeRuleItem(r, plans[i].following);
                 } else if (!fromSplitOn(r.date)) {
@@ -2378,6 +2388,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 if (!fromSplitOn(rid)) followingInfo.removeExceptionFor(rid);
               }
               newEv.recurrenceInfo = followingInfo;
+              // Before the time change below, which moves them with the part.
+              for (const rid of exdates.rids) if (fromSplitOn(rid)) addExdateToItem(newEv, rid);
             } catch (re) {
               console.error("[tmCalendar] splitRecurringEvent: aborting — building the following part's recurrence failed:", re);
               return { ok: false, error: `failed to build the new series' recurrence: ${re}` };
@@ -2425,16 +2437,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 || (!newRule && items.some((r) => isRuleItem(r) && /\bUNTIL=/i.test(String(r.icalProperty?.value || ""))));
               if (carriesDates) {
                 return { ok: false, error: "changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app" };
-              }
-            }
-
-            // Excluded dates: each goes to the part it falls in, so none is lost.
-            if (Array.isArray(patch.exdates_add)) {
-              for (const iso of patch.exdates_add) {
-                const at = toCalIDateTime(String(iso));
-                if (!at) continue;
-                const part = at.compare(newEv.startDate) >= 0 ? newEv : cappedClone;
-                addExdateToItem(part, String(iso), part.startDate);
               }
             }
 

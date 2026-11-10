@@ -134,10 +134,21 @@ same design (tabmail-ios #421).
     changed occurrences' parent; the calendar's id assignment renames them (`onIdChange`).
   - **A time change** (`start_iso`/`end_iso`/`all_day`) applies to the following part only, after its recurrence is
     attached, so Thunderbird's `onStartDateChange` moves its EXDATEs, RDATEs, each non-COUNT rule's UNTIL and the
-    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does.
-  - **`exdates_add`** go to the part they fall in.
+    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does. `all_day` alone
+    changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
+    all-day comes with them (and `all_day` is not one of the fields that make a split at a changed occurrence
+    refused, below).
+  - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
+    time change so they move with the part.
+  - **A split at an occurrence that was changed on its own** carries that occurrence into the following part with
+    its own times and fields, so an edit's title, location, description, busy/free, attendees, organizer, start or
+    end (`SPLIT_FIELDS_OF_AN_OCCURRENCE`, a start equal to its own included) would not reach it while the edit
+    reported success. Such an edit is refused, naming the way that works: change the occurrence alone
+    (`this_only`), then this and the following ones from the next occurrence. `exdates_add`, `recurrence` and
+    `all_day` alone are allowed there.
   - **Refused, writing nothing:** an EXRULE (a negative rule, comm-central 161+) the split cannot keep; a rule
-    whose end or count cannot be read; a rule item that cannot be rewritten (an immutable item throws); a time
+    whose end or count cannot be read; a series that repeats by added dates alone (no rule to divide); a change
+    to an occurrence that was changed on its own (above); an `exdates_add` value that names no occurrence; a rule item that cannot be rewritten (an immutable item throws); a time
     change between all-day and timed when the following part carries an EXDATE, RDATE or changed occurrence, or
     (without a new rule) a rule with UNTIL (RFC 5545 needs them in the start's value type, and moving the start
     keeps theirs); and `recurrence: {}` at an occurrence that was changed on its own (the one event left would
@@ -145,6 +156,18 @@ same design (tabmail-ios #421).
   - The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule in its own
     part order (FREQ, COUNT, INTERVAL above 1, the BY-parts, UNTIL, then WKST unless MO), so such a comparison
     refused every split of a rule with a week start.
+- **Excluded dates (`exdates_add`) name occurrences by their start (#265, #295),** the same contract as
+  `recurrence_id`: each value is an occurrence's `start_iso` as the read tools print it, in the user's zone,
+  resolved by `exdatesNamedBy` through `occurrenceNamedBy` in the series as it is before the edit. Thunderbird
+  removes an occurrence by its RECURRENCE-ID (`CalRecurrenceInfo.calculateDates` drops an exception whose id an
+  EXDATE names), which for a changed occurrence is its slot, not its start, so the EXDATE is written at the
+  RECURRENCE-ID, in the series' zone (`addExdateToItem`). A value that names no occurrence (or more than one) is
+  refused before anything is written, for every scope. On the whole series and on a split the EXDATEs are added
+  before the time change, so a value names the occurrence the user read and `onStartDateChange` moves the EXDATE
+  with the series (the order #295 reported reversed). An edit of one occurrence still writes them to the series
+  (#298: not saved while the parent item is immutable). Superseded: the values were parsed as raw times and
+  written as given after the time change, so a moved occurrence named by its printed start was not removed, and
+  on a moved series the value named a time no occurrence had any more.
 - **Restated rules with `other` parts are refused,** for every edit scope: an edit that restates the rule of a
   series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
   would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
@@ -166,6 +189,10 @@ same design (tabmail-ios #421).
   RDATEs less EXDATEs, changed occurrences at their own time) as CalRecurrenceInfo does.
 - Split tests assert OCCURRENCES: for each start kind and for an unbounded, a COUNT and an UNTIL rule with EXDATEs,
   RDATEs and changed occurrences on both sides of the split, the two parts' occurrences together equal the series'.
+- `seriesOccurrences` drops a changed occurrence whose RECURRENCE-ID an EXDATE names, as `calculateDates` does;
+  excluded-date tests assert the occurrence is gone, so an EXDATE at a moved occurrence's start (not its id) fails.
+  `test/calendarOccurrenceRoundTrip.test.js` feeds a changed occurrence's printed start, through the edit tool's
+  normalizer, into `exdates_add` for each start kind.
 - MONTHLY folds are pinned by occurrence too: `monthlyDays` enumerates RFC 5545 days independently of the bridge, and
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card

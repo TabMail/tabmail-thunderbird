@@ -445,9 +445,14 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
       for (const d of r.getOccurrences(item.startDate, rangeStart, rangeEnd, 0)) dates.set(ridKey(d), d);
     }
   }
-  for (const r of items) if (r.date && r.isNegative) dates.delete(ridKey(r.date));
-  const changed = info.getExceptionIds().map((rid) => info.getExceptionFor(rid));
-  for (const ex of changed) dates.delete(ridKey(ex.recurrenceId));
+  // CalRecurrenceInfo.calculateDates: a changed occurrence replaces its slot,
+  // and an EXDATE removes the occurrence with its RECURRENCE-ID, a changed one
+  // included.
+  const removed = new Set(items.filter((r) => r.date && r.isNegative).map((r) => ridKey(r.date)));
+  const changed = info.getExceptionIds().map((rid) => info.getExceptionFor(rid))
+    .filter((ex) => !removed.has(ridKey(ex.recurrenceId)));
+  for (const key of removed) dates.delete(key);
+  for (const ex of info.getExceptionIds()) dates.delete(ridKey(ex));
   return [
     ...[...dates.values()].map((start) => ({ start, item })),
     ...changed.filter((ex) => inRange(ex, rangeStart, rangeEnd)).map((ex) => ({ start: ex.startDate, item: ex })),
