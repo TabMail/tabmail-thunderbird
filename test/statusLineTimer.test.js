@@ -132,8 +132,8 @@ describe('a status line keeps each status up for the full delay (#249)', () => {
 });
 
 // The Settings page (config.html) with its real status-line modules. `replies` answers the
-// background's `fts` commands by name (a list answers one call each; a pending promise keeps a scan
-// running), and `storage` holds what the page reads back from storage by key.
+// background's messages by `cmd` or `command` (a list answers one call each; a pending promise keeps
+// a scan running; an Error is thrown), and `storage` holds what the page reads back by key.
 function openSettings(replies = {}, storage = {}) {
   const dom = new JSDOM(readFileSync(new URL('config/config.html', ROOT), 'utf8'));
   const realm = createRealm({
@@ -160,10 +160,13 @@ function openSettings(replies = {}, storage = {}) {
       console: { log: noop, warn: noop, error: noop },
       browser: {
         storage: { local: { set: async () => {}, get: async (k) => (typeof k === 'string' ? { [k]: storage[k] } : k) } },
+        tmPrefs: { setInt: async () => {} },
         runtime: {
           sendMessage: async (msg) => {
-            const reply = replies[msg.cmd];
-            return (Array.isArray(reply) ? reply.shift() : reply) ?? {};
+            const reply = replies[msg.cmd ?? msg.command];
+            const next = Array.isArray(reply) ? reply.shift() : reply;
+            if (next instanceof Error) throw next;
+            return next ?? {};
           },
           onMessage: { addListener: noop, removeListener: noop },
         },
@@ -196,6 +199,38 @@ describe('the Settings page status lines keep each status up for its full time (
     expect(status.textContent).toBe('✓ Tag by thread enabled');
     vi.advanceTimersByTime(HIDE_AFTER_MS - 100 - 1);
     expect(status.textContent).toBe('✓ Tag by thread enabled');
+    vi.advanceTimersByTime(1);
+    expect(status.textContent).toBe('');
+  });
+
+  // Every status the Appearance line shows, with the change that shows it and any reply it needs.
+  const APPEARANCE = [
+    { name: 'a theme applied', target: { name: 'theme', id: 'theme-dark', value: 'dark' }, shows: '✓ Applied: Dark theme' },
+    { name: 'a theme that fails', target: { name: 'theme', id: 'theme-dark', value: 'dark' }, replies: { 'theme-preference-changed': { ok: false } }, shows: 'Error applying theme' },
+    { name: 'AI summaries shown', target: { id: 'show-ai-summaries', checked: true }, shows: '✓ AI summaries shown' },
+    { name: 'tag by thread', target: { id: 'tag-by-thread-enabled', checked: true }, shows: '✓ Tag by thread enabled' },
+    { name: 'TabMail tag priority', target: { id: 'prioritize-tabmail-tags', checked: true }, shows: '✓ TabMail tag priority enabled' },
+    { name: 'the GUI font size', target: { id: 'font-size-ui', value: '13' }, shows: '✓ GUI font size: 13px' },
+    { name: 'the message font size', target: { id: 'font-size-message', value: '14' }, shows: '✓ Message font size: 14px' },
+    { name: 'the monospace font size', target: { id: 'font-size-monospace', value: '12' }, shows: '✓ Monospace font size: 12px' },
+  ];
+
+  it.each(APPEARANCE)('appearance: a status shown just before $name would hide stays up for the full delay', async (earlier) => {
+    const page = openSettings(earlier.replies);
+    const status = page.line('appearance-status-text');
+    const later = earlier.target.id === 'tag-by-thread-enabled'
+      ? { target: { id: 'show-ai-summaries', checked: true }, shows: '✓ AI summaries shown' }
+      : { target: { id: 'tag-by-thread-enabled', checked: true }, shows: '✓ Tag by thread enabled' };
+
+    await page.appearance.handleAppearanceChange({ target: earlier.target }, {});
+    expect(status.textContent).toBe(earlier.shows);
+    vi.advanceTimersByTime(HIDE_AFTER_MS - 100);
+    await page.appearance.handleAppearanceChange({ target: later.target }, {});
+
+    vi.advanceTimersByTime(100); // the earlier status's delay is over
+    expect(status.textContent).toBe(later.shows);
+    vi.advanceTimersByTime(HIDE_AFTER_MS - 100 - 1);
+    expect(status.textContent).toBe(later.shows);
     vi.advanceTimersByTime(1);
     expect(status.textContent).toBe('');
   });
@@ -262,6 +297,30 @@ describe('the Settings page status lines keep each status up for its full time (
     expect(page.line('status').style.color).toBe(ownColor);
   });
 
+  // Every outcome of the helper update check, as the reply the page gets and what it says.
+  const UPDATE_CHECKS = [
+    { name: 'an update applied', reply: { ok: true, updated: true, newVersion: '2.0.0', message: 'Updated to 2.0.0' }, says: 'Updated to 2.0.0' },
+    { name: 'an update it cannot apply itself', reply: { ok: true, updated: false, updateAvailable: true, canUpdate: false, currentVersion: '1.0.0', latestVersion: '2.0.0', message: 'Update available' }, says: 'Update available' },
+    { name: 'up to date', reply: { ok: true, updated: false, message: 'Up to date' }, says: 'Up to date' },
+    { name: 'a failed check', reply: { ok: false, error: 'example' }, says: 'Update check failed: example' },
+    { name: 'a check that throws', reply: new Error('example'), says: 'Update check failed: example' },
+  ];
+
+  it.each(UPDATE_CHECKS)('shared status line: $name stays until replaced, and the status after it shows in its own color', async (check) => {
+    const alone = openSettings();
+    await alone.reminders.saveReminderSettings(noop);
+    const ownColor = alone.line('status').style.color;
+
+    const page = openSettings({ manualCheckAndUpdateHost: check.reply });
+    await page.fts.ftsManualCheckAndUpdateHost();
+    vi.advanceTimersByTime(60000);
+    expect(page.line('status').textContent).toBe(check.says);
+
+    await page.reminders.saveReminderSettings(noop);
+    expect(page.line('status').textContent).toBe('Saved: Reminders to show = 3');
+    expect(page.line('status').style.color).toBe(ownColor);
+  });
+
   // Each way a scan starts on the search-progress panel, and the answer that finishes it.
   const SCANS = [
     { name: 'a smart reindex', cmd: 'smartReindex', start: (fts) => fts.ftsSmartReindex(), done: { ok: true, indexed: 5, skipped: 0 } },
@@ -293,6 +352,45 @@ describe('the Settings page status lines keep each status up for its full time (
     expect(panel.style.display).toBe('none');
   });
 
+  // Every result the search-progress panel shows when a scan finishes, and how to get it there.
+  const RESULTS = [
+    { name: 'a smart reindex', replies: { smartReindex: [{ ok: true, indexed: 10, skipped: 0 }] }, finish: (page) => page.fts.ftsSmartReindex(), says: /^Smart reindex completed/ },
+    { name: 'a full reindex', replies: { reindexAll: { ok: true, indexed: 10, batches: 1 } }, finish: (page) => page.fts.ftsReindexAll(), says: /^Completed: 10 messages/ },
+    { name: 'a maintenance scan', replies: { maintenanceTrigger: { ok: true, indexed: 10 } }, finish: (page) => page.fts.ftsMaintenanceTrigger('daily', true), says: /^daily maintenance scan completed/ },
+    {
+      name: 'an embedding rebuild',
+      replies: {},
+      finish: async (page, storage) => {
+        storage.fts_scan_status = { isScanning: true, scanType: 'embeddingRebuild', progress: { processed: 1, total: 4 } };
+        await page.fts.updateFtsStatus();
+        storage.fts_scan_status = { isScanning: false };
+        await vi.advanceTimersByTimeAsync(5000); // the rebuild's completion poll
+      },
+      says: /^Embedding rebuild complete$/,
+    },
+  ];
+
+  it.each(RESULTS)('search progress: a scan started before $name\'s result would hide keeps its panel', async (earlier) => {
+    let finish;
+    const running = new Promise((resolve) => { finish = resolve; });
+    const replies = structuredClone(earlier.replies);
+    replies.smartReindex = [...(replies.smartReindex ?? []), running];
+    const storage = {};
+    const page = openSettings(replies, storage);
+    const panel = page.line('fts-progress');
+
+    await earlier.finish(page, storage);
+    expect(page.line('fts-progress-text').textContent).toMatch(earlier.says);
+    vi.advanceTimersByTime(HIDE_AFTER_MS - 100);
+    const scanning = page.fts.ftsSmartReindex();
+
+    vi.advanceTimersByTime(60000); // the earlier result's delay is long over
+    expect(panel.style.display).toBe('block');
+    expect(page.line('fts-progress-text').textContent).toMatch(/^Starting smart reindex/);
+    finish({ ok: true, indexed: 5, skipped: 0 });
+    await scanning;
+  });
+
   it('search progress: an embedding rebuild found running before an earlier scan\'s result would hide keeps its panel', async () => {
     const storage = {};
     const page = openSettings({ smartReindex: { ok: true, indexed: 10, skipped: 0 } }, storage);
@@ -317,12 +415,18 @@ describe('the Settings page status lines keep each status up for its full time (
   });
 });
 
-// The popup with its real script; each "Check for updates" click answers with the next result.
+// The popup with its real script; each "Check for updates" click answers with the next result (an
+// Error is thrown). With `results` null the update API is missing, so every click says "Not available".
 function openPopup(results) {
   const dom = new JSDOM(readFileSync(new URL('popup/popup.html', ROOT), 'utf8'));
-  const browser = new Proxy({
-    tmUpdates: { checkForUpdates: async () => results.shift() },
-  }, { get: (target, name) => target[name] ?? absorb });
+  const tmUpdates = results && {
+    checkForUpdates: async () => {
+      const next = results.shift();
+      if (next instanceof Error) throw next;
+      return next;
+    },
+  };
+  const browser = new Proxy({ tmUpdates }, { get: (target, name) => (name in target ? target[name] : absorb) });
   createRealm({
     files: ['popup/popup.js', 'agent/modules/statusLine.js'],
     stubs: {
@@ -405,6 +509,48 @@ describe('the popup\'s update-check label keeps each result up for its full time
     expect(link.textContent).toBe('Up to date!');
     vi.advanceTimersByTime(CHECK_RESULT_MS - 1);
     expect(link.textContent).toBe('Up to date!');
+    vi.advanceTimersByTime(1);
+    expect(link.textContent).toBe(ownLabel);
+  });
+
+  // Every result the link shows for a while, and the clicks that get there.
+  const RESULTS = [
+    { name: 'a failed check', results: () => [{ status: 'error', error: 'example' }, { status: 'no_update', currentVersion: '1.0.0' }], shows: 'Check failed', then: 'Up to date!' },
+    { name: 'a check that throws', results: () => [new Error('example'), { status: 'no_update', currentVersion: '1.0.0' }], shows: 'Check failed', then: 'Up to date!' },
+    { name: 'an up-to-date check', results: () => [{ status: 'no_update', currentVersion: '1.0.0' }, { status: 'error', error: 'example' }], shows: 'Up to date!', then: 'Check failed' },
+    { name: 'a check with no update API', results: () => null, shows: 'Not available', then: 'Not available' },
+  ];
+
+  it.each(RESULTS)('$name shown alone goes back to the link\'s own label after exactly the result time', async (kind) => {
+    const link = openPopup(kind.results());
+    await settle();
+    const ownLabel = link.textContent;
+
+    link.click();
+    await settle();
+    expect(link.textContent).toBe(kind.shows);
+    vi.advanceTimersByTime(CHECK_RESULT_MS - 1);
+    expect(link.textContent).toBe(kind.shows);
+    vi.advanceTimersByTime(1);
+    expect(link.textContent).toBe(ownLabel);
+  });
+
+  it.each(RESULTS)('a re-check before $name is reset shows its own result for the full time', async (kind) => {
+    const link = openPopup(kind.results());
+    await settle();
+    const ownLabel = link.textContent;
+
+    link.click();
+    await settle();
+    expect(link.textContent).toBe(kind.shows);
+    vi.advanceTimersByTime(CHECK_RESULT_MS - 100);
+
+    link.click();
+    await settle();
+    vi.advanceTimersByTime(100); // the earlier result's time is over
+    expect(link.textContent).toBe(kind.then);
+    vi.advanceTimersByTime(CHECK_RESULT_MS - 100 - 1);
+    expect(link.textContent).toBe(kind.then);
     vi.advanceTimersByTime(1);
     expect(link.textContent).toBe(ownLabel);
   });
