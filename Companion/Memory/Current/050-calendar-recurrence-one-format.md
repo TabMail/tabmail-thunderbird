@@ -252,7 +252,7 @@ same design (tabmail-ios #421).
     alone the new end, on the series' own date as the read tools show it, `shownEventTimesIso` in
     `calendar_event_read.js`): a plain shift of every occurrence. Thunderbird's `onStartDateChange` moves
     EXDATE/RDATE, UNTIL and the RECURRENCE-IDs by the start's change in UTC; `shiftSeriesWithStart` (bridge,
-    after `allDayEndError`) handles the changed occurrences as calendar apps keep the user's edits
+    after `allDayEditError`) handles the changed occurrences as calendar apps keep the user's edits
     (2026-11-10): one still at its slot (its own start, moved by that UTC amount, lands on its
     moved RECURRENCE-ID; changed only in title, notes, place, guests or length) moves by the same amount and keeps
     its changes; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still

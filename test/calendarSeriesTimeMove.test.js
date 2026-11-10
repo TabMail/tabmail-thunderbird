@@ -537,6 +537,31 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     expect(x.startDate.toString()).toBe(calendar.items[0].startDate.toString());
   });
 
+  it('a whole-series move named from a changed first occurrence that adds a guest gives the guest to the series, to a changed occurrence it moves and to that first occurrence', async () => {
+    const start = makeUserStart();
+    const rule = RULES(start)[1];
+    const dates = ruleDatesOf(rule, start);
+    const first = withGuests(changedAt(dates[0], 'Early', true), [guest('ana')]);
+    const kept = withGuests(changedAt(dates[3], 'Kept', false), [guest('ana')]);
+    const { api, calendar } = load(seriesFrom(start, [rule], { exceptions: [first, kept], attendees: [guest('ana')] }));
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', recurrence_id: startIsoOf(first.startDate), ...movedTo(start, 1, 1),
+      add_attendees: [{ email: 'dee@example.com' }],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(calendar.items).toHaveLength(1);
+    const saved = calendar.items[0];
+    const ids = (item) => item.getAttendees().map((a) => a.id);
+    const both = ['mailto:ana@example.com', 'mailto:dee@example.com'];
+    expect(ids(saved)).toEqual(both);
+    const movedKept = changedNamed(saved, 'Kept');
+    expect(movedKept.startDate.toString()).toBe(after(dates[3], 1, 1).toString());
+    expect(ids(movedKept)).toEqual(both);
+    const named = changedNamed(saved, 'Early');
+    expect(named.startDate.toString()).toBe(saved.startDate.toString());
+    expect(ids(named)).toEqual(both);
+  });
+
   it('stopping the repeat from a later occurrence while making it all-day is made, though the series has excluded and added dates', async () => {
     const start = makeUserStart();
     const series = timedWithDatesOnly(start);
@@ -603,6 +628,58 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     expect(calendar.items).toEqual([series]);
     expect(occurrenceKeys(series)).toEqual(before);
   });
+
+  // The edit tool asks the bridge to check an edit of the times before the
+  // confirmation card (check_only): each refusal of the move is made by that
+  // check, so the user is never shown a card for an edit that is then refused,
+  // and the check writes nothing.
+  const SET_HOURS = 'this series repeats at set hours or minutes, so its time cannot be moved here; tell the user to change it in their calendar app';
+  const EXRULE_MOVE = 'this series cancels occurrences by a rule (EXRULE), which a move to another day cannot carry; tell the user to move it in their calendar app';
+  const NEW_RULE_MOVE = 'a new repeat rule cannot be given with a move of the series to another day; make the move first, then change the repeat in a second edit (calendar_event_read then shows the moved end)';
+  const withExrule = (start) => seriesFrom(start, ['FREQ=WEEKLY;BYDAY=TH,SA;COUNT=12'], {
+    extraItems: [{ isNegative: true, icalProperty: { propertyName: 'EXRULE', value: 'FREQ=WEEKLY;BYDAY=SA' } }],
+  });
+  // Each case: the series, the occurrence the edit is named from (the first
+  // one, or a later one for this and following), the edit, and the refusal.
+  const CHECKED_REFUSALS = [
+    ['the rule\'s days', () => seriesFrom(makeUserStart(), ['FREQ=MONTHLY;BYDAY=1TH;COUNT=6']), (at) => movedTo(at, 1, 0), RULE_DAYS],
+    ['set hours', () => seriesFrom(makeUserStart(), ['FREQ=DAILY;BYHOUR=17,20;COUNT=8']), (at) => movedTo(at, 0, 1), SET_HOURS],
+    ['a rule that cancels occurrences (EXRULE)', () => withExrule(makeUserStart()), (at) => movedTo(at, 1, 0), EXRULE_MOVE],
+    ['a change between timed and all-day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[1]).series, (at) => asAllDay(at, 1), KIND_CHANGE],
+    ['a change between all-day and timed', allDayWithOneChanged, (at) => asTimed(at, 1), KIND_CHANGE],
+    ['a new repeat rule with a move to another day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[0]).series, (at) => ({ ...movedTo(at, 1, 0), recurrence: { freq: 'DAILY', count: 3 } }), NEW_RULE_MOVE],
+  ];
+  // A later occurrence the rule makes, at the series' own time of day.
+  const laterOccurrence = (series) => {
+    const rule = ruleValues(series)[0];
+    return ruleDatesOf(rule, series.startDate).filter((dt) => dt.isDate || dt.hour === series.startDate.hour)[3];
+  };
+  async function checkOnly(series, args) {
+    const before = occurrenceKeys(series);
+    const rulesBefore = ruleValues(series);
+    const { api, calendar, modifications } = load(series);
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...args, check_only: true });
+    expect(modifications).toEqual([]);
+    expect(calendar.items).toEqual([series]);
+    expect(ruleValues(series)).toEqual(rulesBefore);
+    expect(occurrenceKeys(series)).toEqual(before);
+    return res;
+  }
+  for (const [what, make, change, error] of CHECKED_REFUSALS) {
+    it(`the check before the card refuses a whole-series move for ${what}, writing nothing`, async () => {
+      const series = make();
+      const res = await checkOnly(series, { edit_scope: 'all', recurrence_id: startIsoOf(series.startDate), ...change(series.startDate) });
+      expect(res).toEqual({ ok: false, error });
+    });
+
+    it(`the check before the card refuses a move from a later occurrence on for ${what}, writing nothing`, async () => {
+      const series = make();
+      const at = laterOccurrence(series);
+      const res = await checkOnly(series, { edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), ...change(at) });
+      // A split refuses a series with an EXRULE before it moves anything.
+      expect(res).toEqual({ ok: false, error: what.includes('EXRULE') ? 'this series cancels occurrences by a rule (EXRULE), which a split cannot keep; change it in the calendar app' : error });
+    });
+  }
 });
 
 describe('the edit tool routes a whole-series time change before the card', () => {

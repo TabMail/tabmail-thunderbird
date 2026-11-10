@@ -243,7 +243,7 @@
               "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID. If omitted, the bridge scans all calendars to locate the event." },
               "recurrence_id": { "type": "string", "description": "ISO8601 start datetime of the first occurrence that should belong to the NEW series." },
               "timezone": { "type": "string", "optional": true, "description": "Optional IANA timezone identifier for interpreting naive ISO timestamps." },
-              "check_only": { "type": "boolean", "optional": true, "description": "Build the split up to the all-day and invitation refusals and write nothing." },
+              "check_only": { "type": "boolean", "optional": true, "description": "Build the split up to the all-day, time-move and invitation refusals and write nothing. ok: false carries the refusal." },
               "patch": {
                 "type": "object",
                 "optional": true,

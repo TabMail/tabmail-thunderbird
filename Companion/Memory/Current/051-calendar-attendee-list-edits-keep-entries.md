@@ -13,7 +13,8 @@ it, with one function, to each item the edit covers.
   - `this_only`: that occurrence (its own list when it was changed before, else the series' list it starts from);
   - `all`: the series and every occurrence changed on its own (`applyGuestChangeToSeries`);
   - `this_and_following`: the new series and every changed occurrence carried into it. The earlier part
-    keeps its guests. A guest-only split at a changed occurrence is made (other fields there are still refused).
+    keeps its guests. A split at a changed occurrence is made, guests and every other field the edit names
+    included (#287): that occurrence takes the edit and keeps its own changes the edit does not name.
 - An occurrence with guests of its own keeps its own differences apart from what the change names: a guest
   it added stays, a guest it removed stays removed unless the change adds them.
 - Reading an address (`attendeeAddress`): trimmed, every leading `mailto:` dropped (any case, spaces after

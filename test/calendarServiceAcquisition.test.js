@@ -265,6 +265,7 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "getAPI > modifyCalendarEvent :: getCalendarManager",
   "getAPI > setGoogleInvitePolicy :: getCalendarManager",
   "getAPI > splitRecurringEvent :: getCalendarManager",
+  "getAPI > splitRecurringEvent :: getTimezoneService",
   "listCalendarsInternal :: getCalendarManager",
   "occurrenceInstantOn :: getTimezoneService",
   "queryCalendarItemsInternal :: getCalendarManager",

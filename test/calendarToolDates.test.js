@@ -14,6 +14,10 @@ globalThis.browser = {
     modifyCalendarEvent: vi.fn(async () => ({ ok: true })),
     createCalendarEvent: vi.fn(async () => ({ ok: true })),
     getCalendars: vi.fn(async () => ({ ok: true, calendars: [{ id: 'cal1', name: 'Personal' }] })),
+    // A time change reads the event first (a repeating series is routed by its
+    // occurrences); evt is an event that does not repeat.
+    queryCalendarItems: vi.fn(async () => []),
+    getCalendarEventDetails: vi.fn(async (eventId) => (eventId === 'evt' ? { ok: true, id: 'evt', isRecurring: false } : { ok: false, error: 'event not found' })),
   },
   storage: { local: { get: vi.fn(async () => ({ defaultCalendarId: 'cal1' })), set: vi.fn(async () => {}) } },
   runtime: { sendMessage: vi.fn(async () => undefined) },
