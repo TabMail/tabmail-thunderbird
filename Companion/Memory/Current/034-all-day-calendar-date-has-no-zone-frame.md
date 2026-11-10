@@ -37,18 +37,54 @@ the digits stay as read, a relabel converts nothing). Its callers:
   bare-date UNTIL names. Relabelling a DATE moves none of the series' dates: Thunderbird's
   `onStartDateChange` diffs the two starts in UTC, where a DATE keeps its digits.
 
-Values copied from a stored series keep its zone: the split's following part when the edit restates
-no dates (`splitDt`), and EXDATEs (`addExdateToItem` clones the RECURRENCE-ID). They compare by date
-either way. Why it matters beyond display: ical.js compares a rule's
-UNTIL with each occurrence by instant (`toUnixTime`), and a bare-date UNTIL is at offset 0, so west
-of UTC an all-day series with a zoned start lost its last day, and a split of it was refused (the
-earlier part's check, 050). A floating DATE's instant is its digits at offset 0, so the last day is
-admitted. Series stored with a zoned all-day start (TabMail's before #303, or another app's) are
-left as they are (no migration); an edit that restates their dates or writes a rule rewrites the
-start and end floating, and the split's refusal of a zoned earlier part that would lose a day still
-guards them. The harness moves dates as Thunderbird does for this: its `onStartDateChange` diffs two
-DATEs by their days (in UTC, relabelled), and a DATE's `addDuration` adds whole days only
-(ical.js `Time.adjust`). Pinned by `test/calendarAllDayHasNoZone.test.js`
+Why it matters beyond display: ical.js compares a rule's UNTIL with each occurrence by instant
+(`toUnixTime`), and a bare-date UNTIL is at offset 0, so west of UTC an all-day series with a zoned
+start lost its last day, and a split of it was refused. A floating DATE's instant is its digits at
+offset 0, so the last day is admitted.
+
+**Every write of an all-day series writes plain dates (#329, 2026-11-10; Google Calendar's rule: an
+all-day value is a DATE with no zone, and a date-start rule's UNTIL is a plain date).** Series stored
+with zoned all-day DATEs (TabMail's before #303, or another app's) are not migrated; the next write
+rewrites them. `asAllDayItem(item)` relabels, through `asAllDayDate`, every DATE of an all-day item:
+DTSTART and DTEND, each EXDATE and RDATE date, and each changed occurrence's RECURRENCE-ID and its own
+DTSTART/DTEND when they are dates (the exception is cloned, relabelled and stored again with
+`modifyException(ex, true)`, which replaces the entry under the same `getRidKey`, as
+`onStartDateChange` re-keys one). Timed values in those lists (an occurrence moved to a time of day,
+a date-time EXDATE or RDATE) are left as they are. A rule's date-time UNTIL (released versions up to
+v1.11.1 wrote every UNTIL as a UTC date-time from `new Date(until)`, and some apps do) is written as
+a plain date: the bound's date in the start's stored zone, which is the last day Thunderbird shows
+for the zoned series (ical.js compares the bound with each start at midnight in that zone). So a
+bound in the local evening west of UTC does not gain the next day and one at local midnight east of
+UTC does not lose its day. A date-only bound older versions wrote as `T000000Z` keeps the day it
+showed (west of UTC, the day before the date the user gave); restoring the given date there would
+move the other forms, and old data gets no code of its own, so it is left as shown (decided
+2026-11-10; the user can give the series a new last day). The digits stay, so nothing moves:
+`onStartDateChange` diffs the starts in UTC, where a DATE keeps its day (diff zero; comm-central also
+converts each RECURRENCE-ID into the new start's or a matching RDATE's zone, which for a DATE is a
+relabel), and `getRidKey` of a zoned DATE is its digits (converted to UTC, a relabel), so a changed
+occurrence and an excluded date stay keyed to their occurrence. Its callers: an edit of the whole
+series (`modifyCalendarEvent`, scope series, before its excluded dates and time change, also a
+title-only edit), `applyRecurrenceToItem` (any rule written), and both parts of a split (the earlier
+part before its cap is written, the following part once its recurrence is attached, before the time
+change). `addExdateToItem` writes an all-day RECURRENCE-ID as a plain date. A one-occurrence edit
+(this_only) writes no series dates: the series keeps whatever zone it has, the exception's
+RECURRENCE-ID is the series' slot as stored, and its new dates are plain (`toCalIDateTimeInFrameOf`);
+its `exdates_add` are written plain on the zoned parent (keyed by date, harmless). A rewritten series
+west of UTC with a date UNTIL regains the day its UNTIL names, which Thunderbird dropped from the
+zoned copy (the date the user and Google read it as); that is the only occurrence change (a
+date-time UNTIL keeps its last day, above), and the split tests
+compare the parts with the same series written with plain dates. The split's refusal of an earlier
+part that would lose a day before the split (a look-back comparison of RECURRENCE-IDs) is deleted:
+a zoned all-day start was its only trigger, and none reaches it now. Superseded (#303 to #329): values copied from a stored series kept its zone (the split's
+following part when the edit restated no dates, `splitDt`, and EXDATEs, `addExdateToItem` cloning
+the RECURRENCE-ID); stored zoned series were left as they were, only an edit that restated their dates
+or wrote a rule rewrote the start and end floating, and the split's refusal guarded the rest. The harness moves dates as Thunderbird does for this: its
+`onStartDateChange` diffs two DATEs by their days (in UTC, relabelled; read field by field, so a
+Thunderbird date from `test/fixtures/mozilla` takes part too), and a DATE's `addDuration` adds whole
+days only (ical.js `Time.adjust`). Pinned by `test/calendarAllDayHasNoZone.test.js`,
+`test/calendarRecurrenceFormat.test.js` (split invariant over zoned east/west and plain all-day kinds)
+and `test/calendarRecurrenceNative.test.js` (Thunderbird's own ical.js: the zoned start loses the
+UNTIL's day, the rewritten one keeps it)
 (TZ=America/Vancouver; harness `timezoneService.floating` is `FLOATING_ZONE`).
 
 ## The frame-free contract (PR #48)

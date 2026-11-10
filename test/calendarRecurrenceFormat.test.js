@@ -617,25 +617,56 @@ describe('split: the two parts make the series\' occurrences', () => {
     const d = dt.timezone === FLOATING_ZONE ? dt : dt.getInTimezone(LOCAL_ZONE);
     return `${d.year}-${pad2(d.month + 1)}-${pad2(d.day)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
   };
-  // Every kind of start, a start in UTC, and all-day series made in a zone: a
-  // DATE's epoch time depends on its zone, so the split's day arithmetic must
-  // not use it (east of UTC its day starts the day before in UTC; west of UTC
-  // it starts after the UTC midnight that an UNTIL date names).
+  // Every kind of start, a start in UTC, a plain all-day date, and all-day
+  // series stored with a zone (as TabMail wrote them before it wrote plain
+  // dates, and as some other apps do): a DATE's epoch time depends on its zone,
+  // so the split's day arithmetic must not use it (east of UTC its day starts
+  // the day before in UTC; west of UTC it starts after the UTC midnight that an
+  // UNTIL date names).
   // West of UTC, ical.js, which compares a rule's UNTIL by instant, ends a
-  // series capped with a DATE UNTIL a day early: the capped day starts after
-  // the UTC midnight the UNTIL names. A split whose earlier part would lose
-  // that day is refused (below); one whose day before the split is no
-  // occurrence keeps the series.
+  // series whose all-day start carries the zone a day before the date its
+  // bare-date UNTIL names. A split writes every all-day value of both parts as
+  // a plain date (its digits kept), so the capped part keeps the day before the
+  // split, and a rule's UNTIL keeps the day it names.
   const WEST_ALL_DAY_KINDS = {
     "all-day, made in the user's zone (west of UTC)": () => fakeDate(START_DAY, LOCAL_ZONE),
     "all-day, made in a zone west of the user's": () => fakeDate(START_DAY, WEST),
   };
-  const SPLIT_START_KINDS = {
-    ...START_KINDS,
-    'timed in UTC': () => fakeDateTime(START_DAY, 17, 0, UTC_ZONE),
+  const ZONED_ALL_DAY_KINDS = {
     'all-day, made in a zone east of UTC': () => fakeDate(START_DAY, EAST),
     ...WEST_ALL_DAY_KINDS,
   };
+  const SPLIT_START_KINDS = {
+    ...START_KINDS,
+    'timed in UTC': () => fakeDateTime(START_DAY, 17, 0, UTC_ZONE),
+    'all-day, a plain date': () => fakeDate(START_DAY, FLOATING_ZONE),
+    ...ZONED_ALL_DAY_KINDS,
+  };
+  // A value with no zone, its digits kept: what an all-day value names.
+  const plain = (dt) => (dt.isDate ? fakeCalDateTime({ ...dt, timezone: FLOATING_ZONE }) : dt);
+  // Every all-day value an item holds (its start and end, its excluded and
+  // added dates, and each changed occurrence's RECURRENCE-ID, start and end),
+  // as "NAME digits zone".
+  const allDayValues = (item) => {
+    const info = item.recurrenceInfo;
+    const named = [['DTSTART', item.startDate], ['DTEND', item.endDate]];
+    for (const r of info?.getRecurrenceItems() || []) if (r.date) named.push([r.icalProperty.propertyName, r.date]);
+    for (const rid of info?.getExceptionIds() || []) {
+      const ex = info.getExceptionFor(rid);
+      named.push(['RECURRENCE-ID', ex.recurrenceId], ['changed DTSTART', ex.startDate], ['changed DTEND', ex.endDate]);
+    }
+    return named.filter(([, dt]) => dt?.isDate).map(([name, dt]) => `${name} ${dt.toString()} ${dt.timezone.tzid}`);
+  };
+  // Every all-day value of `item` is a plain date (no zone).
+  const expectPlainDates = (item, label) => {
+    const values = allDayValues(item);
+    expect(values.length, label).toBeGreaterThanOrEqual(2);
+    expect(values.filter((v) => !v.endsWith(` ${FLOATING_ZONE.tzid}`)), label).toEqual([]);
+  };
+  // A part's changed occurrences, each as its RECURRENCE-ID's date and its own
+  // start's: where it belongs and where it shows.
+  const changedPairs = (item) => item.recurrenceInfo.getExceptionIds()
+    .map((rid) => `${rid.toString()}>${item.recurrenceInfo.getExceptionFor(rid).startDate.toString()}`);
   const changedAt = (start, days, title = 'Moved') => {
     const rid = after(start, days);
     const moved = start.isDate ? after(start, days + 1) : after(start, days, 2);
@@ -660,62 +691,87 @@ describe('split: the two parts make the series\' occurrences', () => {
   }
   const itemValues = (item, name) => item.recurrenceInfo.getRecurrenceItems().filter((r) => r.icalProperty.propertyName === name).map((r) => r.icalProperty.value);
 
+  // The last occurrence before the split, among `keys`.
+  const lastBefore = (keys, at) => keys.filter((k) => !k.startsWith('changed ') && k < instantKey(at)).at(-1);
+
   for (const [kind, makeStart] of Object.entries(SPLIT_START_KINDS)) {
     it(`a series ${kind}: the two parts together make the series' occurrences, its changed occurrences included`, async () => {
       const probe = makeStart();
-      // West of UTC, only a rule with no occurrence the day before the split.
       const weekly = `FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(probe, 60)}`;
-      const rules = kind in WEST_ALL_DAY_KINDS ? [weekly] : ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30', weekly];
-      for (const rule of rules) {
+      for (const rule of ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30', weekly]) {
+        const seriesStarting = (start) => {
+          const timedShift = start.isDate ? 0 : 2;
+          return seriesFrom(start, [rule], {
+            extraItems: [
+              recurrenceDate('EXDATE', after(start, 3)), recurrenceDate('EXDATE', after(start, 20)),
+              recurrenceDate('RDATE', after(start, 5, timedShift)), recurrenceDate('RDATE', after(start, 22, timedShift)),
+            ],
+            exceptions: [changedAt(start, 7), changedAt(start, 18)],
+          });
+        };
         const start = makeStart();
-        const timedShift = start.isDate ? 0 : 2;
-        const master = seriesFrom(start, [rule], {
-          extraItems: [
-            recurrenceDate('EXDATE', after(start, 3)), recurrenceDate('EXDATE', after(start, 20)),
-            recurrenceDate('RDATE', after(start, 5, timedShift)), recurrenceDate('RDATE', after(start, 22, timedShift)),
-          ],
-          exceptions: [changedAt(start, 7), changedAt(start, 18)],
-        });
+        const master = seriesStarting(start);
         const before = occurrenceKeys(master);
+        // The occurrences the series' dates name: the same series with plain
+        // dates. They are the series' own, but for a zoned all-day series west
+        // of UTC, which Thunderbird ends a day before the date its UNTIL names.
+        const named = occurrenceKeys(seriesStarting(plain(start)));
+        expect(named.filter((k) => !before.includes(k)), rule).toEqual(kind in WEST_ALL_DAY_KINDS && /UNTIL=/.test(rule) ? [untilAfter(start, 60)] : []);
+        expect(before.filter((k) => !named.includes(k)), rule).toEqual([]);
         expect(before.length, rule).toBeGreaterThan(20);
         expect(before.filter((k) => k.startsWith('changed ')), rule).toHaveLength(2);
         const ruleDates = master.recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
         const at = ruleDates[12];
         const { res, capped, fresh } = await split(master, startIsoOf(at));
         expect(res, `${rule}: ${res.error}`).toMatchObject({ ok: true });
-        expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(before);
+        expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(named);
+        expect(lastBefore(occurrenceKeys(capped), at), rule).toBe(lastBefore(named, at));
         expect(fresh.startDate.toString(), rule).toBe(at.toString());
-        expect(fresh.startDate.timezone, rule).toBe(start.timezone);
+        expect(fresh.startDate.timezone, rule).toBe(start.isDate ? FLOATING_ZONE : start.timezone);
+        // Each excluded and added date, and each changed occurrence, keeps its
+        // date and its occurrence, in one part or the other.
+        for (const name of ['EXDATE', 'RDATE']) {
+          expect([...itemValues(capped, name), ...itemValues(fresh, name)].sort(), `${rule} ${name}`).toEqual(itemValues(master, name).sort());
+        }
+        expect([...changedPairs(capped), ...changedPairs(fresh)].sort(), rule).toEqual(changedPairs(master).sort());
+        if (start.isDate) {
+          expectPlainDates(capped, `${rule}: the part before`);
+          expectPlainDates(fresh, `${rule}: the part from the split on`);
+        }
         // The earlier part's end is written in its start's value type (RFC 5545
         // 3.3.10). A floating start's is still a UTC value, filed as #270.
         if (kind !== 'floating') {
           const shape = start.isDate ? /^\d{8}$/ : /^\d{8}T\d{6}Z$/;
           for (const value of ruleValues(capped).filter((v) => /UNTIL=/.test(v))) expect(untilOf(value), `${rule}: ${value}`).toMatch(shape);
         }
-        for (const rid of fresh.recurrenceInfo.getExceptionIds()) {
-          const ex = fresh.recurrenceInfo.getExceptionFor(rid);
-          expect(ex.parentItem, rule).toBe(fresh);
-          expect(ex.id, rule).toBe(fresh.id);
+        for (const part of [capped, fresh]) {
+          for (const rid of part.recurrenceInfo.getExceptionIds()) {
+            const ex = part.recurrenceInfo.getExceptionFor(rid);
+            expect(ex.parentItem, rule).toBe(part);
+            expect(ex.id, rule).toBe(part.id);
+          }
         }
       }
     });
   }
 
+  // West of UTC, the day before the split is the one Thunderbird would drop
+  // from a part capped with a bare-date UNTIL while its start kept the zone.
   for (const [kind, makeStart] of Object.entries(WEST_ALL_DAY_KINDS)) {
     for (const rule of ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30']) {
-      it(`a series ${kind} (${rule}): a split that would end the part before it a day early is refused and writes nothing`, async () => {
+      it(`a series ${kind} (${rule}): the part before the split keeps the day before it, written as plain dates`, async () => {
         const start = makeStart();
         const master = seriesFrom(start, [rule], { exceptions: [changedAt(start, 7)] });
-        const rules = ruleValues(master);
         const before = occurrenceKeys(master);
-        const at = startIsoOf(after(start, 12));
-        const { res, calendar, modifications } = await split(master, at);
-        expect(res).toMatchObject({ ok: false });
-        expect(res.error).toBe(`the part before ${at} would not keep every occurrence the series has just before it in Thunderbird, so the series cannot be split there; change it in the calendar app`);
-        expect(modifications).toEqual([]);
-        expect(calendar.items).toEqual([master]);
-        expect(ruleValues(master)).toEqual(rules);
-        expect(occurrenceKeys(master)).toEqual(before);
+        const at = after(start, 12);
+        const { res, capped, fresh, modifications } = await split(master, startIsoOf(at));
+        expect(res, res.error).toMatchObject({ ok: true });
+        expect(modifications).toHaveLength(1);
+        expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+        expect(lastBefore(occurrenceKeys(capped), at)).toBe(after(start, 11).toString());
+        expect(ruleValues(capped)).toEqual([`FREQ=DAILY;UNTIL=${after(start, 11).toString()}`]);
+        expectPlainDates(capped, 'the part before');
+        expectPlainDates(fresh, 'the part from the split on');
       });
     }
   }
@@ -976,6 +1032,38 @@ describe('split: the two parts make the series\' occurrences', () => {
       expect(occurrenceKeys(fresh)).toHaveLength(1);
       expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
     });
+  }
+
+  // The same splits of an all-day series stored with a zone, east and west of
+  // UTC. Both parts are written as plain dates, so together they make the
+  // occurrences the series' dates name (the same series with plain dates): its
+  // own, and west of UTC the day each bare-date UNTIL names, which Thunderbird
+  // drops from the zoned series. 2099-10-01 and 2099-10-15 are Thursdays.
+  for (const [kind, makeStart] of Object.entries(ZONED_ALL_DAY_KINDS)) {
+    const changedWithRid = (start, rid) => fakeEvent({ id: 'ser', title: 'Moved', startDate: after(plain(rid), 1), endDate: after(plain(rid), 2), recurrenceId: rid });
+    for (const [name, seriesStarting, recurrenceId, patch, excluded] of [
+      ['two rules that both make an occurrence at the split', (s) => seriesFrom(s, ['FREQ=WEEKLY;BYDAY=TH', 'FREQ=MONTHLY;BYMONTHDAY=15']), '2099-10-15T00:00:00', {}, []],
+      ['a rule that ended before the split, on a day only it makes', (s) => seriesFrom(s, ['FREQ=DAILY;INTERVAL=2', 'FREQ=DAILY;INTERVAL=3;UNTIL=20991010']), '2099-10-15T00:00:00', {}, []],
+      ['excluded dates in the edit, one at the split', (s) => seriesFrom(s, ['FREQ=DAILY']), '2099-10-15T00:00:00', { exdates_add: ['2099-10-10T00:00:00', '2099-10-15T00:00:00', '2099-10-20T00:00:00'] }, ['20991010', '20991015', '20991020']],
+      ['a changed occurrence whose RECURRENCE-ID is stored in UTC, on each side', (s) => seriesFrom(s, ['FREQ=DAILY'], { exceptions: [changedWithRid(s, fakeDate('2099-10-08', UTC_ZONE)), changedWithRid(s, fakeDate('2099-10-18', UTC_ZONE))] }), '2099-10-15T00:00:00', {}, []],
+      ['a split at the last day Thunderbird shows of a rule bounded by UNTIL', (s) => seriesFrom(s, ['FREQ=DAILY;UNTIL=20991020']), '2099-10-19T00:00:00', {}, []],
+    ]) {
+      it(`a series ${kind}, ${name}: the two parts make the occurrences its dates name, as plain dates`, async () => {
+        const start = makeStart();
+        const master = seriesStarting(start);
+        const named = occurrenceKeys(seriesStarting(plain(start))).filter((k) => !excluded.includes(k));
+        const { res, capped, fresh } = await split(master, recurrenceId, patch);
+        expect(res, res.error).toMatchObject({ ok: true });
+        expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(named);
+        const at = fakeDate(recurrenceId.slice(0, 10));
+        expect(lastBefore(occurrenceKeys(capped), at)).toBe(lastBefore(named, at));
+        expect([...changedPairs(capped), ...changedPairs(fresh)].sort()).toEqual(changedPairs(master).sort());
+        expect([...itemValues(capped, 'EXDATE'), ...itemValues(fresh, 'EXDATE')].sort()).toEqual(excluded);
+        expectPlainDates(capped, 'the part before');
+        expectPlainDates(fresh, 'the part from the split on');
+        for (const value of ruleValues(capped).filter((v) => /UNTIL=/.test(v))) expect(untilOf(value), value).toMatch(/^\d{8}$/);
+      });
+    }
   }
 
   it('when the following part cannot be added, the earlier part is put back as it was', async () => {

@@ -302,9 +302,10 @@ function extractExdatesFromItem(item) {
 // removeOccurrenceAt, which adds the EXDATE and removes the occurrence's changed
 // copy with it. An EXDATE alone would not do: Thunderbird applies one only to a
 // query whose range holds its date (CalRecurrenceInfo.calculateDates), so a
-// changed copy moved to another day would still show there.
+// changed copy moved to another day would still show there. An all-day
+// RECURRENCE-ID is written as a plain date (asAllDayDate), its day kept.
 function addExdateToItem(item, rid) {
-  const at = rid.isDate ? rid.clone() : rid.getInTimezone(item.startDate.timezone);
+  const at = rid.isDate ? asAllDayDate(rid.clone()) : rid.getInTimezone(item.startDate.timezone);
   item.recurrenceInfo.removeOccurrenceAt(at);
   tmCalendarDebugLog("[tmCalendar] addExdateToItem: removed the occurrence at", at.toString());
 }
@@ -657,19 +658,14 @@ function splitRule(rule, master, split, afterSplit, cap) {
 }
 
 // Sets or clears an item's rule (`setRuleOnItem`). `{}` removes the recurrence.
-// An all-day item's start and end are first written with no zone
-// (asAllDayDate): its UNTIL is a bare date, which ical.js compares with each
-// occurrence by instant at offset 0, so a start stored in a zone west of UTC
-// (as TabMail wrote all-day dates before #303) would end the series a day
-// before the day named. Relabelling a DATE moves none of its dates: Thunderbird
-// diffs the two starts in UTC (onStartDateChange), where a DATE keeps its day.
+// An all-day item's dates are first written with no zone (asAllDayItem): its
+// UNTIL is a bare date, which ical.js compares with each occurrence by instant
+// at offset 0, so a start stored in a zone west of UTC (as TabMail wrote
+// all-day dates before #303) would end the series a day before the day named.
 function applyRecurrenceToItem(item, recurrenceDetails) {
   try {
     if (!recurrenceDetails || typeof recurrenceDetails !== "object") return { applied: false, cleared: false };
-    if (recurrenceDetails.freq && item.startDate?.isDate) {
-      item.startDate = asAllDayDate(item.startDate.clone());
-      if (item.endDate?.isDate) item.endDate = asAllDayDate(item.endDate.clone());
-    }
+    if (recurrenceDetails.freq) asAllDayItem(item);
     const value = buildRRuleValueFromDetails(recurrenceDetails, item);
     if (!value) {
       item.recurrenceInfo = null;
@@ -1172,6 +1168,55 @@ function asAllDayDate(dt) {
   dt.isDate = true;
   dt.timezone = getTimezoneService().floating;
   return dt;
+}
+
+// Writes every all-day value of an all-day item as a DATE with no zone
+// (asAllDayDate), as Thunderbird's event dialog writes one and as Google
+// Calendar keeps them: its start and end, its excluded and added dates, and
+// each changed occurrence's RECURRENCE-ID and its own start and end. A series
+// stored with zoned DATEs (TabMail's before #303, or another app's) is
+// otherwise expanded by instant against a bare-date UNTIL, which west of UTC
+// ends it a day before the date the UNTIL names (asAllDayDate). Every write of
+// an all-day series' own dates goes through here first: an edit of the whole
+// series, a rule written onto one (applyRecurrenceToItem), and both parts of a
+// split. A one-occurrence edit writes none of the series' dates and leaves it
+// as stored. A rule's date-time UNTIL (older TabMail versions wrote every
+// UNTIL as one, and so do some apps) is written as the plain date of the last
+// day Thunderbird shows now: the bound's date in the start's stored zone, since
+// ical.js compares it with each zoned date at midnight in that zone (RFC 5545
+// 3.3.10: UNTIL takes DTSTART's value type). A date UNTIL is kept as written.
+// Each value keeps its digits, so no occurrence moves: Thunderbird diffs the
+// two starts in UTC (onStartDateChange), where a DATE keeps its day, and keys a
+// changed occurrence and an excluded date by the RECURRENCE-ID's date
+// (getRidKey), which the relabel keeps, so each stays attached to its
+// occurrence. Timed values (a timed item, or a date-time in its lists) are left
+// as they are.
+function asAllDayItem(item) {
+  if (!item?.startDate?.isDate) return;
+  const info = item.recurrenceInfo;
+  const zone = item.startDate.timezone?.tzid && item.startDate.timezone.tzid !== "floating"
+    ? item.startDate.timezone : getTimezoneService().UTC;
+  for (const r of info?.getRecurrenceItems({}) || []) {
+    if (r.date?.isDate) r.date = asAllDayDate(r.date.clone());
+    if (!isRuleItem(r)) continue;
+    const value = String(r.icalProperty?.value || "");
+    const until = /(?:^|;)UNTIL=(\d{8}T\d{6}Z?)(?=;|$)/i.exec(value);
+    const bound = until && boundFromIcs(until[1]);
+    if (!bound) continue;
+    const day = bound.getInTimezone(zone);
+    const date = `${day.year}${pad2(day.month + 1)}${pad2(day.day)}`;
+    writeRuleItem(r, value.replace(until[0], until[0].replace(until[1], date)));
+  }
+  item.startDate = asAllDayDate(item.startDate.clone());
+  if (item.endDate?.isDate) item.endDate = asAllDayDate(item.endDate.clone());
+  for (const rid of [...(info?.getExceptionIds({}) || [])]) {
+    if (!rid.isDate) continue;
+    const ex = info.getExceptionFor(rid).clone();
+    ex.recurrenceId = asAllDayDate(rid.clone());
+    if (ex.startDate?.isDate) ex.startDate = asAllDayDate(ex.startDate.clone());
+    if (ex.endDate?.isDate) ex.endDate = asAllDayDate(ex.endDate.clone());
+    info.modifyException(ex, true);
+  }
 }
 
 // Why an edit that gave `item` new times leaves an all-day item that ends on or
@@ -1978,9 +2023,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const clone = base.clone();
             tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
 
-            // An edit of the series excludes them before its time change, which
+            // An edit of the series writes its all-day dates as plain dates
+            // (asAllDayItem), and excludes them before its time change, which
             // moves them with the series (onStartDateChange), as its other dates.
             if (scope === "series") {
+              asAllDayItem(clone);
               for (const rid of exdates.rids) addExdateToItem(clone, rid);
               if (exdates.rids.length) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", exdates.rids.length);
             }
@@ -2363,8 +2410,13 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // from the split on leave it. Nothing is written yet.
             // Note: we don't send any "series-ended" notification here — only the
             // new series triggers an invitation (controlled by patch.send_invitations).
+            // An all-day part is written as plain dates (asAllDayItem), so its
+            // bare-date UNTIL keeps the day before the split: ical.js compares
+            // UNTIL by instant, and a start that kept a zone west of UTC would
+            // fall after an UNTIL of its own day.
             const cappedClone = master.clone();
             try {
+              asAllDayItem(cappedClone);
               const earlierInfo = cappedClone.recurrenceInfo;
               [...(earlierInfo.getRecurrenceItems({}) || [])].forEach((r, i) => {
                 if (plans[i]) {
@@ -2375,20 +2427,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               });
               for (const rid of [...(earlierInfo.getExceptionIds({}) || [])]) {
                 if (fromSplitOn(rid)) earlierInfo.removeExceptionFor(rid);
-              }
-              // In Thunderbird's own expansion, the earlier part must keep every
-              // occurrence the series has just before the split. A rule capped
-              // with a bare-DATE UNTIL can end it a day early: ical.js compares
-              // by instant, and an all-day start that carries a zone west of
-              // UTC falls after an UNTIL of the same day. Refused, not written.
-              // An all-day value TabMail writes has no zone (asAllDayDate), so
-              // this refuses only a series stored with one, such as those
-              // TabMail made before #303 or another app made.
-              const lookBack = boundFromIcs(toIcsUntil(new Date(splitDt.nativeTime / 1000 - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
-              const ridsNear = (info, keep) => [...(info.getOccurrences(lookBack, afterSplit, 0) || [])]
-                .map((occ) => occ.recurrenceId).filter(keep).map((rid) => rid.nativeTime).sort().join(",");
-              if (ridsNear(earlierInfo, () => true) !== ridsNear(master.recurrenceInfo, (rid) => !fromSplitOn(rid))) {
-                return { ok: false, error: `the part before ${splitIso} would not keep every occurrence the series has just before it in Thunderbird, so the series cannot be split there; change it in the calendar app` };
               }
               for (const rid of exdates.rids) if (!fromSplitOn(rid)) addExdateToItem(cappedClone, rid);
             } catch (re) {
@@ -2463,6 +2501,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 if (!fromSplitOn(rid)) followingInfo.removeExceptionFor(rid);
               }
               newEv.recurrenceInfo = followingInfo;
+              asAllDayItem(newEv);
               // Before the time change below, which moves them with the part.
               for (const rid of exdates.rids) if (fromSplitOn(rid)) addExdateToItem(newEv, rid);
             } catch (re) {

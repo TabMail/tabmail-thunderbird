@@ -255,6 +255,7 @@ const LIVE_CONSTRUCTION_CONTRACTS = [
 // consumers, so it protected none of the nine.
 const EXPECTED_ACCESSOR_CALL_SITES = [
   "asAllDayDate :: getTimezoneService",
+  "asAllDayItem :: getTimezoneService",
   "asShown :: getTimezoneService",
   "boundFromIcs :: getTimezoneService",
   "getAPI > createCalendarEvent :: getCalendarManager",

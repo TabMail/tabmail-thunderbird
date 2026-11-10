@@ -344,7 +344,9 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
       if (!oldStart) return;
       // CalRecurrenceInfo diffs the two starts in UTC, and a DATE converted to
       // UTC keeps its digits (ical.js relabels it), so a DATE takes part by its day.
-      const inUtc = (dt) => (dt.isDate ? fakeCalDateTime({ ...dt, timezone: UTC_ZONE }) : dt);
+      // (Read field by field, so a Thunderbird date from test/fixtures/mozilla,
+      // whose fields are getters, takes part too.)
+      const inUtc = (dt) => (dt.isDate ? fakeCalDateTime({ year: dt.year, month: dt.month, day: dt.day, isDate: true, timezone: UTC_ZONE }) : dt);
       const diff = inUtc(newStart).subtractDate(inUtc(oldStart));
       for (const r of list) {
         if (r.date) {

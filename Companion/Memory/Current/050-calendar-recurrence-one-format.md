@@ -127,14 +127,16 @@ same design (tabmail-ios #421).
     rule's UNTIL is compared with the split by `compare`, never by epoch time: an all-day UNTIL names a date, and
     west of UTC a DATE's day starts after the UTC midnight that date names, so an epoch comparison dropped a last
     occurrence on the split day.
-  - **The earlier part keeps its last occurrences, in Thunderbird's expansion:** after the cap, the earlier part's
-    occurrences over the two days before the split (`OCCURRENCE_LOOKUP_REACH_MS`) must be the series' there, by
-    RECURRENCE-ID, or the split is refused before anything is written. ical.js compares a rule's UNTIL by instant
+  - **Both parts are written as plain dates (#329):** an all-day series' parts have every DATE relabelled
+    with no zone (`asAllDayItem`, 034) before the cap is written, so the earlier part's bare-date UNTIL (the
+    day before the split) keeps that day in Thunderbird's expansion. ical.js compares a rule's UNTIL by instant
     (`Time.compare`, `toUnixTime`: an occurrence in its start's zone, a DATE at midnight there; a bare-date or
-    floating UNTIL at offset 0), so an all-day start that carries a zone west of UTC falls after a bare-date UNTIL
-    of its own day and the cap at the day before the split drops it. Only all-day dates the assistant wrote before
-    #303 carry a zone (since #303 it writes them floating, `asAllDayDate`, 034), or another app's; a split whose day
-    before is no occurrence (a weekly rule) is unaffected.
+    floating UNTIL at offset 0), so a start that kept a zone west of UTC fell after a bare-date UNTIL of its
+    own day. Superseded: until #329 the earlier part's occurrences over the two days before the split were
+    compared with the series' by RECURRENCE-ID and a mismatch refused the split ("the part before ... would
+    not keep every occurrence ..."), which refused every daily split of a zoned all-day series west of UTC.
+    The comparison is deleted, not kept as a guard: its only trigger was a zoned all-day start; a timed cap is
+    the split minus one second by instant, and a plain all-day cap keeps its day.
   - **Dates and changed occurrences:** EXDATEs, RDATEs and changed occurrences before the split stay on the earlier
     part; those from the split on move to the following part (an RDATE is not bounded by UNTIL, so one left on the
     earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's
