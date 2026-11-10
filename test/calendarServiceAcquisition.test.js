@@ -255,6 +255,7 @@ const LIVE_CONSTRUCTION_CONTRACTS = [
 // replaced: that was a global > 0 threshold already satisfied by the standalone
 // consumers, so it protected none of the nine.
 const EXPECTED_ACCESSOR_CALL_SITES = [
+  "boundFromIcs :: getTimezoneService",
   "getAPI > createCalendarEvent :: getCalendarManager",
   "getAPI > deleteCalendarEvent :: getCalendarManager",
   "getAPI > getCalendarEventDetails :: getCalendarManager",
@@ -263,6 +264,7 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "getAPI > setGoogleInvitePolicy :: getCalendarManager",
   "getAPI > splitRecurringEvent :: getCalendarManager",
   "listCalendarsInternal :: getCalendarManager",
+  "occurrenceInstantOn :: getTimezoneService",
   "queryCalendarItemsInternal :: getCalendarManager",
   "sendCalendarInvitations :: getIcsService",
   "setRuleOnItem :: getIcsService",

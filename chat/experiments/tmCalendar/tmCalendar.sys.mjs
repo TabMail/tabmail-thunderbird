@@ -347,7 +347,6 @@ function addExdateToItem(item, isoString, startDateLike) {
 // as `other` and are never written.
 
 const RECURRENCE_FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
-const RECURRENCE_DAY_CODE = /^(MO|TU|WE|TH|FR|SA|SU)$/;
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
@@ -394,21 +393,13 @@ function zonedStartZone(item) {
 // as ical.js compares them. Read in the frame occurrences are expanded in (the
 // start's zone, or offset 0), the bound's day is the last day when its time of
 // day is at or after the occurrences' start time, otherwise the day before.
-// Returns "" for a value that is not an UNTIL.
+// Returns "" for a value that is not an UNTIL, and for a timed series' bound
+// whose day Thunderbird's own comparison does not confirm (below).
 function untilDayFromIcs(value, item) {
-  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/i.exec(String(value || "").trim());
-  if (!m) return "";
-  const [, y, mo, d, hh = "00", mi = "00", ss = "00"] = m;
-  const utc = getTimezoneService().UTC;
-  const bound = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
-  bound.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), utc);
+  const bound = boundFromIcs(value);
+  if (!bound) return "";
   const start = item?.startDate;
-  const inFrame = bound.getInTimezone(zonedStartZone(item) || utc);
-  // Thunderbird's zone conversion does not always keep the instant (near the
-  // autumn change it can land an hour off). A day read from such a value could
-  // drop or add an occurrence when written back, so the bound is not shown as
-  // a day: it stays in `other`, and restating the rule is refused.
-  if (inFrame.nativeTime !== bound.nativeTime) return "";
+  const inFrame = bound.getInTimezone(zonedStartZone(item) || getTimezoneService().UTC);
   let day = Date.UTC(inFrame.year, inFrame.month, inFrame.day);
   if (start && !start.isDate) {
     const boundTime = (inFrame.hour * 60 + inFrame.minute) * 60 + inFrame.second;
@@ -416,7 +407,40 @@ function untilDayFromIcs(value, item) {
     if (boundTime < startTime) day -= 86400 * 1000;
   }
   const last = new Date(day);
-  return `${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`;
+  const shown = `${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`;
+  if (!start || start.isDate) return shown;
+  // Near a daylight saving change the wall clock read above can be an hour
+  // off (Thunderbird's zone conversion can move the instant, and a time in the
+  // skipped hour reads an hour late). The day is shown only when Thunderbird's
+  // own comparison, by instant, agrees: the stored bound and the bound the edit
+  // tool writes for that day each keep that day's occurrence and not the next
+  // day's. Otherwise the bound stays in `other`, and restating it is refused.
+  const written = boundFromIcs(untilForRRule(shown, item));
+  const lastOnly = (b) => !!b && occurrenceInstantOn(day, item) <= b.nativeTime
+    && occurrenceInstantOn(day + 86400 * 1000, item) > b.nativeTime;
+  return lastOnly(bound) && lastOnly(written) ? shown : "";
+}
+
+// An UNTIL value as an instant: a `Z` value is that instant; a DATE or floating
+// value is its digits at offset 0, as ical.js compares them. Null otherwise.
+function boundFromIcs(value) {
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/i.exec(String(value || "").trim());
+  if (!m) return null;
+  const [, y, mo, d, hh = "00", mi = "00", ss = "00"] = m;
+  const bound = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
+  bound.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), getTimezoneService().UTC);
+  return bound;
+}
+
+// The instant of a timed series' occurrence on a day (`dayMs`, that day's UTC
+// midnight) at the start's time of day, in the frame occurrences are expanded
+// in, as Thunderbird computes it.
+function occurrenceInstantOn(dayMs, item) {
+  const start = item.startDate;
+  const day = new Date(dayMs);
+  const at = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
+  at.resetTo(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), start.hour, start.minute, start.second, zonedStartZone(item) || getTimezoneService().UTC);
+  return at.nativeTime;
 }
 
 // An event's rule in the tools' fields, or null when it does not repeat.
@@ -425,8 +449,6 @@ function recurrenceFieldsOfItem(item) {
   if (!rrule) return null;
   const f = {};
   const other = [];
-  let byDay = null;
-  let bySetPos = null;
   for (const part of rrule.split(";")) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -436,39 +458,22 @@ function recurrenceFieldsOfItem(item) {
     else if (key === "INTERVAL" && /^\d+$/.test(val)) f.interval = Number(val);
     else if (key === "COUNT" && /^\d+$/.test(val)) f.count = Number(val);
     else if (key === "UNTIL" && untilDayFromIcs(val, item)) f.until = untilDayFromIcs(val, item);
-    else if (key === "BYDAY") byDay = val.toUpperCase().split(",");
+    else if (key === "BYDAY") f.byDay = val.toUpperCase().split(",");
     else if (key === "BYMONTHDAY") f.byMonthDay = val.split(",").map(Number);
     else if (key === "BYMONTH") f.byMonth = val.split(",").map(Number);
     else if (key === "WKST") f.wkst = val.toUpperCase();
-    else if (key === "BYSETPOS") bySetPos = val;
+    // Anything else goes to `other`, BYSETPOS included: it is never folded
+    // into an ordinal byDay, because the Thunderbird versions this add-on
+    // supports do not all expand BYDAY=TU;BYSETPOS=2 and BYDAY=2TU to the
+    // same days.
     else other.push(part.trim());
-  }
-  // One weekday at one position is its RFC 5545 ordinal form within a month:
-  // BYDAY=TU;BYSETPOS=2 is BYDAY=2TU, because BYSETPOS counts within the days
-  // the other parts produce and BYDAY is then the only day filter. That holds
-  // for MONTHLY and for YEARLY with one BYMONTH, at a position a month can hold
-  // (1 to 5 from either end). Anything wider (a whole year, where Thunderbird
-  // expands a yearly ordinal differently from BYSETPOS, several months, a
-  // BYMONTHDAY filter, or any other part that changes the set it counts in)
-  // stays in `other`.
-  if (bySetPos !== null) {
-    const pos = bySetPos.split(",");
-    const sameDays = !f.byMonthDay && other.length === 0
-      && (f.freq === "MONTHLY" || (f.freq === "YEARLY" && f.byMonth && f.byMonth.length === 1));
-    if (sameDays && pos.length === 1 && /^[+-]?[1-5]$/.test(pos[0]) && byDay && byDay.length === 1 && RECURRENCE_DAY_CODE.test(byDay[0])) {
-      byDay = [`${Number(pos[0])}${byDay[0]}`];
-    } else {
-      other.push(`BYSETPOS=${bySetPos}`);
-    }
   }
   // A further rule adds its own occurrences, which the fields above cannot
   // express: shown in `other`, so restating the fields (which would leave one
   // rule) is refused and the series keeps every rule.
   for (const further of furtherRules) other.push(`RRULE:${further}`);
   const out = {};
-  for (const k of ["freq", "interval", "count", "until"]) if (k in f) out[k] = f[k];
-  if (byDay) out.byDay = byDay;
-  for (const k of ["byMonthDay", "byMonth", "wkst"]) if (k in f) out[k] = f[k];
+  for (const k of ["freq", "interval", "count", "until", "byDay", "byMonthDay", "byMonth", "wkst"]) if (k in f) out[k] = f[k];
   if (other.length) out.other = other.join(";");
   return out;
 }

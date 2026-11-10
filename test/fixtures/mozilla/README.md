@@ -11,5 +11,10 @@ License 2.0, like this repository.
 | `CalDateTime.sys.mjs` | `calendar/base/src/CalDateTime.sys.mjs` | `d37e2a6644317141b17ba8839e4fc1f1bbb822ea8389a997a9241b2eb7b2010d` |
 
 Fetched from `https://raw.githubusercontent.com/mozilla/releases-comm-central/226a299e/<path>`.
-Used by `test/calendarRecurrenceNative.test.js`. They are test inputs only and
-are never loaded by the add-on.
+That revision is Thunderbird 161.0a1, newer than the versions the add-on
+supports; the tests check the bridge against this one revision only. Recurrence
+expansion differs between versions (BYSETPOS was rewritten in 159), which is why
+the bridge does not translate rule parts whose expansion changed.
+
+Used by `test/calendarRecurrenceNative.test.js`, whose first test checks both
+hashes above. They are test inputs only and are never loaded by the add-on.

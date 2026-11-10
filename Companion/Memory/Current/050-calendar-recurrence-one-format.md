@@ -36,18 +36,22 @@ same design (tabmail-ios #421).
   is at or after the start's time of day, otherwise the day before; an all-day series ends on the bound's day.
   Converting the instant into a zone and taking its date was wrong whenever the bound's time is before the
   occurrence time, e.g. every split cap (split minus one second) read one day late.
-  Thunderbird's own zone conversion (`CalDateTime.getInTimezone`, ical.js `convertToZone`) does not always keep
-  the instant: near a daylight saving change it can land an hour off. When the converted value's `nativeTime`
-  differs from the bound's, the bound is not shown as a day; the UNTIL part stays in `other`, so restating the
-  rule is refused rather than written back one occurrence short or long.
-- **BYSETPOS:** one weekday at one position folds to its ordinal (`BYDAY=TU;BYSETPOS=2` becomes `2TU`) only where
-  BYDAY is the only day filter: MONTHLY, or YEARLY with exactly one BYMONTH, at a position a month can hold (1 to 5
-  from either end), and never with a BYMONTHDAY. A whole-year yearly ordinal is not folded: Thunderbird expands
-  `FREQ=YEARLY;BYDAY=-20MO` differently from `BYDAY=MO;BYSETPOS=-20`, so BYSETPOS stays in `other`. BYSETPOS
-  counts within the days the other parts name, so `BYDAY=FR;BYMONTHDAY=1,...,14;BYSETPOS=-1` is the second Friday,
-  while `-1FR` with that BYMONTHDAY names no day at all. Elsewhere
-  (`FREQ=YEARLY;BYMONTH=3,9;BYDAY=TU;BYSETPOS=2` is only the 2nd Tuesday of March) BYSETPOS stays in `other`.
-- **`other`:** anything else goes there, e.g. BYWEEKNO, BYYEARDAY, BYHOUR, BYSETPOS with several days, or a FREQ the schema has no value for. The read line then adds "the edit tool cannot express these; omit recurrence to keep the rule".
+  Near a daylight saving change that wall-clock reading can be an hour off: Thunderbird's own zone conversion
+  (`CalDateTime.getInTimezone`, ical.js `convertToZone`) can move the instant near the autumn change, and a bound
+  in the skipped spring hour reads an hour late with the instant kept (a split cap on the change day, for a start
+  in the hour before it, read as the change day). So for a timed series the day is shown only when Thunderbird's
+  own comparison, by instant, agrees: the stored bound and the bound the edit tool would write for that day
+  (`untilForRRule`) each keep that day's occurrence at the start's time of day and not the next day's
+  (`occurrenceInstantOn`, `resetTo` in the start's frame, as ical.js's iterator compares `last` with UNTIL).
+  Otherwise the bound stays in `other`, and restating the rule is refused. (An earlier version checked only that
+  the converted value kept its `nativeTime`; that guarded the conversion, not the day, and missed the spring gap.)
+- **BYSETPOS** is always shown in `other`, never folded into an ordinal byDay, so restating such a rule is refused.
+  RFC 5545 makes `BYDAY=TU;BYSETPOS=2` and `BYDAY=2TU` the same within a month, but Thunderbird 140 to 158 (the
+  BYSETPOS code before its 159 rewrite) expand the BYSETPOS form with an extra first occurrence when the series
+  start is not itself an occurrence, and never select day 1 at positions -4 and -5. A fold correct on one version
+  dropped or added occurrences on another. (Earlier versions of this change folded one weekday at one position for
+  MONTHLY and one-month YEARLY rules; the fold was deleted rather than narrowed, as the simplest safe reading.)
+- **`other`:** anything else goes there, e.g. BYSETPOS, BYWEEKNO, BYYEARDAY, BYHOUR, or a FREQ the schema has no value for. The read line then adds "the edit tool cannot express these; omit recurrence to keep the rule".
 
 ## Writing
 
@@ -113,9 +117,14 @@ same design (tabmail-ios #421).
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card
   with every field.
 - `test/calendarRecurrenceNative.test.js` runs the bridge against Thunderbird's own date and recurrence code
-  (`test/fixtures/mozilla/Ical.sys.mjs` and `CalDateTime.sys.mjs`, unmodified copies pinned by revision and SHA-256
-  in that directory's README), because the fakes convert zones with JavaScript dates, which always keep the
-  instant. It writes last days around both daylight saving changes for early, midday and late starts, reads them
-  back, and requires either the same native occurrences after restating or the UNTIL part in `other`; the same for
-  bounds other apps store; and it checks the BYSETPOS folds and non-folds against native expansion.
-- Bridge accessor calls (`untilDayFromIcs`, `untilForRRule` → `getTimezoneService`; `setRuleOnItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
+  (`test/fixtures/mozilla/Ical.sys.mjs` and `CalDateTime.sys.mjs`, unmodified copies of comm-central 226a299e,
+  Thunderbird 161.0a1, pinned by revision and SHA-256 in that directory's README and checked by the test), because
+  the fakes convert zones with JavaScript dates, which always keep the instant and never land in a skipped hour.
+  In a zone changing at 02:00 and one changing at midnight, around both changes, for starts including the hour
+  before each change: a bound a split writes (an occurrence minus one second) and a last day the tools write each
+  read back as the last occurrence's day and restate to the same native occurrences, or read with UNTIL in `other`;
+  the same for bounds other apps store; and a BYSETPOS rule reads with BYSETPOS in `other`. One revision only:
+  version differences in recurrence expansion are why BYSETPOS is not folded. A written last day just before a
+  midnight change, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that sweep).
+- Bridge accessor calls (`boundFromIcs`, `occurrenceInstantOn`, `untilForRRule` → `getTimezoneService`;
+  `setRuleOnItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.

@@ -144,11 +144,24 @@ describe('read: the rule in the edit tool\'s own fields', () => {
     expect(await readFields(api)).toEqual({ freq: 'WEEKLY', interval: 2, byDay: ['TU'], wkst: 'SU' });
   });
 
-  it('one weekday at one BYSETPOS folds to its ordinal byDay', async () => {
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2')] });
-    expect(await readFields(api)).toEqual({ freq: 'MONTHLY', byDay: ['2TU'] });
-    const last = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1')] });
-    expect(await readFields(last.api)).toEqual({ freq: 'MONTHLY', byDay: ['-1FR'] });
+  // Thunderbird 140 to 158 expand BYDAY=TU;BYSETPOS=2 differently from
+  // BYDAY=2TU when the series start is not itself an occurrence, so no
+  // BYSETPOS is folded into an ordinal byDay: it stays in `other`, and
+  // restating it is refused.
+  it('BYSETPOS is shown as `other`, never folded into an ordinal byDay', async () => {
+    for (const [rule, fields] of [
+      ['FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2', { freq: 'MONTHLY', byDay: ['TU'], other: 'BYSETPOS=2' }],
+      ['FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1', { freq: 'MONTHLY', byDay: ['FR'], other: 'BYSETPOS=-1' }],
+      ['FREQ=YEARLY;BYMONTH=3;BYDAY=TU;BYSETPOS=2', { freq: 'YEARLY', byDay: ['TU'], byMonth: [3], other: 'BYSETPOS=2' }],
+      ['FREQ=YEARLY;BYDAY=MO;BYSETPOS=-20', { freq: 'YEARLY', byDay: ['MO'], other: 'BYSETPOS=-20' }],
+      ['FREQ=DAILY;BYDAY=TU;BYSETPOS=1', { freq: 'DAILY', byDay: ['TU'], other: 'BYSETPOS=1' }],
+    ]) {
+      const { api } = loadCalendarBridge(bridgeUrl, { items: [series(rule)] });
+      const read = await readFields(api);
+      expect(read, rule).toEqual(fields);
+      const { other, ...restated } = read;
+      expect(otherPartsRefusal(restated, read), rule).toMatch(/BYSETPOS/);
+    }
   });
 
   it('parts the fields cannot express are shown as `other`', async () => {
@@ -186,30 +199,6 @@ describe('read: the rule in the edit tool\'s own fields', () => {
     expect(await readFields(api)).toEqual({ freq: 'WEEKLY', interval: 2, byDay: ['MO'] });
     const rows = await api.queryCalendarItems(`${START_DAY}T00:00:00`, '2099-10-02T00:00:00', ['cal1']);
     expect(rows[0].recurrence).toEqual({ freq: 'WEEKLY', interval: 2, byDay: ['MO'] });
-  });
-
-  it('BYSETPOS folds only where the ordinal names the same days', async () => {
-    const twoMonths = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYMONTH=3,9;BYDAY=TU;BYSETPOS=2')] });
-    expect(await readFields(twoMonths.api)).toEqual({ freq: 'YEARLY', byDay: ['TU'], byMonth: [3, 9], other: 'BYSETPOS=2' });
-    const oneMonth = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYMONTH=3;BYDAY=TU;BYSETPOS=2')] });
-    expect(await readFields(oneMonth.api)).toEqual({ freq: 'YEARLY', byDay: ['2TU'], byMonth: [3] });
-    const daily = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY;BYDAY=TU;BYSETPOS=1')] });
-    expect(await readFields(daily.api)).toEqual({ freq: 'DAILY', byDay: ['TU'], other: 'BYSETPOS=1' });
-    const monthDay = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=TU;BYSETPOS=1')] });
-    expect((await readFields(monthDay.api)).other).toBe('BYSETPOS=1');
-    // A yearly ordinal without one month counts weeks of the year, which
-    // Thunderbird expands differently from BYSETPOS; a position past the fifth
-    // names no weekday of a month.
-    const wholeYear = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYDAY=MO;BYSETPOS=-20')] });
-    expect(await readFields(wholeYear.api)).toEqual({ freq: 'YEARLY', byDay: ['MO'], other: 'BYSETPOS=-20' });
-    const wholeYearFirst = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYDAY=MO;BYSETPOS=1')] });
-    expect(await readFields(wholeYearFirst.api)).toEqual({ freq: 'YEARLY', byDay: ['MO'], other: 'BYSETPOS=1' });
-    for (const pos of ['6', '-6', '10']) {
-      const far = loadCalendarBridge(bridgeUrl, { items: [series(`FREQ=MONTHLY;BYDAY=MO;BYSETPOS=${pos}`)] });
-      expect(await readFields(far.api)).toEqual({ freq: 'MONTHLY', byDay: ['MO'], other: `BYSETPOS=${pos}` });
-    }
-    const fifth = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=MONTHLY;BYDAY=MO;BYSETPOS=-5')] });
-    expect(await readFields(fifth.api)).toEqual({ freq: 'MONTHLY', byDay: ['-5MO'] });
   });
 
   it('the query rows carry the same fields', async () => {
@@ -442,6 +431,8 @@ describe('a rule the tools cannot write is refused, naming the field and value',
     [{ freq: 'WEEKLY', byDay: ['MO', 'MONDAY'] }, 'recurrence.byDay has an invalid value "MONDAY": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'WEEKLY', byDay: ['MO;BYHOUR=9'] }, 'recurrence.byDay has an invalid value "MO;BYHOUR=9": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byDay: ['54MO'] }, 'recurrence.byDay has an invalid value "54MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
+    [{ freq: 'MONTHLY', byDay: ['0MO'] }, 'recurrence.byDay has an invalid value "0MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
+    [{ freq: 'MONTHLY', byDay: ['+0MO'] }, 'recurrence.byDay has an invalid value "+0MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byDay: ['+MO'] }, 'recurrence.byDay has an invalid value "+MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byDay: ['-TU'] }, 'recurrence.byDay has an invalid value "-TU": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'WEEKLY', byDay: 'MO' }, 'recurrence.byDay has an invalid value "MO": a list of day codes MO..SU, optionally with a position such as 2TU or -1FR'],
