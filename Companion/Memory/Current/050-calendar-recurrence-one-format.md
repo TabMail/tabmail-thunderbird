@@ -334,23 +334,34 @@ same design (tabmail-ios #421).
   new place asks that occurrence's attendees again (the split's rule, above); the earlier part's keep their own.
   `this_only` changes one occurrence.
   - **A field the edit only restates is no change** (2026-11-11; Google Calendar leaves an occurrence's own
-    value alone when the field is not changed in its form). ONE comparison, `restatedFields` in
-    `chat/tools/calendar_event_edit.js`: a named title, place, notes or busy/free equal to what
-    `getCalendarEventDetails` reads (the series). The confirmation card (`formatChangesForDisplay`) shows no
-    line for those fields, and on `all` and `this_and_following` the tool drops them from the edit before the
-    check, with the same details the card then shows, so the card, the check and the write see one edit: an
-    occurrence changed on its own (the one a split starts at included) keeps its own value of a restated field.
-    The details carry no notes, so named notes always count as a change. When the details cannot be read, such
-    an edit is refused before the card ("could not read this event"). `this_only` is not pruned: its card
-    still compares with the series, not the occurrence (open).
+    value alone when the field is not changed in its form, and that form, opened from an occurrence, holds the
+    occurrence's own values). ONE comparison, `restatedFields` in `chat/tools/calendar_event_edit.js`: a named
+    title, place, notes or busy/free equal to what `getCalendarEventDetails` reads. Those details hold the
+    series' fields, or, when the read names an occurrence (`recurrence_id`, which the tool passes on a split),
+    that occurrence's own (`editableFieldsOf(named.occurrence)`; start, end and kind stay the series'). The
+    notes are read as `queryCalendarItems` reads them (DESCRIPTION). The confirmation card
+    (`formatChangesForDisplay`) shows no line for those fields and shows the real old value of the others, and
+    on `all` and `this_and_following` the tool drops them from the edit before the check, with the same details
+    the card then shows, so the card, the check and the write see one edit: an occurrence changed on its own
+    keeps its own value of a restated field. A split at an occurrence changed on its own compares with that
+    occurrence: "from Wednesday on, back in Room A" when Wednesday to Friday were each moved to Room B is a
+    change, written to Wednesday and every carried occurrence (their attendees asked again; the plain ones
+    keep their answers, as the place equals the series'). When the details cannot be read, such an edit is
+    refused before the card ("could not read this event"). `this_only` is not pruned: its card still compares
+    with the series, not the occurrence (open).
   - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
   occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
   time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it
-  starts at; and (first #351 version) a restated field was written over every changed occurrence while the card
-  showed no line for it. Pinned through the real bridge and its read path by
-  `test/calendarAllEventsFieldEdit.test.js` (every occurrence reads each named field, every other field and both
-  times as before, the same occurrences shown; the split's carried occurrences and their answers; the HTML
-  copies; restated fields from the tool's `run` through the card; a control for `this_only`).
+  starts at; (first #351 version) a restated field was written over every changed occurrence while the card
+  showed no line for it; and (second #351 version) the comparison read the series' values on a split too, so
+  "back in Room A" at an occurrence moved to Room B changed nothing, and the details carried no notes, so
+  restated notes overwrote every changed occurrence's own and the card showed the old notes as "(empty)".
+  Pinned through the real bridge and its read path by `test/calendarAllEventsFieldEdit.test.js` (every
+  occurrence reads each named field, every other field and both times as before, the same occurrences shown;
+  the split's carried occurrences and their answers; the HTML copies; restated title, place, notes and
+  busy/free from the tool's `run` through the card; a split at an occurrence with its own place and its own
+  notes; the refusal when the event cannot be read; `this_only` setting an occurrence back to the series'
+  place; a control for `this_only`).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
 
 ## How it is pinned

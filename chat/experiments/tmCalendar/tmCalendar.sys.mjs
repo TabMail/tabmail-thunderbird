@@ -565,6 +565,26 @@ function isFirstOccurrence(master, rid) {
   return at.compare(master.startDate) <= 0;
 }
 
+// The fields an edit can name other than its times, as stored on `item` (an
+// event, a series, or one occurrence of a series), for getCalendarEventDetails:
+// the title, the place, the notes as queryCalendarItems reads them, and
+// busy/free.
+function editableFieldsOf(item) {
+  return {
+    title: item.title || "",
+    location: item.getProperty ? String(item.getProperty("LOCATION") || "") : "",
+    description: String(item.getProperty?.("DESCRIPTION") || ""),
+    transparency: (() => {
+      try {
+        const raw = String(item.getProperty?.("TRANSP") || "");
+        const mapped = raw.toUpperCase() === "TRANSPARENT" ? "free" : "busy";
+        tmCalendarDebugLog("[tmCalendar] getCalendarEventDetails: TRANSP=", raw || "(empty)", "mapped=", mapped);
+        return mapped;
+      } catch (_) { return "busy"; }
+    })(),
+  };
+}
+
 // The RECURRENCE-IDs of the occurrences an edit's exdates_add names, each by its
 // start as the read tools show it (occurrenceNamedBy), in the series as it is
 // before the edit. An EXDATE removes an occurrence by its RECURRENCE-ID, which
@@ -1913,13 +1933,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             } catch (_) {}
             const details = {
               id: eid,
-              title: targetEvent.title || "",
+              ...editableFieldsOf(targetEvent),
               start: (() => { try { return targetEvent.startDate ? asShown(targetEvent.startDate).nativeTime / 1000 : null; } catch { return null; } })(),
               end: (() => { try { return targetEvent.endDate ? asShown(targetEvent.endDate).nativeTime / 1000 : null; } catch { return null; } })(),
               isAllDay: !!(targetEvent.startDate && targetEvent.startDate.isDate),
               startDay: targetEvent.startDate?.isDate ? toDayString(targetEvent.startDate) : "",
               endDay: targetEvent.endDate?.isDate ? toDayString(targetEvent.endDate) : "",
-              location: targetEvent.getProperty ? String(targetEvent.getProperty("LOCATION") || "") : "",
               organizer: (() => { try { return String(targetEvent.organizer ? (targetEvent.organizer.commonName || targetEvent.organizer.id || "") : ""); } catch { return ""; } })(),
               attendees: attendeesCount,
               attendeeList: attendeeList,
@@ -1929,14 +1948,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // The rule in the create/edit tools' own fields (see
               // recurrenceFieldsOfItem); null when the event does not repeat.
               recurrence: recurrenceFieldsOfItem(targetEvent.parentItem || targetEvent),
-              transparency: (() => {
-                try {
-                  const raw = String(targetEvent.getProperty?.("TRANSP") || "");
-                  const mapped = raw.toUpperCase() === "TRANSPARENT" ? "free" : "busy";
-                  tmCalendarDebugLog("[tmCalendar] getCalendarEventDetails: TRANSP=", raw || "(empty)", "mapped=", mapped);
-                  return mapped;
-                } catch (_) { return "busy"; }
-              })()
             };
             // Whether a given recurrence_id names the series' first occurrence: a
             // whole-series time change names that one, and one named from a
@@ -1944,7 +1955,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // occurrence is left to the edit, which refuses it. An occurrence
             // moved off its slot also gives its original time (the slot), which
             // the confirmation card states: a part split there starts at it
-            // unless the edit gives a new start.
+            // unless the edit gives a new start. The fields an edit can name
+            // (title, place, notes, busy/free) are then that occurrence's own,
+            // as the calendar shows it, so an occurrence changed on its own is
+            // compared and shown with its own values; start, end and kind stay
+            // the series'.
             const series = targetEvent.parentItem || targetEvent;
             if (recurrence_id && series.recurrenceInfo) {
               const named = occurrenceNamedBy(series, recurrence_id);
@@ -1952,6 +1967,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 const { recurrenceId: slot, startDate } = named.occurrence;
                 details.recurrenceIdIsFirst = isFirstOccurrence(series, slot);
                 if (startDate.compare(slot) !== 0) details.recurrenceIdSlot = shownNaiveIso(slot);
+                Object.assign(details, editableFieldsOf(named.occurrence));
               }
             }
             // Return the event's own id, not re-derived from master

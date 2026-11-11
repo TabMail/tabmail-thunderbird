@@ -107,13 +107,15 @@ function normalizeArgs(args = {}) {
 
 // The fields an edit names (title, location, description, busy/free) whose
 // given value is the one `details` already holds: the event as
-// getCalendarEventDetails reads it, for a repeating event its series. The one
-// comparison of a field with the stored value: the confirmation card shows no
-// line for these fields, and on an edit of a series or of its following part
-// the tool drops them before the check, so the write changes nothing the card
-// does not show. An occurrence changed on its own then keeps its own value of
-// a field the edit only restates, as Google Calendar leaves it when the field
-// is not changed in its form.
+// getCalendarEventDetails reads it, for a repeating event its series, or, on a
+// split, the occurrence it starts at (its own values when it was changed on its
+// own). The one comparison of a field with the stored value: the confirmation
+// card shows no line for these fields, and on an edit of a series or of its
+// following part the tool drops them before the check, so the write changes
+// nothing the card does not show. An occurrence changed on its own then keeps
+// its own value of a field the edit only restates, as Google Calendar leaves it
+// when the field is not changed in its form (whose values, opened from an
+// occurrence, are that occurrence's).
 export function restatedFields(editArgs, details) {
   const a = editArgs || {};
   const d = details || {};

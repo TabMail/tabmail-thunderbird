@@ -20,10 +20,11 @@
 // asks its attendees again; the earlier part is untouched. Control:
 // "this_only" changes one occurrence and no other.
 //
-// A field the edit only restates (its value is the series' own, as the
-// confirmation card compares it) is no change: from the edit tool's `run`,
-// through the card, into the bridge, the card shows no line for it and an
-// occurrence changed on its own keeps its own value.
+// A field the edit only restates (its value is the series' own, or on a split
+// the own value of the occurrence it starts at, as the confirmation card
+// compares it) is no change: from the edit tool's `run`, through the card,
+// into the bridge, the card shows no line for it and an occurrence changed on
+// its own keeps its own value.
 
 process.env.TZ = 'America/Vancouver';
 
@@ -349,7 +350,7 @@ describe('a field the edit only restates is no change', () => {
     expect(sess.failReason).toBeUndefined();
     const text = streamText.mock.calls.map((c) => String(c[1])).find((t) => t.includes('Proposed changes:'));
     expect(text).toBeTruthy();
-    return { card: String(text).split('Proposed changes:')[1], before, after: await shown(loaded.api) };
+    return { card: String(text).split('Proposed changes:')[1], before, after: await shown(loaded.api), calendar: loaded.calendar };
   }
   const withOwnPlace = () => series({ changed: [{ n: 2, title: 'Standup (demo)', properties: { LOCATION: 'Room B' } }] });
 
@@ -368,10 +369,64 @@ describe('a field the edit only restates is no change', () => {
     for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, location: 'Room C' });
   });
 
-  it('"All events" restating the place alone: the card shows no change, only the scope, and nothing is changed', async () => {
+  it('"All events" restating the place alone: the card shows no Location line, and nothing is changed', async () => {
     const { card, before, after } = await confirmEdit(withOwnPlace(), { edit_scope: 'all', location: 'Room A' });
-    expect(card.trim()).toBe('**Scope:** Entire recurring series');
+    expect(card).not.toContain('**Location:**');
     expect(after).toEqual(before);
+  });
+
+  it('"All events" restating the series\' title with new notes: the changed occurrence keeps its own title, and the card shows no Title line', async () => {
+    const { card, before, after } = await confirmEdit(withOwnPlace(), { edit_scope: 'all', title: 'Standup', description: 'Bring updates' });
+    expect(card).not.toContain('**Title:**');
+    expect(card).toContain('**Description:**');
+    expect(before.get(ridValue(2)).title).toBe('Standup (demo)');
+    for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, description: 'Bring updates' });
+  });
+
+  it('"All events" restating busy with new notes: a changed occurrence that is free stays free, and the card shows no Transparency line', async () => {
+    const master = series({ changed: [{ n: 2, title: 'Standup (demo)', properties: { TRANSP: 'TRANSPARENT' } }] });
+    const { card, before, after } = await confirmEdit(master, { edit_scope: 'all', transparency: 'busy', description: 'Bring updates' });
+    expect(card).not.toContain('**Transparency:**');
+    expect(before.get(ridValue(2)).transparency).toBe('free');
+    for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, description: 'Bring updates' });
+  });
+
+  it('"All events" restating the series\' notes with a new title: a changed occurrence keeps its own notes, and the card shows no Description line', async () => {
+    const master = series({ changed: [{ n: 2, title: 'Standup (demo)', properties: { DESCRIPTION: 'Demo prep' } }] });
+    const { card, before, after } = await confirmEdit(master, { edit_scope: 'all', title: 'Team sync', description: 'Daily notes' });
+    expect(card).toContain('**Title:**');
+    expect(card).not.toContain('**Description:**');
+    expect(before.get(ridValue(2)).description).toBe('Demo prep');
+    for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, title: 'Team sync' });
+  });
+
+  it('"All events" giving new notes: every occurrence takes them, the changed one included, and the card shows the series\' notes as the old ones', async () => {
+    const master = series({ changed: [{ n: 2, title: 'Standup (demo)', properties: { DESCRIPTION: 'Demo prep' } }] });
+    const { card, before, after } = await confirmEdit(master, { edit_scope: 'all', description: 'New agenda' });
+    expect(card).toContain('Daily notes → **New agenda**');
+    for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, description: 'New agenda' });
+  });
+
+  it('"this_only" setting an occurrence that has its own place back to the series\' place: that occurrence takes it, and nothing else changes', async () => {
+    const { before, after } = await confirmEdit(withOwnPlace(), { edit_scope: 'this_only', recurrence_id: naiveAt(2, 17), location: 'Room A' });
+    expect(before.get(ridValue(2)).location).toBe('Room B');
+    for (const [rid, was] of before) {
+      expect(after.get(rid), rid).toEqual(rid === ridValue(2) ? { ...was, location: 'Room A' } : was);
+    }
+  });
+
+  it('an edit naming a field, when the event cannot be read for the card, is refused before the card and writes nothing', async () => {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [withOwnPlace()] });
+    globalThis.browser.tmCalendar = { ...loaded.api, getCalendarEventDetails: async () => ({ ok: false, error: 'read failed' }) };
+    const before = await shown(loaded.api);
+    const pid = `pid-restate-${nextPid += 1}`;
+    ctx.fsmSessions[pid] = {};
+    await editRun({ event_id: 'standup', calendar_id: 'cal1', edit_scope: 'all', location: 'Room C' }, { callId: pid });
+    await new Promise((r) => setTimeout(r, 5));
+    const sess = ctx.fsmSessions[pid];
+    expect(sess.failReason).toBe('could not read this event (read failed); try again');
+    expect(sess.editEventArgs).toBeUndefined();
+    expect(await shown(loaded.api)).toEqual(before);
   });
 
   it('"this_and_following" restating the series\' place with a new title: the carried changed occurrence takes the title and keeps its own place', async () => {
@@ -383,5 +438,40 @@ describe('a field the edit only restates is no change', () => {
       expect(after.get(rid), rid).toEqual(rid >= ridValue(3) ? { ...was, title: 'Team sync' } : was);
     }
     expect(after.get(ridValue(5)).location).toBe('Room C');
+  });
+
+  // The split names an occurrence: the comparison reads that occurrence's own
+  // fields, so "from this one on, back in Room A" at an occurrence moved to
+  // Room B on its own is a change.
+  it('"this_and_following" at an occurrence with its own place, back to the series\' place: it and every carried occurrence take it, and their attendees are asked again', async () => {
+    // Daily "Standup" in Room A; slots 3, 4 and 5 were each moved to Room B on
+    // their own; the split is at slot 3.
+    const roomB = (n) => ({ n, properties: { LOCATION: 'Room B' }, attendees: [accepted('ana')] });
+    const master = series({ changed: [roomB(3), roomB(4), roomB(5)] });
+    master.addAttendee(accepted('bo'));
+    const { card, before, after, calendar } = await confirmEdit(master, { edit_scope: 'this_and_following', recurrence_id: naiveAt(3, 17), location: 'Room A' });
+    expect(card).toContain('Room B → **Room A**');
+    for (const n of [3, 4, 5]) expect(before.get(ridValue(n)).location, `slot ${n}`).toBe('Room B');
+    for (const [rid, was] of before) {
+      expect(after.get(rid), rid).toEqual(rid >= ridValue(3) ? { ...was, location: 'Room A' } : was);
+    }
+    // The plain occurrences of the following part keep their place, so their
+    // attendees keep their answers; each moved back to Room A is asked again.
+    const following = calendar.items.find((it) => it.id !== 'standup');
+    expect(answers(following)).toEqual([['mailto:bo@example.com', 'ACCEPTED']]);
+    for (const n of [3, 4, 5]) {
+      const carried = changedAt(following, n);
+      expect(carried, `slot ${n}`).toBeTruthy();
+      expect(answers(carried), `slot ${n}`).toEqual([['mailto:ana@example.com', 'NEEDS-ACTION']]);
+    }
+  });
+
+  it('"this_and_following" at an occurrence with its own notes: the card shows its notes as the old ones', async () => {
+    const master = series({ changed: [{ n: 3, title: 'Standup (planning)', properties: { DESCRIPTION: 'Planning notes' } }] });
+    const { card, before, after } = await confirmEdit(master, { edit_scope: 'this_and_following', recurrence_id: naiveAt(3, 17), description: 'New agenda' });
+    expect(card).toContain('Planning notes → **New agenda**');
+    for (const [rid, was] of before) {
+      expect(after.get(rid), rid).toEqual(rid >= ridValue(3) ? { ...was, description: 'New agenda' } : was);
+    }
   });
 });
