@@ -297,7 +297,7 @@ describe('bridge modifyCalendarEvent — edit_scope decides which item changes',
     .map((rid) => `${rid.toString()} ${item.recurrenceInfo.getExceptionFor(rid).title}`);
 
   for (const withCalendar of [true, false]) {
-    it(`edit_scope "all" edits the series whatever recurrence_id names, and adds or changes no occurrence${withCalendar ? '' : ' (no calendar_id: found by scanning the calendars)'}`, async () => {
+    it(`edit_scope "all" edits the series whatever recurrence_id names, and adds no occurrence${withCalendar ? '' : ' (no calendar_id: found by scanning the calendars)'}`, async () => {
       for (const rid of [RID, unstoredRid, notAnOccurrence]) {
         const master = series();
         const changedBefore = changedOf(master);
@@ -311,7 +311,9 @@ describe('bridge modifyCalendarEvent — edit_scope decides which item changes',
         expect(modifications[0].oldItem, rid).toBe(master);
         const saved = calendar.items[0];
         expect(saved.title, rid).toBe('Team sync');
-        expect(changedOf(saved), rid).toEqual(changedBefore);
+        // The same changed occurrence, none added: it takes the title the edit
+        // names, as every occurrence of the series does (#351).
+        expect(changedOf(saved), rid).toEqual([`${fakeDateTime(day, 17).toString()} Team sync`]);
         expect(changedOf(master), rid).toEqual(changedBefore);
       }
     });

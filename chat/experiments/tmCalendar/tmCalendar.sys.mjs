@@ -827,6 +827,33 @@ function applyEditToNamedOccurrence(item, patch) {
   return info.getExceptionFor(item.startDate);
 }
 
+// Every occurrence changed on its own that a whole-series ("All events") edit
+// keeps takes each field the edit names, as the series does and as Google
+// Calendar's "All events" edit makes it: title, location, description,
+// busy/free. Fields the edit does not name keep the occurrence's own value,
+// and no time is written here: its start and end are the time path's.
+// Guest changes are not made here: applyGuestChangeToSeries makes them on
+// every item the edit covers.
+function applyEditToChangedOccurrences(item, patch) {
+  const info = item.recurrenceInfo;
+  for (const rid of [...(info?.getExceptionIds({}) || [])]) {
+    const ex = info.getExceptionFor(rid);
+    if (!ex) continue;
+    const named = ex.clone();
+    if (typeof patch.title === "string" && patch.title) named.title = patch.title;
+    if (typeof patch.location === "string") named.setProperty("LOCATION", patch.location);
+    // A new description replaces the occurrence's in every form (see the split).
+    if (typeof patch.description === "string") {
+      named.descriptionText = patch.description;
+      for (const name of ["X-ALT-DESC", "X-MOZ-HTML", "X-MOZ-ALT-DESC"]) named.deleteProperty(name);
+    }
+    if (typeof patch.transparency === "string") {
+      named.setProperty("TRANSP", patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE");
+    }
+    info.modifyException(named, false);
+  }
+}
+
 // How one rule of `master`'s series divides at `split`, the first occurrence of
 // the following part (#265). `afterSplit` is just after the split (the next day
 // for an all-day series, the next second otherwise), and `cap` the UNTIL value
@@ -2461,6 +2488,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const recRes = applyRecurrenceToItem(clone, patch.recurrence);
               try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
             }
+
+            // The series' changed occurrences take the fields the edit names.
+            if (scope === "series") applyEditToChangedOccurrences(clone, patch);
 
             // A check before the confirmation card stops here, at the first
             // write: every refusal is above, and everything above changed only

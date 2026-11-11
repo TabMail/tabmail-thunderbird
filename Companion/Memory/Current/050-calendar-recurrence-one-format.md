@@ -270,7 +270,8 @@ same design (tabmail-ios #421).
     after `editTimesError`) handles the changed occurrences as calendar apps keep the user's edits
     (2026-11-10): one still at its slot (its own start, moved by that UTC amount, lands on its
     moved RECURRENCE-ID; changed only in title, notes, place, guests or length) moves by the same amount and keeps
-    its changes, its own length included; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
+    its changes, its own length included (a field the edit names is then written over every changed occurrence,
+    #351, *An "All events" edit* below); one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
     replaces its slot and shows once). An end alone moves no start, so it changes no changed occurrence (#350
     kept this rule as it was), and excluded dates stay excluded. A first occurrence the edit names by `recurrence_id` takes the edit (its
     times and named fields, `applyEditToNamedOccurrence`: a new start gives it the series' start and end, an end
@@ -319,6 +320,21 @@ same design (tabmail-ios #421).
   result said the whole series. A `recurrence` (a rule, or `{}`) on a `this_only` edit is refused before the card
   in `_runEditCalendarEvent`, as Thunderbird never expands a rule written onto an occurrence; the edit used to report
   success while the series kept its rule.
+- **An "All events" edit writes each field it names over every occurrence (#351), as Google Calendar's "All
+  events" edit does.** On `edit_scope` `all`, `applyEditToChangedOccurrences` (bridge, in `modifyCalendarEvent`
+  after the rule is written and before the check's return, so the check and the write run it alike) gives every
+  changed occurrence of the series each non-time field the edit names: title, location, description (in every
+  form: `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC` go, as on the series) and busy/free. Guests are not made
+  there: `applyGuestChangeToSeries` already changes every changed occurrence's own list (051). A field the edit
+  does not name keeps each occurrence's own value; the step writes no time (start, end, all-day and the reset
+  rules are the time path's, above, unchanged), and an excluded occurrence stays excluded. The plain occurrences
+  take the fields from the series itself. `this_only` changes one occurrence; the split is unchanged: its
+  following part's changed occurrences keep their own fields, except the one it starts at, which takes the edit
+  (`applyEditToNamedOccurrence`). Superseded: on an `all` edit a changed occurrence kept its own title, place,
+  notes and busy/free, so an occurrence renamed or moved once never took a later rename of the series (only a
+  first occurrence named on a time change took the edit's fields). Pinned through the real bridge and its read
+  path by `test/calendarAllEventsFieldEdit.test.js` (every occurrence reads each named field, every other field
+  and both times as before, the same occurrences shown; controls for `this_only` and `this_and_following`).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
 
 ## How it is pinned

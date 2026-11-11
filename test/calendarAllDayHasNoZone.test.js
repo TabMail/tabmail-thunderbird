@@ -290,8 +290,10 @@ describe('a series stored with a zoned all-day start', () => {
     expect(occurrenceDays(item)).toEqual([...without(daysFrom(START_DAY, LAST_DAY), DAILY.excluded), DAILY.added]);
     expect(datesOf(item)).toEqual(DAILY_DATES);
     expect(zonedAllDayValues(item)).toEqual([]);
+    // The changed occurrence is still keyed to its day, and takes the title
+    // the edit names, as every occurrence of the series does (#351).
     const changed = item.recurrenceInfo.getExceptionFor(fakeDate(DAILY.changed));
-    expect(changed).toMatchObject({ title: 'Changed' });
+    expect(changed).toMatchObject({ title: 'Renamed' });
     expect(changed.parentItem).toBe(item);
   });
 
