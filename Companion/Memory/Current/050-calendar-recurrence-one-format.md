@@ -348,7 +348,7 @@ same design (tabmail-ios #421).
     change, written to Wednesday and every carried occurrence (their attendees asked again; the plain ones
     keep their answers, as the place equals the series'). When the details cannot be read, such an edit is
     refused before the card ("could not read this event"). `this_only` is not pruned: its card still compares
-    with the series, not the occurrence (open).
+    with the series, not the occurrence (#369).
   - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
   occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
   time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it

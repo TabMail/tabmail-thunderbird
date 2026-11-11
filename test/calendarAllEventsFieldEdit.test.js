@@ -474,4 +474,63 @@ describe('a field the edit only restates is no change', () => {
       expect(after.get(rid), rid).toEqual(rid >= ridValue(3) ? { ...was, description: 'New agenda' } : was);
     }
   });
+
+  // An "All events" edit compares with the series even when the call names an
+  // occurrence: reading that occurrence's own values instead would keep a
+  // restated series value and write it over every changed occurrence.
+  it('"All events" naming an occurrence with its own place, restating the series\' place with new notes: the card shows no Location line, and every changed occurrence keeps its own place', async () => {
+    const { card, before, after } = await confirmEdit(withOwnPlace(), { edit_scope: 'all', recurrence_id: naiveAt(2, 17), location: 'Room A', description: 'Bring updates' });
+    expect(card).not.toContain('**Location:**');
+    expect(card).toContain('Daily notes → **Bring updates**');
+    expect(before.get(ridValue(2)).location).toBe('Room B');
+    for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, description: 'Bring updates' });
+  });
+
+  // A split compares with the occurrence it starts at: restating that
+  // occurrence's own title, place and busy/free is no change, so the following
+  // plain occurrences keep the series' values and their answers, and the
+  // changed ones keep their own.
+  const ownAtSplit = () => {
+    const master = series({
+      changed: [
+        { n: 3, title: 'Standup (planning)', properties: { LOCATION: 'Room B', TRANSP: 'TRANSPARENT' }, attendees: [accepted('ana')] },
+        { n: 5, title: 'Standup (review)', properties: { LOCATION: 'Room C', TRANSP: 'TRANSPARENT' }, attendees: [accepted('ana')] },
+      ],
+    });
+    master.addAttendee(accepted('bo'));
+    return master;
+  };
+
+  it('"this_and_following" at an occurrence restating its own title, place and busy/free with new notes: only the notes change', async () => {
+    const { card, before, after, calendar } = await confirmEdit(ownAtSplit(), {
+      edit_scope: 'this_and_following', recurrence_id: naiveAt(3, 17),
+      title: 'Standup (planning)', location: 'Room B', transparency: 'free', description: 'New agenda',
+    });
+    expect(card).not.toContain('**Title:**');
+    expect(card).not.toContain('**Location:**');
+    expect(card).not.toContain('**Transparency:**');
+    expect(card).toContain('Daily notes → **New agenda**');
+    // Not vacuous: the occurrence the split starts at had its own values, the
+    // plain ones the series'.
+    expect(before.get(ridValue(3))).toMatchObject({ title: 'Standup (planning)', location: 'Room B', transparency: 'free' });
+    expect(before.get(ridValue(4))).toMatchObject({ title: 'Standup', location: 'Room A', transparency: 'busy' });
+    for (const [rid, was] of before) {
+      expect(after.get(rid), rid).toEqual(rid >= ridValue(3) ? { ...was, description: 'New agenda' } : was);
+    }
+    const following = calendar.items.find((it) => it.id !== 'standup');
+    expect(answers(following)).toEqual([['mailto:bo@example.com', 'ACCEPTED']]);
+    for (const n of [3, 5]) expect(answers(changedAt(following, n)), `slot ${n}`).toEqual([['mailto:ana@example.com', 'ACCEPTED']]);
+  });
+
+  it('"this_and_following" at an occurrence with its own title and busy/free, given the series\' title and busy: it and every carried occurrence take them', async () => {
+    const { card, before, after } = await confirmEdit(ownAtSplit(), {
+      edit_scope: 'this_and_following', recurrence_id: naiveAt(3, 17), title: 'Standup', transparency: 'busy',
+    });
+    expect(card).toContain('Standup (planning) → **Standup**');
+    expect(card).toContain('**Transparency:**');
+    for (const [rid, was] of before) {
+      expect(after.get(rid), rid).toEqual(rid >= ridValue(3) ? { ...was, title: 'Standup', transparency: 'busy' } : was);
+    }
+    for (const n of [3, 5]) expect(after.get(ridValue(n)), `slot ${n}`).toMatchObject({ title: 'Standup', transparency: 'busy' });
+  });
 });
