@@ -281,9 +281,11 @@ describe('email_forward.completeExecution', () => {
 describe('email_delete.completeExecution', () => {
   beforeEach(resetCtx);
 
-  it('returns "Selected emails deleted." when prevState is email_delete_execute', async () => {
+  it('reports every message deleted when prevState is email_delete_execute and all moved', async () => {
+    ctx.activePid = 'pid-delete';
+    ctx.fsmSessions['pid-delete'] = { deleteResult: { requested: 2, deleted: 2, notMoved: [] } };
     const result = await emailDelete.completeExecution('agent_converse', 'email_delete_execute');
-    expect(result).toBe('Selected emails deleted.');
+    expect(result).toBe('All 2 selected emails deleted.');
   });
 
   it('returns "Delete workflow completed." for other prevState', async () => {
@@ -435,9 +437,11 @@ describe('email_delete.resetPaginationSessions', () => {
 describe('email_archive.completeExecution', () => {
   beforeEach(resetCtx);
 
-  it('returns "Selected emails archived." when prevState is email_archive_execute', async () => {
+  it('reports every message archived when prevState is email_archive_execute and all moved', async () => {
+    ctx.activePid = 'pid-archive';
+    ctx.fsmSessions['pid-archive'] = { archiveResult: { requested: 2, archived: 2, notMoved: [] } };
     const result = await emailArchive.completeExecution('agent_converse', 'email_archive_execute');
-    expect(result).toBe('Selected emails archived.');
+    expect(result).toBe('All 2 selected emails archived.');
   });
 
   it('returns "Archive workflow completed." for other prevState', async () => {
