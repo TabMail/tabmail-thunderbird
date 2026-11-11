@@ -98,14 +98,14 @@ describe('what the assistant is told after the edit', () => {
     }
   });
 
-  it('one changed occurrence: the title reported is that occurrence\'s own, not the series\'', async () => {
+  it('one changed occurrence: the title reported is that occurrence\'s as written, not the series\' or its old one', async () => {
     const { at } = await import('./helpers/nativeCalendarDates.js');
     const rid = at(LA, '2099-01-12', 10);
     const end = at(LA, '2099-01-12', 11);
     onCalendar([seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10', changed: [{ rid, start: rid, end, title: 'Cover shift' }] })], LA);
-    const run = await edit({ event_id: 'ser', edit_scope: 'this_only', recurrence_id: iso('2099-01-12', 10), location: 'Ward B' });
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_only', recurrence_id: iso('2099-01-12', 10), location: 'Ward B', title: 'Late cover' });
     expect(run.state).toBe('exec_success');
-    expect(run.result).toMatchObject({ ok: true, edit_scope: 'this_only', event_id: 'ser', recurrence_id: iso('2099-01-12', 10), event_title: 'Cover shift' });
+    expect(run.result).toMatchObject({ ok: true, edit_scope: 'this_only', event_id: 'ser', recurrence_id: iso('2099-01-12', 10), event_title: 'Late cover' });
   });
 
   it('a split moved to an earlier day: the event id is paired with the occurrence it names', async () => {
@@ -150,6 +150,66 @@ describe('what the assistant is told after the edit', () => {
     const part = loaded.calendar.items.find((it) => it.id !== 'ser');
     expect(run.result.event_id).toBe(part.id);
     await roundTrip(run.result.event_id, run.result.recurrence_id, iso('2099-01-13', 9));
+  });
+
+  it('round trip: a split at an occurrence moved earlier on its own, with no new start', async () => {
+    const { at } = await import('./helpers/nativeCalendarDates.js');
+    const rid = at(LA, '2099-01-14', 10);
+    const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10', changed: [{ rid, start: at(LA, '2099-01-14', 15), end: at(LA, '2099-01-14', 16) }] })], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso('2099-01-14', 15), title: 'Day shift' });
+    expect(run.failReason, 'refused').toBeUndefined();
+    expect(run.state).toBe('exec_success');
+    const part = loaded.calendar.items.find((it) => it.id !== 'ser');
+    expect(run.result.event_id).toBe(part.id);
+    expect(run.result.recurrence_id).toBe(iso('2099-01-14', 15));
+    await roundTrip(part.id, run.result.recurrence_id, iso('2099-01-14', 15));
+  });
+
+  it('round trip: a split that excludes the occurrence it splits at names the next one', async () => {
+    const loaded = onCalendar([series()], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso('2099-01-14', 10), title: 'Day shift', exdates_add: [iso('2099-01-14', 10)] });
+    expect(run.failReason, 'refused').toBeUndefined();
+    expect(run.state).toBe('exec_success');
+    const part = loaded.calendar.items.find((it) => it.id !== 'ser');
+    expect(run.result.event_id).toBe(part.id);
+    expect(run.result.recurrence_id).toBe(iso('2099-01-15', 10));
+    await roundTrip(part.id, run.result.recurrence_id, iso('2099-01-15', 10));
+  });
+
+  describe('all-day', () => {
+    async function allDaySeries() {
+      const { fakeEvent, fakeRecurrenceInfo, recurrenceItem } = await import('./helpers/calendarBridgeHarness.js');
+      const { dateOn } = await import('./helpers/nativeCalendarDates.js');
+      const ev = fakeEvent({ id: 'ser', title: 'Holiday', startDate: dateOn('2099-01-12'), endDate: dateOn('2099-01-13') });
+      ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=WEEKLY;COUNT=6')]);
+      ev.recurrenceInfo.item = ev;
+      return ev;
+    }
+
+    it('round trip: one all-day occurrence moved a day', async () => {
+      onCalendar([await allDaySeries()], LA);
+      const run = await edit({ event_id: 'ser', edit_scope: 'this_only', recurrence_id: '2099-01-19T00:00:00', start_iso: '2099-01-20', end_iso: '2099-01-21', all_day: true });
+      expect(run.failReason, 'refused').toBeUndefined();
+      expect(run.result.recurrence_id).toBe('2099-01-20T00:00:00');
+      await roundTrip('ser', run.result.recurrence_id, '2099-01-20T00:00:00');
+    });
+
+    it('round trip: an all-day split', async () => {
+      const loaded = onCalendar([await allDaySeries()], LA);
+      const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: '2099-01-26T00:00:00', title: 'Break' });
+      expect(run.failReason, 'refused').toBeUndefined();
+      const part = loaded.calendar.items.find((it) => it.id !== 'ser');
+      expect(run.result.event_id).toBe(part.id);
+      expect(run.result.recurrence_id).toBe('2099-01-26T00:00:00');
+      // calendar_event_read finds no occurrence of a floating all-day series
+      // by start_iso in this zone (a separate gap), so the id given back is
+      // checked against Thunderbird's own expansion of the new part.
+      const again = await edit({ event_id: part.id, edit_scope: 'this_only', recurrence_id: run.result.recurrence_id, title: 'Renamed' });
+      expect(again.failReason, 'the returned id names an occurrence').toBeUndefined();
+      expect(again.state).toBe('exec_success');
+      const [first] = flow.occurrencesOf(part, '2099-01-26', '2099-01-27');
+      expect([first.start, first.occ.title]).toEqual(['2099-01-26T00:00:00', 'Renamed']);
+    });
   });
 });
 

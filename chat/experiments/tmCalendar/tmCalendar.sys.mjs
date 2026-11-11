@@ -312,6 +312,9 @@ const RECURRENCE_FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
 // occurrence starting there (occurrenceNamedBy): more than any zone's offset from
 // the user's, so a DATE or a time in another zone is always inside.
 const OCCURRENCE_LOOKUP_REACH_MS = 2 * 86400 * 1000;
+// How many doubling windows firstOccurrenceOf searches (from 2 days: about
+// 2^16 days, beyond any series' first gap).
+const FIRST_OCCURRENCE_WINDOWS = 16;
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
@@ -555,6 +558,28 @@ function occurrenceNamedBy(item, iso, field = "recurrence_id") {
       ? `${field} ${iso} is the start of more than one occurrence of this series; change it in the calendar app`
       : `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`,
   };
+}
+
+// The first occurrence `series` actually has, as Thunderbird expands it
+// (getOccurrences: a changed occurrence at its own time, an excluded date
+// gone), or null when it has none. It is not always the series' DTSTART: the
+// occurrence there may be moved or excluded. Searched in windows from just
+// before DTSTART that double until one holds an occurrence.
+function firstOccurrenceOf(series) {
+  const info = series?.recurrenceInfo;
+  if (!info || !series.startDate) return null;
+  const startMs = series.startDate.nativeTime / 1000;
+  const from = boundFromIcs(toIcsUntil(new Date(startMs - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
+  let reach = OCCURRENCE_LOOKUP_REACH_MS;
+  for (let i = 0; i < FIRST_OCCURRENCE_WINDOWS; i++, reach *= 2) {
+    const to = boundFromIcs(toIcsUntil(new Date(startMs + reach).toISOString()));
+    if (!from || !to) return null;
+    const found = [...(info.getOccurrences(from, to, 0) || [])].filter((occ) => occ?.startDate);
+    if (found.length) {
+      return found.reduce((a, b) => (b.startDate.compare(a.startDate) < 0 ? b : a));
+    }
+  }
+  return null;
 }
 
 // Whether `rid`, a RECURRENCE-ID of `master`'s series, is its first occurrence:
@@ -3259,10 +3284,16 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               ok: true,
               calendar_id: cal?.id || null,
               event_id: created?.id || null,
-              // The new part's first occurrence, as the read tools print it:
-              // the occurrence event_id now names (a moved start is not the
-              // recurrence_id the edit named, which was of the old series).
-              recurrence_id: created?.startDate ? shownNaiveIso(created.startDate) : null,
+              // The new part's first occurrence as Thunderbird expands it (a
+              // changed occurrence at its own time, an excluded one skipped),
+              // its start as the read tools print it in recurrence_id: the
+              // occurrence event_id now names. Not DTSTART, which may be moved
+              // or excluded, nor the recurrence_id the edit named (of the old
+              // series).
+              recurrence_id: (() => {
+                const first = firstOccurrenceOf(created);
+                return first ? shownNaiveIso(first.startDate) : null;
+              })(),
               old_event_id: eventId,
               title: created?.title || null,
               invitations: invitationResult,
