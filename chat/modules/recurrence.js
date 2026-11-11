@@ -37,6 +37,67 @@ export function recurrenceMark(recurrence) {
   return ` (↻ ${JSON.stringify(recurrence)})`;
 }
 
+const INTERVAL_WORDS = {
+  DAILY: ["daily", "days"],
+  WEEKLY: ["weekly", "weeks"],
+  MONTHLY: ["monthly", "months"],
+  YEARLY: ["yearly", "years"],
+};
+const DAY_NAMES = { MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday", FR: "Friday", SA: "Saturday", SU: "Sunday" };
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const POSITION_WORDS = ["first", "second", "third", "fourth", "fifth"];
+
+// 1 → first ... 5 → fifth, then 6th, 21st, 22nd, 23rd, 111th.
+function positionWord(n) {
+  if (n <= POSITION_WORDS.length) return POSITION_WORDS[n - 1];
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  const suffix = teen ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th");
+  return `${n}${suffix}`;
+}
+
+// A signed position: 2 → second, -1 → last, -2 → second to last.
+function signedPosition(n) {
+  if (n === -1) return "last";
+  return n < 0 ? `${positionWord(-n)} to last` : positionWord(n);
+}
+
+function byDayWords(code) {
+  const m = BY_DAY.exec(code);
+  if (!m) return code;
+  const name = DAY_NAMES[m[1]];
+  const pos = code.slice(0, code.length - 2);
+  return pos ? `the ${signedPosition(Number(pos))} ${name}` : name;
+}
+
+/**
+ * A stored rule (the bridge's recurrence fields) in words, as the iOS
+ * confirmation card words it: `every 2 weeks on Monday, Wednesday (10 times)`.
+ * "" when the rule cannot be fully stated (no `freq`, or `other` parts the
+ * fields cannot express): a part left out would name a different rule.
+ */
+export function recurrenceInWords(recurrence) {
+  if (!recurrence || typeof recurrence !== "object") return "";
+  if (recurrence.other || !INTERVAL_WORDS[recurrence.freq]) return "";
+  const r = recurrence;
+  const [singular, plural] = INTERVAL_WORDS[r.freq];
+  const interval = Number.isInteger(r.interval) ? r.interval : 1;
+  const parts = [interval > 1 ? `every ${interval} ${plural}` : singular];
+  if (Array.isArray(r.byMonth) && r.byMonth.length) {
+    parts.push(`in ${r.byMonth.map((m) => MONTH_NAMES[m - 1] || String(m)).join(", ")}`);
+  }
+  if (Array.isArray(r.byMonthDay) && r.byMonthDay.length) {
+    parts.push(`on ${r.byMonthDay.map((d) => (d < 0 ? `the ${signedPosition(d)} day` : `day ${d}`)).join(", ")}`);
+  }
+  if (Array.isArray(r.byDay) && r.byDay.length) parts.push(`on ${r.byDay.map(byDayWords).join(", ")}`);
+  if (r.wkst) parts.push(`week starts ${DAY_NAMES[r.wkst] || r.wkst}`);
+  if (Number.isInteger(r.count)) parts.push(`(${r.count} ${r.count === 1 ? "time" : "times"})`);
+  else if (r.until) parts.push(`(until ${r.until})`);
+  return parts.join(" ");
+}
+
 /** True for `{}`, which clears an event's rule. */
 export function isClearRecurrence(recurrence) {
   return !!recurrence && typeof recurrence === "object" && Object.keys(recurrence).length === 0;
