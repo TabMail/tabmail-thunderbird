@@ -196,19 +196,23 @@ describe('runStateEditCalendarEventExec — edit_scope dispatch', () => {
     });
   }
 
-  it('fails fast when edit_scope requires recurrence_id but none is provided', async () => {
+  // The rule that a scope needs recurrence_id is the bridge's (the tool's
+  // check before the card makes it): the flow has no copy, and the bridge's
+  // refusal fails the edit.
+  it('a scope that needs recurrence_id without one goes to the bridge, whose refusal fails the edit', async () => {
     setEditArgs({
       event_id: 'evt-1',
       edit_scope: 'this_only',
       title: 'Update',
     });
+    modifyMock.mockResolvedValueOnce({ ok: false, error: "edit_scope='this_only' requires recurrence_id" });
 
     await runStateEditCalendarEventExec();
 
-    expect(modifyMock).not.toHaveBeenCalled();
+    expect(modifyMock).toHaveBeenCalledTimes(1);
     expect(splitMock).not.toHaveBeenCalled();
     expect(fsmCtx.state).toBe('exec_fail');
-    expect(fsmCtx.fsmSessions['pid-test'].failReason).toMatch(/recurrence_id/);
+    expect(fsmCtx.fsmSessions['pid-test'].failReason).toMatch(/requires recurrence_id/);
   });
 });
 

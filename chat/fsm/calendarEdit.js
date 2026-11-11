@@ -339,16 +339,8 @@ export async function runStateEditCalendarEventExec() {
   const explicitScope = (typeof editArgs.edit_scope === "string") ? editArgs.edit_scope : null;
   const editScope = explicitScope
     || (editArgs.recurrence_id ? "this_only" : "all");
-  if (editScope !== "all" && !editArgs.recurrence_id) {
-    agentBubble.classList.remove("loading");
-    const failMsg = `edit_scope='${editScope}' requires recurrence_id (the start datetime of the target occurrence).`;
-    streamText(agentBubble, failMsg);
-    try { if (execPid) ctx.fsmSessions[execPid].failReason = failMsg; } catch (_) {}
-    ctx.state = "exec_fail";
-    const core = await import("./core.js");
-    await core.executeAgentAction();
-    return;
-  }
+  // A scope that needs recurrence_id without one is the bridge's refusal,
+  // made already by the tool's check before the card.
 
   let resultMsg = "";
   let editResult = null;

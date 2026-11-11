@@ -37,9 +37,10 @@ the digits stay as read, a relabel converts nothing). Its callers:
   after the last day, RFC 5545 DTEND is exclusive, so it would be a zero-length event). Until this
   refusal, #309's converter kept such an edit all-day and dropped the time unasked. The edit tool
   gets these refusals before its confirmation card, so the assistant can ask the user first:
-  `_runEditCalendarEvent` calls `modifyCalendarEvent` with `check_only: true` for an edit that gives
-  times, and the bridge runs the same edit up to this point and returns without writing (the split
-  too), so the rule is not copied into the tool. A create has the same end rule (#316):
+  `_runEditCalendarEvent` calls `modifyCalendarEvent` with `check_only: true` for every edit (#339;
+  until then only for an edit that gives times), and the bridge runs the same edit up to its first
+  write and returns without writing (the split too), so the rule is not copied into the tool.
+  A create has the same end rule (#316):
   `createCalendarEvent` refuses an all-day event whose end is on or before its start, before
   anything is written, with a message that says what to send (the next day as `end_iso`), and the
   create tool gets it before its card the same way (`check_only` on `createCalendarEvent`, sent

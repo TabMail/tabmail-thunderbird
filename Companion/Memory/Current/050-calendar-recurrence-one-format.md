@@ -283,8 +283,10 @@ same design (tabmail-ios #421).
     RECURRENCE-IDs moved; (second) a same-day change was let through and a day move refused only with changed
     occurrences, advising "make the move first", which led into the same-day breakage.
   - **Named from a later occurrence:** the edit tool rewrites `edit_scope` to `this_and_following` before the card
-    (`routeSeriesTimeChange`, using `getCalendarEventDetails`' optional `recurrence_id` → `recurrenceIdIsFirst` /
-    `recurrenceIdError`), so the card, the bridge and the result agree; the following part gets the same shift.
+    (`routeSeriesTimeChange`, using `getCalendarEventDetails`' optional `recurrence_id` → `recurrenceIdIsFirst`,
+    absent when it names no single occurrence), so the card, the bridge and the result agree; the following part
+    gets the same shift. A `recurrence_id` that names no occurrence is refused by the bridge's check before the card
+    (#339). Superseded: the read also gave `recurrenceIdError`, which the tool returned as its own refusal.
     The bridge refuses an `all` time change named from a later occurrence, naming `this_and_following`.
   - **Unclear:** no `recurrence_id` and another date → the tool refuses before the card, telling the model to ask
     "just that date, or that date and every later one".
@@ -332,6 +334,24 @@ same design (tabmail-ios #421).
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card
   with every field.
+- **One check before the card (#339):** the edit tool calls `modifyCalendarEvent` with `check_only: true` for every
+  edit, after its routing, and fails the call with the bridge's refusal. The bridge returns from the check at its
+  first write, in both paths: in `modifyCalendarEvent` just before the excluded dates of one occurrence go to its
+  series (the first change to a stored item), in `splitRecurringEvent` just before the earlier part is written. So
+  every refusal is made by the check, the split's new-rule write failure and its refusal to stop repeating at an
+  occurrence changed on its own included (before #339 these two came after the check, so the card was shown for an
+  edit the write then refused). Everything above works on clones. The tool keeps only its own argument checks (a
+  date it cannot read, `event_id`, a rule on one occurrence, `recurrenceArgError`, `otherPartsRefusal`), the
+  question when no occurrence is named on another date, and its refusal when it cannot read the event to route.
+  Deleted copies: "edit_scope needs recurrence_id" (in the tool and in the edit flow; the bridge's message took the
+  tool's wording, which names how to find it), and the tool's "new repeat rule with a move to another day", which
+  compared the date text in the user's zone and so refused a move that is the same day in the series' own zone
+  (the bridge counts days in the series' zone, `NEW_RULE_MOVE`). `getCalendarEventDetails` no longer returns
+  `recurrenceIdError`. An event_id that names no event gets `EDIT_EVENT_NOT_FOUND_ERROR` from both paths, which
+  tells the assistant to look the event up again (calendar_search or calendar_read) and not to retry the same id:
+  before #339 an edit giving no times got that guidance from the list state's read, and the bridge's own text was
+  a terse "event not found". The census of the two functions' refusals is
+  `test/calendarEditRefusedBeforeCard.test.js`.
 - `test/calendarRecurrenceNative.test.js` runs the bridge against Thunderbird's own date and recurrence code
   (`test/fixtures/mozilla/Ical.sys.mjs` and `CalDateTime.sys.mjs`, unmodified copies of comm-central 226a299e,
   Thunderbird 161.0a1, pinned by revision and SHA-256 in that directory's README and checked by the test), because

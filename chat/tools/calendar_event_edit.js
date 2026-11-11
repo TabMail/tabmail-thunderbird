@@ -178,14 +178,6 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
-  // edit_scope="this_only" or "this_and_following" requires the recurrence_id of
-  // the target occurrence. Fail early — before showing a confirmation card — so
-  // the LLM gets actionable feedback to retry with the missing field.
-  if ((norm.edit_scope === "this_only" || norm.edit_scope === "this_and_following") && !norm.recurrence_id) {
-    await failOut(`edit_scope='${norm.edit_scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.`);
-    return;
-  }
-
   // A rule written onto one occurrence is never expanded by Thunderbird, so the
   // edit would report success while the series keeps its rule. Refused before
   // the confirmation card, with the scope resolved as the bridge resolves it.
@@ -229,24 +221,23 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
-  // An edit of the event's times that the bridge would refuse once it reads
-  // the event (an all-day event given a time of day without all_day, an
-  // all-day end on or before its start, an event or occurrence it cannot
-  // find) is refused here, before the confirmation card, so the assistant can
-  // react: ask the user, or correct the call. The bridge runs the same edit,
-  // guest change and invitation check included, up to its first write and
-  // writes nothing (check_only), so each rule lives in one place. A check that throws is left to the edit itself.
-  if (norm.start_iso || norm.end_iso) {
-    let check = null;
-    try {
-      check = await browser.tmCalendar.modifyCalendarEvent({ ...norm, check_only: true });
-    } catch (e) {
-      log(`[TMDBG Tools] calendar_event_edit: pre-card check failed to run: ${e}`, "warn");
-    }
-    if (check && check.ok === false) {
-      await failOut(String(check.error || "the calendar refused this edit"));
-      return;
-    }
+  // Every edit the bridge would refuse (a scope with no occurrence named, an
+  // occurrence or excluded date that names none, invitations with no guests,
+  // an all-day event given a time of day without all_day, a move the series'
+  // rule cannot follow, an event it cannot find, ...) is refused here, before
+  // the confirmation card, so the assistant can react: ask the user, or
+  // correct the call. The bridge runs the same edit, on the scope routed above,
+  // up to its first write and writes nothing (check_only), so each rule lives
+  // in one place. A check that throws is left to the edit itself.
+  let check = null;
+  try {
+    check = await browser.tmCalendar.modifyCalendarEvent({ ...norm, check_only: true });
+  } catch (e) {
+    log(`[TMDBG Tools] calendar_event_edit: pre-card check failed to run: ${e}`, "warn");
+  }
+  if (check && check.ok === false) {
+    await failOut(String(check.error || "the calendar refused this edit"));
+    return;
   }
 
   // calendar_id is OPTIONAL — the bridge (tmCalendar.modifyCalendarEvent) auto-scans
@@ -319,14 +310,15 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   await core.executeAgentAction();
 }
 
-// A new repeat rule written with a move of the series to another day would be
-// written without the move, so the two are separate edits.
-const NEW_RULE_WITH_DAY_MOVE = "a new repeat rule cannot be given with a move of the series to another day; make the move first, then change the repeat in a second edit (calendar_event_read then shows the moved end)";
 const ASK_WHICH_OCCURRENCES = "ask the user whether they mean just that date, or that date and every later one; then pass recurrence_id (the occurrence's start_iso as calendar_event_read shows it) with edit_scope 'this_only' or 'this_and_following'";
 
 // Routes a time change of a repeating series whose scope resolves to "all":
 // rewrites norm.edit_scope to "this_and_following" when recurrence_id names a
-// later occurrence, and returns a refusal when the user must be asked, or null.
+// later occurrence, and returns the question for the user when it cannot tell
+// which occurrences are meant (or that the event could not be read), or null.
+// What the bridge refuses (a recurrence_id that names no occurrence, a new
+// rule with a move to another day) is left to its check, which reads the
+// series in its own zone.
 async function routeSeriesTimeChange(norm) {
   const scope = norm.edit_scope || (norm.recurrence_id ? "this_only" : "all");
   if (scope !== "all" || !(norm.start_iso || norm.end_iso)) return null;
@@ -335,10 +327,7 @@ async function routeSeriesTimeChange(norm) {
   if (!details?.ok) return `could not read this event (${details?.error || "unknown error"}); try again`;
   if (!details.isRecurring) return null;
   if (norm.recurrence_id) {
-    if (details.recurrenceIdError) return details.recurrenceIdError;
-    if (!details.recurrenceIdIsFirst) norm.edit_scope = "this_and_following";
-    const movesDay = !!norm.start_iso && norm.start_iso.slice(0, 10) !== norm.recurrence_id.slice(0, 10);
-    if (movesDay && norm.recurrence?.freq) return NEW_RULE_WITH_DAY_MOVE;
+    if (details.recurrenceIdIsFirst === false) norm.edit_scope = "this_and_following";
     return null;
   }
   const shown = shownEventTimesIso(details);

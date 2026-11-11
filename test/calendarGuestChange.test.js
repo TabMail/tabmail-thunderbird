@@ -174,9 +174,9 @@ const ids = (item) => item.getAttendees().map((a) => a.id);
 const add = (...emails) => ({ add_attendees: emails.map((email) => ({ email })) });
 const remove = (...emails) => ({ remove_attendees: emails.map((email) => ({ email })) });
 
-// The tool checks an edit of the times against the bridge before the card,
-// with the guest change and send_invitations in it: what the write would
-// refuse is refused there, with no card and nothing written.
+// The tool checks every edit against the bridge before the card, with the
+// guest change and send_invitations in it: what the write would refuse is
+// refused there, with no card and nothing written.
 describe('an edit of the times that would leave no one to invite is refused before the card', () => {
   for (const scopeName of Object.keys(SCOPES)) {
     it(`${scopeName}: everyone removed, with invitations asked for`, async () => {

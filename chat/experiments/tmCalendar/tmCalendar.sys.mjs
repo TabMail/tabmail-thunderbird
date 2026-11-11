@@ -705,6 +705,11 @@ function ruleShiftedByDays(value, days, was, now) {
   return { value: out.join(";") };
 }
 
+// An edit's event_id that names no event on the user's calendars: the id may
+// be stale or another kind of id, so the assistant looks it up again rather
+// than retrying it.
+const EDIT_EVENT_NOT_FOUND_ERROR = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
+
 // A series' start that changes between all-day and timed. RFC 5545 needs its
 // excluded and added dates, each UNTIL and its changed occurrences'
 // RECURRENCE-IDs in the start's value type. Thunderbird keeps theirs and moves
@@ -1896,12 +1901,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             };
             // Whether a given recurrence_id names the series' first occurrence: a
             // whole-series time change names that one, and one named from a
-            // later occurrence is a change from it on (#287).
+            // later occurrence is a change from it on (#287). One that names no
+            // occurrence is left to the edit, which refuses it.
             const series = targetEvent.parentItem || targetEvent;
             if (recurrence_id && series.recurrenceInfo) {
               const named = occurrenceNamedBy(series, recurrence_id);
-              if (named.error) details.recurrenceIdError = named.error;
-              else details.recurrenceIdIsFirst = isFirstOccurrence(series, named.occurrence.recurrenceId);
+              if (!named.error) details.recurrenceIdIsFirst = isFirstOccurrence(series, named.occurrence.recurrenceId);
             }
             // Return the event's own id, not re-derived from master
             const returnedId = String(targetEvent.id || targetEvent.parentItem?.id || "");
@@ -2201,10 +2206,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // We resolve the scope here so the callers don't need a separate JS routing layer.
             const rawScope = typeof details.edit_scope === "string" ? details.edit_scope.toLowerCase() : null;
             const editScope = rawScope || (recurIdStr ? "this_only" : "all");
+            // An edit of one occurrence, or of it and the following ones, names
+            // that occurrence.
+            if ((editScope === "this_only" || editScope === "this_and_following") && !recurIdStr) {
+              return { ok: false, error: `edit_scope='${editScope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.` };
+            }
             if (editScope === "this_and_following") {
-              if (!recurIdStr) {
-                return { ok: false, error: "edit_scope='this_and_following' requires recurrence_id" };
-              }
               // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
               const splitPatch = {};
               for (const k of ["title", "location", "description", "transparency",
@@ -2220,9 +2227,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 patch: splitPatch,
                 check_only: details.check_only,
               });
-            }
-            if (editScope === "this_only" && !recurIdStr) {
-              return { ok: false, error: "edit_scope='this_only' requires recurrence_id" };
             }
             // Only a "this_only" edit targets one occurrence. "all" edits the
             // series and ignores recurrence_id, so the lookup below reads it
@@ -2291,7 +2295,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            if (!item) return { ok: false, error: lookupError || "event not found (id/recurrenceId mismatch)" };
+            if (!item) return { ok: false, error: lookupError || EDIT_EVENT_NOT_FOUND_ERROR };
 
             // The occurrences exdates_add names, in the series as it is before
             // the edit; a value that names none is refused before anything is written.
@@ -2361,8 +2365,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (details.send_invitations && clone.getAttendees().length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee" };
             }
-            // A check before the confirmation card stops here: nothing is written.
-            if (details.check_only) return { ok: true };
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2439,6 +2441,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const recRes = applyRecurrenceToItem(clone, patch.recurrence);
               try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
             }
+
+            // A check before the confirmation card stops here, at the first
+            // write: every refusal is above, and everything above changed only
+            // the unsaved clone.
+            if (details.check_only) return { ok: true };
 
             // EXDATE additions on an edit of one occurrence go to its series.
             if (exdates.rids.length && scope !== "series") {
@@ -2615,7 +2622,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 if (await visit(c)) break;
               }
             }
-            if (!master || !cal) return { ok: false, error: "event not found" };
+            if (!master || !cal) return { ok: false, error: EDIT_EVENT_NOT_FOUND_ERROR };
 
             // 2. The series must be recurring for a split to make sense.
             if (!master.recurrenceInfo) {
@@ -2825,8 +2832,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (sendInvites && newEv.getAttendees().length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
             }
-            // A check before the confirmation card stops here: nothing is written.
-            if (details.check_only) return { ok: true };
 
             // A new rule for the following part (written in its start's value
             // type, after the time change); `{}` stops it repeating.
@@ -2890,6 +2895,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 partInfo.modifyException(asked, false);
               }
             }
+
+            // A check before the confirmation card stops here, at the first
+            // write: every refusal is above, and both parts are still unsaved
+            // copies.
+            if (details.check_only) return { ok: true };
 
             // 8. Write the earlier part.
             let cappedMaster;

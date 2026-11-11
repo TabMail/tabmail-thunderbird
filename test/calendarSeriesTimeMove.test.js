@@ -629,7 +629,7 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     expect(occurrenceKeys(series)).toEqual(before);
   });
 
-  // The edit tool asks the bridge to check an edit of the times before the
+  // The edit tool asks the bridge to check every edit before the
   // confirmation card (check_only): each refusal of the move is made by that
   // check, so the user is never shown a card for an edit that is then refused,
   // and the check writes nothing.
@@ -686,9 +686,12 @@ describe('the edit tool routes a whole-series time change before the card', () =
   const ASK = "ask the user whether they mean just that date, or that date and every later one; then pass recurrence_id (the occurrence's start_iso as calendar_event_read shows it) with edit_scope 'this_only' or 'this_and_following'";
   const settle = () => new Promise((r) => setTimeout(r, 20));
   let n = 0;
+  // The tool reads the event and checks the edit (check_only) against the
+  // real bridge.
   async function runEdit(master, args, eventId = 'ser') {
     const loaded = load(master);
     browser.tmCalendar.getCalendarEventDetails.mockImplementation((...a) => loaded.api.getCalendarEventDetails(...a));
+    browser.tmCalendar.modifyCalendarEvent.mockImplementation((...a) => loaded.api.modifyCalendarEvent(...a));
     const pid = `pid-move-${n++}`;
     ctx.fsmSessions[pid] = {};
     ctx.state = null;
@@ -697,6 +700,8 @@ describe('the edit tool routes a whole-series time change before the card', () =
       await settle();
     } finally {
       browser.tmCalendar.getCalendarEventDetails.mockReset();
+      browser.tmCalendar.modifyCalendarEvent.mockReset();
+      browser.tmCalendar.modifyCalendarEvent.mockImplementation(async () => ({ ok: true }));
     }
     return { sess: ctx.fsmSessions[pid], ...loaded };
   }
@@ -755,22 +760,26 @@ describe('the edit tool routes a whole-series time change before the card', () =
     expect(sess.editEventArgs).toBeUndefined();
   });
 
-  it('a recurrence_id that names no occurrence is refused before the card', async () => {
+  it('a recurrence_id that names no occurrence is refused before the card, by the bridge\'s check', async () => {
     const start = makeUserStart();
     // Three hours after the first occurrence: no rule date, added date or changed occurrence.
     const rid = startIsoOf(after(start, 0, 3));
-    const { sess } = await runEdit(fullSeries(start, RULES(start)[0]).series, { edit_scope: 'all', recurrence_id: rid, ...movedTo(start, 0, 1) });
+    const { sess, modifications } = await runEdit(fullSeries(start, RULES(start)[0]).series, { edit_scope: 'all', recurrence_id: rid, ...movedTo(start, 0, 1) });
     expect(sess.failReason).toBe(`recurrence_id ${rid} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`);
     expect(sess.editEventArgs).toBeUndefined();
+    expect(modifications).toEqual([]);
   });
 
-  it('a new repeat rule with a move to another day is refused before the card, named from the first occurrence or a later one', async () => {
+  it('a new repeat rule with a move to another day is refused before the card by the bridge\'s check, named from the first occurrence or a later one', async () => {
     const start = makeUserStart();
     for (const at of [start, fullSeries(start, RULES(start)[0]).dates[3]]) {
-      const { sess } = await runEdit(fullSeries(start, RULES(start)[0]).series, {
+      const { sess, modifications, calendar } = await runEdit(fullSeries(start, RULES(start)[0]).series, {
         edit_scope: 'all', recurrence_id: startIsoOf(at), ...movedTo(at, 1, 0), recurrence: { freq: 'DAILY', count: 3 },
       });
       expect(sess.failReason).toBe('a new repeat rule cannot be given with a move of the series to another day; make the move first, then change the repeat in a second edit (calendar_event_read then shows the moved end)');
+      expect(sess.editEventArgs).toBeUndefined();
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toHaveLength(1);
     }
   });
 

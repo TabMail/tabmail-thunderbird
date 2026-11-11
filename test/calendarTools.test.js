@@ -364,7 +364,7 @@ describe('calendar_event_edit', () => {
     });
   });
 
-  describe('an edit of the times the bridge would refuse is refused before the confirmation card', () => {
+  describe('an edit the bridge would refuse is refused before the confirmation card', () => {
     const settle = () => new Promise((r) => setTimeout(r, 5));
     async function runEdit(args, pid) {
       ctx.fsmSessions[pid] = {};
@@ -397,7 +397,7 @@ describe('calendar_event_edit', () => {
       expect(calls[0]).toMatchObject({ add_attendees: [{ email: 'a@example.com' }], send_invitations: true });
     });
 
-    it('an edit the check passes reaches the card, and an edit giving no times is not checked', async () => {
+    it('an edit the check passes reaches the card, and an edit giving no times is checked too', async () => {
       const ok = await runEdit({ event_id: 'evt1', end_iso: '2099-10-21T00:00:00' }, 'pid-chk-2');
       expect(ok.failReason).toBeUndefined();
       expect(ok.editEventArgs).toMatchObject({ end_iso: '2099-10-21T00:00:00' });
@@ -405,7 +405,18 @@ describe('calendar_event_edit', () => {
       browser.tmCalendar.modifyCalendarEvent.mockClear();
       const rename = await runEdit({ event_id: 'evt1', title: 'Renamed' }, 'pid-chk-3');
       expect(rename.editEventArgs).toMatchObject({ title: 'Renamed' });
-      expect(browser.tmCalendar.modifyCalendarEvent).not.toHaveBeenCalled();
+      const calls = browser.tmCalendar.modifyCalendarEvent.mock.calls.map(([d]) => d);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ event_id: 'evt1', title: 'Renamed', check_only: true });
+    });
+
+    it('the check\'s refusal of an edit giving no times fails the call before the card', async () => {
+      const refusal = 'send_invitations=true requires at least one attendee';
+      browser.tmCalendar.modifyCalendarEvent.mockImplementation(async (d) => (d.check_only ? { ok: false, error: refusal } : { ok: true }));
+      const sess = await runEdit({ event_id: 'evt1', title: 'Renamed', send_invitations: true }, 'pid-chk-5');
+      expect(sess.failReason).toBe(refusal);
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
     });
 
     it('a check that throws leaves the edit to the bridge', async () => {
