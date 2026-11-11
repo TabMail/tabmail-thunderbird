@@ -107,13 +107,14 @@ function normalizeArgs(args = {}) {
 
 // The fields an edit names (title, location, description, busy/free) whose
 // given value is the one `details` already holds: the event as
-// getCalendarEventDetails reads it, for a repeating event its series, or, on a
-// split, the occurrence it starts at (its own values when it was changed on its
-// own). The one comparison of a field with the stored value: the confirmation
-// card shows no line for these fields, and on an edit of a series or of its
-// following part the tool drops them before the check, so the write changes
-// nothing the card does not show. An occurrence changed on its own then keeps
-// its own value of a field the edit only restates, as Google Calendar leaves it
+// getCalendarEventDetails reads it, for a whole series the series, or, on an
+// edit of one occurrence or a split, the occurrence it names (its own values
+// when it was changed on its own, #369). The one comparison of a field with
+// the stored value: the confirmation card shows no line for these fields, and
+// the tool drops them before the check on every scope, so the write changes
+// nothing the card does not show, and an edit that gives only what the event
+// already has changes nothing. An occurrence changed on its own then keeps its
+// own value of a field the edit only restates, as Google Calendar leaves it
 // when the field is not changed in its form (whose values, opened from an
 // occurrence, are that occurrence's).
 export function restatedFields(editArgs, details) {
@@ -247,18 +248,18 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
-  // The event as the confirmation card shows it. On an edit of a series or of
-  // its following part, a field the edit only restates (restatedFields, the
-  // card's own comparison) is dropped here, before the check, so the card, the
-  // check and the write see the same edit: an occurrence changed on its own
-  // keeps its own value of that field. When the event cannot be read, the
-  // edit is refused after the check, so the check's own refusal (an event
-  // that does not exist) comes first.
-  const cardDetailsArgs = [norm.event_id, norm.calendar_id, norm.edit_scope === "this_and_following" ? norm.recurrence_id : null];
+  // The event as the confirmation card shows it: the series on an edit of the
+  // whole series, else the occurrence the edit names (#369). A field the edit
+  // only restates (restatedFields, the card's own comparison) is dropped here,
+  // on every scope, before the check, so the card, the check and the write see
+  // the same edit: an occurrence changed on its own keeps its own value of that
+  // field. When the event cannot be read, the edit is refused after the check,
+  // so the check's own refusal (an event that does not exist) comes first.
+  const scope = norm.edit_scope || (norm.recurrence_id ? "this_only" : "all");
+  const cardDetailsArgs = [norm.event_id, norm.calendar_id, scope !== "all" ? norm.recurrence_id : null];
   let cardDetails = null;
   let unreadable = null;
-  const editsSeries = (norm.edit_scope || (norm.recurrence_id ? "this_only" : "all")) !== "this_only";
-  if (editsSeries && RESTATABLE_FIELDS.some((field) => field in norm)) {
+  if (RESTATABLE_FIELDS.some((field) => field in norm)) {
     cardDetails = await safeFetchEventDetails(...cardDetailsArgs);
     if (cardDetails?.ok) {
       for (const field of restatedFields(norm, cardDetails)) delete norm[field];
@@ -274,14 +275,19 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   // the confirmation card, so the assistant can react: ask the user, or
   // correct the call. The bridge runs the same edit, on the scope routed above,
   // up to its first write and writes nothing (check_only), so each rule lives
-  // in one place. A check that throws is left to the edit itself.
+  // in one place. The check also says whether the edit changes anything (a
+  // time or field it only restates is no change), the times the card shows,
+  // and whether a new start resets changed occurrences; so a check that
+  // throws or answers nothing refuses the edit before the card.
   let check = null;
   try {
     check = await browser.tmCalendar.modifyCalendarEvent({ ...norm, check_only: true });
+    if (!check) throw new Error("no answer");
   } catch (e) {
-    log(`[TMDBG Tools] calendar_event_edit: pre-card check failed to run: ${e}`, "warn");
+    await failOut(`the calendar could not check this edit (${e}); try again`);
+    return;
   }
-  if (check && check.ok === false) {
+  if (check.ok === false) {
     await failOut(String(check.error || "the calendar refused this edit"));
     return;
   }
@@ -289,6 +295,23 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     await failOut(unreadable);
     return;
   }
+  // Nothing to write: the assistant is told so, with no card and no write.
+  if (check.changes === false) {
+    log(`[TMDBG Tools] calendar_event_edit: the edit changes nothing; no card shown`);
+    try {
+      if (pid && ctx.fsmSessions[pid]) ctx.fsmSessions[pid].editNoChange = true;
+    } catch (_) {}
+    ctx.state = "exec_success";
+    const core = await import("../fsm/core.js");
+    await core.executeAgentAction();
+    return;
+  }
+  try {
+    if (pid && ctx.fsmSessions[pid]) {
+      ctx.fsmSessions[pid].editTimes = check.times;
+      ctx.fsmSessions[pid].editResetsChangedOccurrences = check.resetsChangedOccurrences === true;
+    }
+  } catch (_) {}
 
   // calendar_id is OPTIONAL — the bridge (tmCalendar.modifyCalendarEvent) auto-scans
   // every calendar when none is supplied (see tmCalendar.sys.mjs lines 1340-1369).
@@ -419,6 +442,12 @@ export async function completeExecution(currentState, prevState) {
   if (failReason) {
     log(`[TMDBG Tools] calendar_event_edit.completeExecution: failed – ${failReason}`);
     return { ok: false, error: failReason };
+  }
+
+  // The check found nothing to write (see _runEditCalendarEvent).
+  if (sess?.editNoChange) {
+    log(`[TMDBG Tools] calendar_event_edit.completeExecution: nothing changed`);
+    return { ok: true, result: "Nothing changed: the event already has every time and value this edit gives, so nothing was written and no confirmation was shown." };
   }
   
   if (prevState === "calendar_event_edit_exec" && sess?.editResult) {

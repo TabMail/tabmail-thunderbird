@@ -74,13 +74,19 @@ async function formatEventDetailsForDisplay(details, editArgs) {
   }
 }
 
-function formatChangesForDisplay(editArgs, currentDetails) {
+// The changes an edit makes, as the confirmation card lists them. `check` is
+// the calendar's check before the card: `times`, the start and end as the read
+// tools print them before and after the edit (of the occurrence the edit
+// names), and `resetsChangedOccurrences`, whether a new start resets
+// occurrences changed on their own.
+function formatChangesForDisplay(editArgs, currentDetails, check = {}) {
   try {
     const lines = [];
     const a = editArgs || {};
     const d = currentDetails || {};
     // A field the edit only restates is no change: one comparison, shared
-    // with the edit tool, which drops it from a series edit before the write.
+    // with the edit tool, which drops it from the edit on every scope before
+    // the check and the write.
     const restated = restatedFields(a, d);
 
     // Show what fields are being changed with bold markdown and clear arrows
@@ -88,36 +94,22 @@ function formatChangesForDisplay(editArgs, currentDetails) {
       lines.push(`**Title:**`);
       lines.push(`  ${d.title || "(empty)"} → **${a.title}**`);
     }
-    // Old and new times are compared as the naive values the card prints,
-    // with their kinds: an all-day value by its day, a timed one by its digits
-    // (a given timezone is a change of frame, so the line is shown). A new
-    // value keeps the event's kind unless all_day is given.
-    const shown = shownEventTimesIso(d);
+    // The times come from the check, which reads them as the calendar
+    // stores them: a line for each side whose printed value or kind changes,
+    // labelled by its new kind. A time the edit only restates is no change and
+    // has no line; a start alone also moves the end, which is shown.
     const oldAllDay = d.isAllDay === true;
-    const newAllDay = typeof a.all_day === "boolean" ? a.all_day : oldAllDay;
-    const sameTime = (given, stored) =>
-      Boolean(stored) &&
-      newAllDay === oldAllDay &&
-      (newAllDay ? given.slice(0, 10) === stored.slice(0, 10) : !a.timezone && given === stored);
-    if (a.start_iso && !sameTime(a.start_iso, shown.start_iso)) {
-      const oldStart = shown.start_iso
-        ? formatCardTime(shown.start_iso, { allDay: oldAllDay })
-        : "(not set)";
-      const newStart = formatCardTime(a.start_iso, { allDay: newAllDay, timezone: a.timezone });
-      lines.push(newAllDay ? `**Start date:**` : `**Start time:**`);
-      lines.push(`  ${oldStart} → **${newStart}**`);
-    }
-    if (a.end_iso && !sameTime(a.end_iso, shown.end_iso)) {
-      const oldEnd = shown.end_iso
-        ? formatCardTime(shown.end_iso, { allDay: oldAllDay, endAfter: shown.start_iso })
-        : "(not set)";
-      const newEnd = formatCardTime(a.end_iso, {
-        allDay: newAllDay,
-        endAfter: a.start_iso || shown.start_iso,
-        timezone: a.timezone,
-      });
-      lines.push(newAllDay ? `**End date:**` : `**End time:**`);
-      lines.push(`  ${oldEnd} → **${newEnd}**`);
+    const times = check?.times;
+    if (times?.from && times?.to) {
+      for (const [key, label] of [["start_iso", "Start"], ["end_iso", "End"]]) {
+        const was = times.from, now = times.to;
+        if (was[key] === now[key] && was.all_day === now.all_day) continue;
+        const shown = (side) => (side[key]
+          ? formatCardTime(side[key], { allDay: side.all_day, endAfter: key === "end_iso" ? side.start_iso : undefined })
+          : "(not set)");
+        lines.push(now.all_day ? `**${label} date:**` : `**${label} time:**`);
+        lines.push(`  ${shown(was)} → **${shown(now)}**`);
+      }
     }
     if (typeof a.all_day !== "undefined" && a.all_day !== d.isAllDay) {
       lines.push(`**All-day event:**`);
@@ -176,10 +168,6 @@ function formatChangesForDisplay(editArgs, currentDetails) {
     if (a.recurrence) {
       lines.push(`**Recurrence:** *(updated)*`);
     }
-    if (a.timezone) {
-      lines.push(`**Timezone:**`);
-      lines.push(`  ${a.timezone}`);
-    }
     if (Array.isArray(a.exdates_add) && a.exdates_add.length > 0) {
       lines.push(`**Excluded dates:** *(+${a.exdates_add.length} dates)*`);
     }
@@ -199,6 +187,9 @@ function formatChangesForDisplay(editArgs, currentDetails) {
       lines.push(`**Scope:** This occurrence and all future occurrences (starting ${occurrence(a.recurrence_id)}${originally})`);
     } else if (scope === "all") {
       lines.push(`**Scope:** Entire recurring series`);
+    }
+    if (check?.resetsChangedOccurrences) {
+      lines.push(`**Note:** Occurrences you changed individually will be reset, and deleted ones will come back.`);
     }
 
     return lines.length > 0 ? lines.join("\n") : "*(no changes detected)*";
@@ -277,7 +268,13 @@ export async function runStateEditCalendarEventList() {
       details,
       editArgs
     );
-    const formattedChanges = formatChangesForDisplay(editArgs, details);
+    let check = {};
+    try {
+      const pid = ctx.activePid || ctx.activeToolCallId || 0;
+      const sess = (pid && ctx.fsmSessions[pid]) || {};
+      check = { times: sess.editTimes, resetsChangedOccurrences: sess.editResetsChangedOccurrences };
+    } catch (_) {}
+    const formattedChanges = formatChangesForDisplay(editArgs, details, check);
     assistantText = `I found this calendar event:\n\n${formattedCurrent}\n\nProposed changes:\n${formattedChanges}`;
     streamText(agentBubble, assistantText);
   } else {

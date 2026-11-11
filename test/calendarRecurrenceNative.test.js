@@ -14,30 +14,13 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
 import { resolve } from 'node:path';
 import ICAL from './fixtures/mozilla/Ical.sys.mjs';
 import { loadCalendarBridge, fakeEvent, fakeRecurrenceInfo, recurrenceItem } from './helpers/calendarBridgeHarness.js';
+import { NativeZone, NativeDateTime, NativeDuration } from './helpers/nativeCalendarDates.js';
 import { otherPartsRefusal } from '../chat/modules/recurrence.js';
 
-class NativeZone {
-  constructor(innerObject) { this.innerObject = innerObject; this.wrappedJSObject = this; }
-  get tzid() { return this.innerObject.tzid; }
-}
-
-const nativeScope = vm.createContext({
-  ICAL,
-  Components: { ID: (x) => x },
-  ChromeUtils: {
-    generateQI: () => () => {},
-    defineESModuleGetters(target) { target.CalTimezone = NativeZone; },
-  },
-});
-vm.runInContext(readFileSync(resolve('test/fixtures/mozilla/CalDateTime.sys.mjs'), 'utf8')
-  .replace('import ICAL from "resource:///modules/calendar/Ical.sys.mjs";', '')
-  .replace('export function CalDateTime', 'function CalDateTime'), nativeScope);
-const NativeDateTime = nativeScope.CalDateTime;
-
+// Thunderbird's own CalDateTime and CalDuration (nativeCalendarDates.js).
 function vtimezone(tzid, daylight, standard) {
   return new ICAL.Timezone({
     tzid,
@@ -96,7 +79,11 @@ function nativeLoaded(items, zone) {
   const loaded = loadCalendarBridge(resolve('chat/experiments/tmCalendar/tmCalendar.sys.mjs'), { items });
   const fakeCc = loaded.ctx.Cc;
   loaded.ctx.Cc = new Proxy({}, {
-    get: (_t, key) => (key === '@mozilla.org/calendar/datetime;1' ? { createInstance: () => new NativeDateTime() } : fakeCc[key]),
+    get: (_t, key) => {
+      if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => new NativeDateTime() };
+      if (key === '@mozilla.org/calendar/duration;1') return { createInstance: () => new NativeDuration() };
+      return fakeCc[key];
+    },
   });
   const { cal } = loaded.ctx.ChromeUtils.importESModule('resource:///modules/calendar/calUtils.sys.mjs');
   cal.timezoneService.UTC = new NativeZone(ICAL.Timezone.utcTimezone);
@@ -140,7 +127,7 @@ const changes = [
 describe('recurrence read and restate against Thunderbird\'s own date and recurrence code', () => {
   it('the vendored Thunderbird files are the copies the fixture README pins', () => {
     const readme = readFileSync(resolve('test/fixtures/mozilla/README.md'), 'utf8');
-    for (const file of ['Ical.sys.mjs', 'CalDateTime.sys.mjs']) {
+    for (const file of ['Ical.sys.mjs', 'CalDateTime.sys.mjs', 'CalDuration.sys.mjs']) {
       const pinned = new RegExp(`\\| \`${file.replace('.', '\\.')}\` \\|[^|]*\\| \`([0-9a-f]{64})\` \\|`).exec(readme);
       expect(pinned, file).not.toBeNull();
       expect(createHash('sha256').update(readFileSync(resolve('test/fixtures/mozilla', file))).digest('hex'), file).toBe(pinned[1]);
