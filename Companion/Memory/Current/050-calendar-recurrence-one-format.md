@@ -149,7 +149,17 @@ same design (tabmail-ios #421).
     changed occurrences' parent; the calendar's id assignment renames them (`onIdChange`).
   - **Thunderbird has no "this and following" primitive** (`MODIFY_FOLLOWING` throws `NS_ERROR_NOT_IMPLEMENTED`),
     so the bridge builds the two parts itself.
-  - **A time change** (`start_iso`/`end_iso`/`all_day`) applies to the following part only, after its recurrence is
+  - **A time change since 2026-11-11 (ADR-031)** applies to the following part only, after its recurrence is
+    attached, through the same code as a whole series (*Whole-series time change* below): `resolveEditTimes`
+    reads the edit against the occurrence the split names, as Thunderbird builds it; a new start resets the part's
+    changed occurrences and excluded dates (the earlier part keeps its own), then the edit's own excluded dates
+    are added, then `writeSeriesTimes` writes the part's start and the end `afterElapsed(start, W)`; an end alone
+    gives the part and each changed occurrence it carries the new wall-clock length `W` (`applyNewLength`). The
+    part starts at the split as `writeSeriesTimes(newEv, splitDt, seriesLength(cappedClone))` (an all-day part as a
+    plain date), so an all-day series stored with zoned dates keeps its days across a clock change (#330, #368);
+    its rules' date-time UNTIL is read in the series' stored zone (`asAllDayItem(newEv, master.startDate)`).
+    Superseded: the paragraph that follows, from "so Thunderbird's".
+  - **A time change** (before 2026-11-11) (`start_iso`/`end_iso`/`all_day`) applies to the following part only, after its recurrence is
     attached, so Thunderbird's `onStartDateChange` moves its EXDATEs, RDATEs, each non-COUNT rule's UNTIL and the
     changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does; since #287 the
     following part then moves as a whole series does (`shiftSeriesWithStart`, *Whole-series time change* below:
@@ -179,6 +189,14 @@ same design (tabmail-ios #421).
     all-day comes with them.
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
     time change so they move with the part.
+  - **A split at an occurrence that was changed on its own** (X), since 2026-11-11 (ADR-031): X is named by its own
+    printed start. A new start resets X and every changed occurrence of the part (Google's "this and following"),
+    so the part starts at the new time with no changed occurrence; X's own start restated, or the series' own start
+    at X, is no change (X keeps its time, `timesLeft` and the rule in `resolveEditTimes`); an end alone is a length
+    `W` measured from X's own start: X ends at the end given and the part starts at its slot and lasts `W` (an end
+    before X's start gets the usual "the event would end before it starts" text; the "keeps its own start" and
+    "their usual time" prefixes are gone); every field the edit names is written over X and the part's other
+    changed occurrences (`applyEditToChangedOccurrences`). Superseded (2026-11-10 to 2026-11-11): the text below.
   - **A split at an occurrence that was changed on its own** (X) is made in one write (2026-11-10): "from X on, new
     time" applies the time to X and everything after it, and X keeps its rename. X is carried
     into the following part with its own fields, then takes the edit there (`applyEditToNamedOccurrence`): with
@@ -234,7 +252,8 @@ same design (tabmail-ios #421).
     saving dates kept `ACCEPTED` for occurrences an hour from the times answered.
   - **Refused, writing nothing:** an EXRULE (a negative rule, comm-central 161+) the split cannot keep; a rule
     whose end or count cannot be read; a series that repeats by added dates alone (no rule to divide); an `exdates_add` value that names no occurrence; a rule item that cannot be rewritten (an immutable item throws); a time
-    change between all-day and timed when the following part carries an EXDATE, RDATE or changed occurrence, or
+    change between all-day and timed when the following part carries an RDATE or the edit's own EXDATE (a new start
+    has reset its changed occurrences and excluded dates first, since 2026-11-11; before, those were refused too), or
     (without a new rule) a rule with UNTIL (RFC 5545 needs them in the start's value type, and moving the start
     keeps theirs; the same `kindChangeError` as a whole-series edit, below); and `recurrence: {}` at an occurrence that was changed on its own (the one event left would
     lose its changes).
@@ -262,6 +281,27 @@ same design (tabmail-ios #421).
 - **Whole-series time change (#287), as calendar apps make it (Google Calendar is the reference).** Applies to
   an edit of a repeating event with `start_iso`/`end_iso` whose scope resolves to `all`, unless it stops the
   repeat (`recurrence: {}`).
+  - **Since 2026-11-11 (ADR-031): reset like Google, a wall-clock length.** One decision point,
+    `resolveEditTimes(item, patch, tz, namedRid)`: the edit's times are read against the occurrence it names (or
+    the first), as Thunderbird builds it (`info.getOccurrenceFor`/`createProxy`); a time it only restates is
+    dropped by the one no-change rule `timesLeft` (every scope; an end is dropped only when no new start is kept;
+    a restated time is compared as the read tools print it, `restates`/`shownNaiveIso`); the series' own start
+    named at an occurrence moved on its own is no change (that occurrence keeps its time) and an end is then
+    measured from the first slot. The length `W` is the end's clock digits minus the start's (`clockSeconds`), or
+    the series' own (`seriesLength`); `editTimesErrorOf` refuses on it with main's texts. A new start resets every
+    changed occurrence and excluded date (`resetChangedOccurrences`; added dates and EXRULEs stay; the edit's own
+    `exdates_add` are added after it; stopping the repeat resets nothing), then `writeSeriesTimes` writes the start
+    and the end `afterElapsed(start, W)` (the instant Thunderbird reads `W` after the start, so every plain
+    occurrence, rid plus the stored elapsed length, ends at the end given; null on the first pass of a repeated
+    hour, refused), then `shiftSeriesWithStart` moves the rule's days on a move to another day. An end alone
+    gives every changed occurrence of the series' kind its own start plus `W` (`applyNewLength`); one made
+    all-day or timed on its own keeps its times, and an end alone named at it is refused (`NAMED_OTHER_KIND_ERROR`).
+    A time given in another zone reaches the series' frame only through `atInstantInFrameOf` (`intoFrameOf`, used
+    by `toCalIDateTimeInFrameOf`; a null result and digits the given zone skips are refusals). The check returns
+    `changes`, `times` (`seriesEditTimes`/`shownEditTimes`: the named occurrence as printed, then as written) and
+    `resetsChangedOccurrences`; the card's time lines come from `times` and it adds "Occurrences you changed
+    individually will be reset, and deleted ones will come back." The keep-my-edits text below, and
+    `applyEditToNamedOccurrence`, are superseded (deleted).
   - **Named from the first occurrence** (a `recurrence_id` whose occurrence's RECURRENCE-ID is the series' start,
     `isFirstOccurrence`, even if it was moved on its own; or no `recurrence_id` and the new start, or for an end
     alone the new end, on the series' own date as the read tools show it, `shownEventTimesIso` in
@@ -347,8 +387,11 @@ same design (tabmail-ios #421).
     occurrence: "from Wednesday on, back in Room A" when Wednesday to Friday were each moved to Room B is a
     change, written to Wednesday and every carried occurrence (their attendees asked again; the plain ones
     keep their answers, as the place equals the series'). When the details cannot be read, such an edit is
-    refused before the card ("could not read this event"). `this_only` is not pruned: its card still compares
-    with the series, not the occurrence (#369).
+    refused before the card ("could not read this event"). Since 2026-11-11 the tool prunes on every scope and
+    reads the details with the `recurrence_id` on `this_only` too, and `getCalendarEventDetails` prints the named
+    occurrence's own start, end and kind (a series without one: its first occurrence as Thunderbird builds it), so
+    the card's header and old values are the occurrence's (#369, fixed). Superseded: `this_only` was not pruned and
+    its card compared with the series, not the occurrence (#369).
   - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
   occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
   time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it
@@ -430,4 +473,15 @@ same design (tabmail-ios #421).
   spring change at midnight, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that
   sweep). A monthly and a yearly rule with a stored UNTIL read their last day and restate to the same occurrences.
 - Bridge accessor calls (`boundFromIcs`, `occurrenceInstantOn`, `untilForRRule` → `getTimezoneService`;
-  `asShown`, `asAllDayDate`, `toCalIDateTimeInFrameOf` → `getTimezoneService`; `writeRuleItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
+  `asShown`, `asAllDayDate`, `intoFrameOf`, `restates` → `getTimezoneService`; `writeRuleItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`
+  (2026-11-11: `toCalIDateTimeInFrameOf`, `shownNaiveIso`, `shiftSeriesWithStart` and the split no longer call it).
+- Series time edits (2026-11-11, ADR-031) on Thunderbird's own date code (`test/helpers/nativeCalendarDates.js`,
+  the CalDuration fixture) and an independent 2099 offset table (`test/helpers/zoneOffsetTable.js`, checked
+  against Intl): `calendarSeriesTimePrimitives` (sweeps of `afterElapsed`, `atInstantInFrameOf`, `intoFrameOf`,
+  `shownNaiveIso`, `applyNewLength`), `calendarSeriesTimesWest`/`East` (every occurrence ends at the end given,
+  the named one read back, the card equal to the read, Thunderbird's own length, restated printed times no
+  change, floating digits kept), `calendarSeriesTimeRefusals`, `calendarSeriesReset`, `calendarEditNoChange`
+  (the no-change path, the check failing, the check's declared names), `calendarEditCardOccurrence` (#369) and
+  the source fence `calendarSeriesTimeFence` (no `getInTimezone`, `.compare(` or `sameTime(` in the owned
+  functions; `nativeTime`, `subtractDate(`, `addDuration(` only where listed). The flow helper
+  `test/helpers/seriesEditFlow.js` runs an edit through the tool, the card and the read tools.
