@@ -93,7 +93,13 @@ export async function edit(args, { confirm = true } = {}) {
       await fsm.runStateEditCalendarEventList();
       out.card = helpers.streamText.mock.calls.map((c) => String(c[1])).find((t) => t.startsWith('I found this calendar event')) || null;
       if (out.card) [out.header, out.changes] = out.card.split('Proposed changes:');
-      if (confirm && out.card) await fsm.runStateEditCalendarEventExec();
+      // The user confirms: the planner moves to the exec state and records it
+      // as the previous state (core.js runStatePlanNextAction), which is what
+      // completeExecution reads to report the write.
+      if (confirm && out.card) {
+        sess.fsmPrevState = 'calendar_event_edit_exec';
+        await fsm.runStateEditCalendarEventExec();
+      }
     }
     out.state = ctx.state;
     out.failReason = sess.failReason;

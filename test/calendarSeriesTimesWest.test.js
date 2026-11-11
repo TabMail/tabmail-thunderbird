@@ -58,13 +58,13 @@ const end = (day, hour, minute = 0) => at(LA, day, hour, minute);
 const moved = (rid, start, finish) => ({ rid, start, end: finish });
 
 describe('a whole-series time change, west of UTC: every night ends at the end given', () => {
-  it('row 1: an ordinary night, end 07:00', async () => {
+  it('an ordinary night, end 07:00', async () => {
     const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-01-10' })], LA);
     await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-01-10', 22), end_iso: iso('2099-01-11', 7) },
       { W: 9 * H, namedStart: iso('2099-01-10', 22), namedEnd: iso('2099-01-11', 7), fromDay: '2099-01-10', toDay: '2099-01-20' });
   });
 
-  it('row 2: the named night spans the autumn change, end 07:00: every night ends 07:00', async () => {
+  it('the named night spans the autumn change, end 07:00: every night ends 07:00', async () => {
     const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-10-31' })], LA);
     const { stored } = await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-10-31', 22), end_iso: iso('2099-11-01', 7) },
       { W: 9 * H, namedStart: iso('2099-10-31', 22), namedEnd: iso('2099-11-01', 7), fromDay: '2099-10-31', toDay: '2099-11-10' });
@@ -73,14 +73,14 @@ describe('a whole-series time change, west of UTC: every night ends at the end g
     expect(digits(stored.endDate)).toBe('2099-11-01T06:00:00');
   });
 
-  it('row 3: the named night spans the spring change, end 07:00', async () => {
+  it('the named night spans the spring change, end 07:00', async () => {
     const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-03-07' })], LA);
     const { stored } = await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-03-07', 22), end_iso: iso('2099-03-08', 7) },
       { W: 9 * H, namedStart: iso('2099-03-07', 22), namedEnd: iso('2099-03-08', 7), fromDay: '2099-03-07', toDay: '2099-03-17' });
     expect(digits(stored.endDate)).toBe('2099-03-08T08:00:00');
   });
 
-  it('row 4: the first slot spans the autumn change, named occurrence moved to an ordinary evening', async () => {
+  it('the first slot spans the autumn change, named occurrence moved to an ordinary evening', async () => {
     const series = seriesOf({ tzid: LA, day: '2099-10-31', changed: [moved(end('2099-10-31', 22), end('2099-10-30', 21), end('2099-10-30', 22))] });
     const loaded = onCalendar([series], LA);
     const { stored } = await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-10-30', 21), end_iso: iso('2099-10-31', 6) },
@@ -88,27 +88,27 @@ describe('a whole-series time change, west of UTC: every night ends at the end g
     expect(digits(stored.endDate)).toBe('2099-11-01T06:00:00');
   });
 
-  it('row 5: first slot ordinary, named occurrence moved onto the autumn night, end 08:00', async () => {
+  it('first slot ordinary, named occurrence moved onto the autumn night, end 08:00', async () => {
     const series = seriesOf({ tzid: LA, day: '2099-10-27', rule: 'FREQ=WEEKLY;COUNT=8', changed: [moved(end('2099-10-27', 22), end('2099-10-31', 22), end('2099-10-31', 23))] });
     const loaded = onCalendar([series], LA);
     await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-10-31', 22), end_iso: iso('2099-11-01', 8) },
       { W: 10 * H, namedStart: iso('2099-10-31', 22), namedEnd: iso('2099-11-01', 8), fromDay: '2099-10-26', toDay: '2099-12-20' });
   });
 
-  it('row 6: end 01:30 just before the spring gap', async () => {
+  it('end 01:30 just before the spring gap', async () => {
     const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-03-07', minute: 30 })], LA);
     await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-03-07', 22, 30), end_iso: iso('2099-03-08', 1, 30) },
       { W: 3 * H, namedStart: iso('2099-03-07', 22, 30), namedEnd: iso('2099-03-08', 1, 30), fromDay: '2099-03-07', toDay: '2099-03-17' });
   });
 
-  it('row 7: end 03:30 just after the spring gap: every night 03:30', async () => {
+  it('end 03:30 just after the spring gap: every night 03:30', async () => {
     const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-03-07', minute: 30 })], LA);
     const { stored } = await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-03-07', 22, 30), end_iso: iso('2099-03-08', 3, 30) },
       { W: 5 * H, namedStart: iso('2099-03-07', 22, 30), namedEnd: iso('2099-03-08', 3, 30), fromDay: '2099-03-07', toDay: '2099-03-17' });
     expect(digits(stored.endDate)).toBe('2099-03-08T04:30:00');
   });
 
-  it('row 9: end 01:30 at an occurrence moved on its own, first slot ordinary', async () => {
+  it('end 01:30 at an occurrence moved on its own, first slot ordinary', async () => {
     const series = seriesOf({ tzid: LA, day: '2099-10-27', rule: 'FREQ=WEEKLY;COUNT=8', changed: [moved(end('2099-10-27', 22), end('2099-10-31', 22), end('2099-10-31', 23))] });
     const loaded = onCalendar([series], LA);
     await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-10-31', 22), end_iso: iso('2099-11-01', 1, 30) },

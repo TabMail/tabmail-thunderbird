@@ -2738,9 +2738,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // A check before the confirmation card stops here, at the first
             // write: every refusal is above, and everything above changed only
             // the unsaved clone. It says whether the edit changes anything
-            // (each term is the guard of the write it stands for, after the
-            // drops above; an omitted field arrives as null), the times the card
-            // shows, and whether a new start resets changed occurrences.
+            // (each term but all_day is the guard of the write it stands for,
+            // after the drops above; an omitted field arrives as null. The
+            // all_day term stands for the card's All-day line: all_day is
+            // written only with a time, so a flip with no time writes nothing),
+            // the times the card shows, and whether a new start resets changed
+            // occurrences.
             const changes = !!times || typeof patch.title === "string" || typeof patch.location === "string"
               || typeof patch.transparency === "string" || typeof patch.description === "string" || !!patch.description_html
               || !!guestChange || exdates.rids.length > 0 || (!!patch.recurrence && typeof patch.recurrence === "object")
@@ -3194,10 +3197,13 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // A check before the confirmation card stops here, at the first
             // write: every refusal is above, and both parts are still unsaved
-            // copies. It says whether the split changes anything (each term is
-            // the guard of a write above; a split that changes nothing is not
-            // made), the times the card shows, and whether a new start resets
-            // the part's changed occurrences.
+            // copies. It says whether the split changes anything (each term but
+            // all_day is the guard of a write above; a split that changes
+            // nothing is not made. The all_day term stands for the card's
+            // All-day line: all_day is written only with a time, so a flip with
+            // no time still splits and writes no kind change), the times the
+            // card shows, and whether a new start resets the part's changed
+            // occurrences.
             const changes = !!times || (typeof patch.title === "string" && !!patch.title) || newRule
               || exdates.rids.length > 0 || !!guestChange || typeof patch.location === "string"
               || typeof patch.description === "string" || typeof patch.transparency === "string"

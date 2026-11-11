@@ -123,6 +123,57 @@ describe('a series time change resets like Google Calendar', () => {
     expect(exdatesOf(stored)).toEqual(['2099-01-14T10:00:00']);
   });
 
+  // The series' own start, named at its first occurrence moved on its own,
+  // with a new end: the start is the one the series already has, so the edit
+  // is a new length, measured from that start. Nothing is reset.
+  it('the series\' own start with a new end, named at the moved first occurrence, is a new length: nothing reset, the card shows the end only', async () => {
+    const series = seriesOf({
+      tzid: LA, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10',
+      changed: [
+        { rid: la('2099-01-10', 10), start: la('2099-01-10', 11), end: la('2099-01-10', 12) },
+        { rid: la('2099-01-12', 10), start: la('2099-01-12', 14), end: la('2099-01-12', 14, 30), title: 'Moved', location: 'Room 9' },
+      ],
+      exdates: [la('2099-01-14', 10)],
+    });
+    const loaded = onCalendar([series], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-01-10', 11), start_iso: iso('2099-01-10', 10), end_iso: iso('2099-01-10', 12, 30) });
+    expect(run.failReason).toBeUndefined();
+    expect(run.changes).not.toContain(NOTE);
+    expect(flow.timeChange(run.changes, 'Start')).toBeNull();
+    expect(flow.timeChange(run.changes, 'End')).toEqual({ from: await flow.asCard(iso('2099-01-10', 11)), to: await flow.asCard(iso('2099-01-10', 12, 30)) });
+    const [stored] = loaded.calendar.items;
+    expect([digits(stored.startDate), digits(stored.endDate)]).toEqual(['2099-01-10T10:00:00', '2099-01-10T12:30:00']);
+    const first = stored.recurrenceInfo.getExceptionFor(la('2099-01-10', 10));
+    expect([digits(first.startDate), digits(first.endDate)]).toEqual(['2099-01-10T11:00:00', '2099-01-10T13:30:00']);
+    const moved = stored.recurrenceInfo.getExceptionFor(la('2099-01-12', 10));
+    expect([digits(moved.startDate), digits(moved.endDate), moved.title, moved.getProperty('LOCATION')])
+      .toEqual(['2099-01-12T14:00:00', '2099-01-12T16:30:00', 'Moved', 'Room 9']);
+    expect(exdatesOf(stored)).toEqual(['2099-01-14T10:00:00']);
+  });
+
+  it('the same on a split: the part\'s own start with a new end, named at its first occurrence moved on its own, keeps that occurrence', async () => {
+    const series = seriesOf({
+      tzid: LA, day: '2099-01-10', hour: 17, rule: 'FREQ=DAILY;COUNT=10',
+      changed: [
+        { rid: la('2099-01-14', 17), start: la('2099-01-14', 19), end: la('2099-01-14', 20) },
+        { rid: la('2099-01-16', 17), start: la('2099-01-16', 15), end: la('2099-01-16', 15, 30), title: 'Late' },
+      ],
+      exdates: [la('2099-01-17', 17)],
+    });
+    const loaded = onCalendar([series], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso('2099-01-14', 19), start_iso: iso('2099-01-14', 17), end_iso: iso('2099-01-14', 18, 30) });
+    expect(run.failReason).toBeUndefined();
+    expect(run.changes).not.toContain(NOTE);
+    expect(flow.timeChange(run.changes, 'Start')).toBeNull();
+    const part = loaded.calendar.items.find((it) => it.id !== 'ser');
+    expect([digits(part.startDate), digits(part.endDate)]).toEqual(['2099-01-14T17:00:00', '2099-01-14T18:30:00']);
+    const named = part.recurrenceInfo.getExceptionFor(la('2099-01-14', 17));
+    expect([digits(named.startDate), digits(named.endDate)]).toEqual(['2099-01-14T19:00:00', '2099-01-14T20:30:00']);
+    const late = part.recurrenceInfo.getExceptionFor(la('2099-01-16', 17));
+    expect([digits(late.startDate), digits(late.endDate), late.title]).toEqual(['2099-01-16T15:00:00', '2099-01-16T16:30:00', 'Late']);
+    expect(exdatesOf(part)).toEqual(['2099-01-17T17:00:00']);
+  });
+
   it('an occurrence made all-day or timed on its own keeps its times on an end alone', async () => {
     const series = seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, changed: [{ rid: la('2099-01-12', 10), start: dateOn('2099-01-12'), end: dateOn('2099-01-13') }] });
     const loaded = onCalendar([series], LA);

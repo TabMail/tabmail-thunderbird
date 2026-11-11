@@ -129,6 +129,14 @@ describe('series time edits refused before the card', () => {
       `${iso('2099-11-01', 19, 30)} in ${SYDNEY} falls in the first of the two passes of the hour the clocks repeat in this event's time zone (${LA}) that night, which the calendar cannot store for this event; ask the user for a time outside that hour`);
   });
 
+  // A floating series is shown on the user's clock: the same instant is the
+  // first 01:30 there, which the user's clock cannot name.
+  it('the same time given for a floating series is refused with the user\'s zone named', async () => {
+    const loaded = calendarOf([seriesOf({ tzid: 'floating', day: '2099-10-20', hour: 17 })]);
+    await refused(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-10-20', 17), start_iso: iso('2099-11-01', 19, 30), timezone: SYDNEY },
+      `${iso('2099-11-01', 19, 30)} in ${SYDNEY} falls in the first of the two passes of the hour the clocks repeat in this event's time zone (${LA}) that night, which the calendar cannot store for this event; ask the user for a time outside that hour`);
+  });
+
   it('a time at digits the given zone skips is refused: series, single event, one occurrence', async () => {
     const text = skipped(iso('2099-10-04', 2, 30), SYDNEY);
     const series = calendarOf([seriesOf({ tzid: LA, day: '2099-10-01', hour: 10 })]);

@@ -49,6 +49,7 @@ const { fakeEvent, fakeAttendee } = await import('./helpers/calendarBridgeHarnes
 const schemaCheck = await import('./helpers/calendarSchemaCheck.js');
 
 const LA = 'America/Los_Angeles';
+const SYDNEY = 'Australia/Sydney';
 const la = (day, hour, minute = 0) => at(LA, day, hour, minute);
 const NOTHING_CHANGED = 'Nothing changed: the event already has every time and value this edit gives, so nothing was written and no confirmation was shown.';
 
@@ -110,6 +111,56 @@ describe('an edit that only restates the event changes nothing', () => {
     expect(cardChange(run.changes, 'Title')).toEqual({ from: 'Night shift', to: 'Day shift' });
     const [stored] = loaded.calendar.items;
     expect([stored.title, digits(stored.startDate), digits(stored.endDate)]).toEqual(['Day shift', '2099-01-10T10:00:00', '2099-01-10T11:00:00']);
+  });
+
+  // "Start at 9:30 instead, still ending at 11:00": the assistant sends both
+  // times. The end it restates is the end asked, so the length is not kept.
+  it('a new start with the stored end restated keeps that end: single event, one occurrence, the series and from an occurrence on', async () => {
+    const series = () => seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10' });
+    const cases = [
+      { items: () => [fakeEvent({ id: 'one', title: 'Review', startDate: la('2099-01-10', 10), endDate: la('2099-01-10', 11) })],
+        args: { event_id: 'one', start_iso: iso('2099-01-10', 9, 30), end_iso: iso('2099-01-10', 11) },
+        written: (items) => items[0] },
+      { items: () => [series()],
+        args: { event_id: 'ser', edit_scope: 'this_only', recurrence_id: iso('2099-01-12', 10), start_iso: iso('2099-01-12', 9, 30), end_iso: iso('2099-01-12', 11) },
+        written: (items) => items[0].recurrenceInfo.getExceptionFor(la('2099-01-12', 10)) },
+      { items: () => [series()],
+        args: { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-01-10', 10), start_iso: iso('2099-01-10', 9, 30), end_iso: iso('2099-01-10', 11) },
+        written: (items) => items[0] },
+      { items: () => [series()],
+        args: { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso('2099-01-14', 10), start_iso: iso('2099-01-14', 9, 30), end_iso: iso('2099-01-14', 11) },
+        written: (items) => items.find((it) => it.id !== 'ser') },
+    ];
+    for (const { items, args, written } of cases) {
+      const loaded = onCalendar(items(), LA);
+      const run = await edit(args);
+      expect(run.failReason, args.edit_scope).toBeUndefined();
+      expect(timeChange(run.changes, 'Start'), args.edit_scope).toEqual({ from: await flow.asCard(args.start_iso.replace('09:30', '10:00')), to: await flow.asCard(args.start_iso) });
+      expect(timeChange(run.changes, 'End'), args.edit_scope).toBeNull();
+      const item = written(loaded.calendar.items);
+      expect([digits(item.startDate), digits(item.endDate)], args.edit_scope).toEqual([args.start_iso, args.end_iso]);
+    }
+  });
+
+  // A time given in another zone that is the stored instant restates it.
+  it('a series start restated in another zone, with a new title, changes only the title and resets nothing', async () => {
+    const series = seriesOf({
+      tzid: SYDNEY, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10',
+      changed: [{ rid: at(SYDNEY, '2099-01-12', 10), start: at(SYDNEY, '2099-01-12', 14), end: at(SYDNEY, '2099-01-12', 15) }],
+    });
+    const loaded = onCalendar([series], LA);
+    // The first occurrence as the read tools print it, on the user's clock.
+    const first = await flow.readSeries();
+    const run = await edit({ event_id: 'ser', edit_scope: 'all', recurrence_id: first.start_iso, start_iso: iso('2099-01-10', 10), timezone: SYDNEY, title: 'Day shift' });
+    expect(run.failReason).toBeUndefined();
+    expect(timeChange(run.changes, 'Start')).toBeNull();
+    expect(timeChange(run.changes, 'End')).toBeNull();
+    expect(run.changes).not.toContain('will be reset');
+    expect(run.sess.editResetsChangedOccurrences === true).toBe(false);
+    const [stored] = loaded.calendar.items;
+    expect([stored.title, digits(stored.startDate), digits(stored.endDate)]).toEqual(['Day shift', '2099-01-10T10:00:00', '2099-01-10T11:00:00']);
+    const ex = stored.recurrenceInfo.getExceptionFor(at(SYDNEY, '2099-01-12', 10));
+    expect(ex && [digits(ex.startDate), digits(ex.endDate)]).toEqual(['2099-01-12T14:00:00', '2099-01-12T15:00:00']);
   });
 
   it('a real change still shows the card', async () => {

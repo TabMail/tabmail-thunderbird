@@ -85,7 +85,8 @@ function formatChangesForDisplay(editArgs, currentDetails, check = {}) {
     const a = editArgs || {};
     const d = currentDetails || {};
     // A field the edit only restates is no change: one comparison, shared
-    // with the edit tool, which drops it from a series edit before the write.
+    // with the edit tool, which drops it from the edit on every scope before
+    // the check and the write.
     const restated = restatedFields(a, d);
 
     // Show what fields are being changed with bold markdown and clear arrows
