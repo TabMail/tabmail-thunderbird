@@ -47,8 +47,10 @@ function normalizeArgs(args = {}) {
   if (typeof a.start_iso === "string" && a.start_iso) out.start_iso = toNaiveIso(a.start_iso, zone);
   if (typeof a.end_iso === "string" && a.end_iso) out.end_iso = toNaiveIso(a.end_iso, zone);
   if (typeof a.all_day === "boolean") out.all_day = a.all_day;
-  if (typeof a.location === "string" && a.location) out.location = a.location;
-  if (typeof a.description === "string" && a.description) out.description = a.description;
+  // A location or notes the edit gives as a string is named, "" included: "" clears
+  // the field (omitting it keeps it), as the bridge and the schema read it.
+  if (typeof a.location === "string") out.location = a.location;
+  if (typeof a.description === "string") out.description = a.description;
   if (typeof a.transparency === "string") {
     const t = a.transparency.toLowerCase();
     if (t === "busy" || t === "free") out.transparency = t;
@@ -125,8 +127,8 @@ export function restatedFields(editArgs, details) {
   const busyOrFree = (t) => (t === "free" ? "free" : "busy");
   const holds = {
     title: Boolean(a.title) && a.title === d.title,
-    location: Boolean(a.location) && a.location === d.location,
-    description: Boolean(a.description) && a.description === d.description,
+    location: typeof a.location === "string" && a.location === (d.location || ""),
+    description: typeof a.description === "string" && a.description === (d.description || ""),
     transparency: typeof a.transparency === "string" && typeof d.transparency === "string"
       && busyOrFree(a.transparency) === busyOrFree(d.transparency),
   };

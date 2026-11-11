@@ -392,6 +392,18 @@ same design (tabmail-ios #421).
     occurrence's own start, end and kind (a series without one: its first occurrence as Thunderbird builds it), so
     the card's header and old values are the occurrence's (#369, fixed). Superseded: `this_only` was not pruned and
     its card compared with the series, not the occurrence (#369).
+  - **`""` removes the location or the notes, on every scope (#383).** The edit names a field when it gives a
+    string for it, `""` included; omitting it keeps the field (the schema's "Omit to keep existing"). That is the
+    bridge's own presence test (`typeof patch.x === "string"`; Thunderbird's `setProperty` deletes an empty value,
+    and the notes' HTML copies go as for any new notes), the iOS tool's on the same schema, and `contacts_edit`'s.
+    The add-on above the bridge applies the same rule in all three places that decide presence, so the card, the
+    check and the write see one edit: `normalizeArgs` keeps an empty `location`/`description`; `restatedFields`
+    compares it with the stored value read as a string (`""` over an empty field is restated, so no line and no
+    write; over "Room A" it is a change); and the card shows the line with the new value as `(cleared)`, the iOS
+    card's word ("Room A → **(cleared)**"). Superseded: `normalizeArgs` tested truthiness, so `""` was dropped
+    before the check, the card showed no line (or "no changes detected"), nothing was written, and the edit was
+    still reported as made. The title has the same truthiness test and is a separate question (#384).
+    Pinned by `test/calendarEditClearsField.test.js`.
   - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
   occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
   time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it

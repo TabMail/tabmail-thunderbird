@@ -89,19 +89,27 @@ function oneOff(properties = {}) {
 
 // A series: daily "Standup" 17:00 to 17:30 in "Room A", with notes; `changed`
 // adds occurrences changed on their own, each at its slot `n` with its own
-// fields.
-function series({ changed = [] } = {}) {
-  const master = fakeEvent({
+// fields. A property given as null is not stored (an empty field).
+function withoutNulls(ev, properties) {
+  for (const [k, v] of Object.entries(properties)) if (v === null) ev.deleteProperty(k);
+  return ev;
+}
+function series({ changed = [], properties: own = {} } = {}) {
+  const masterProperties = { LOCATION: 'Room A', DESCRIPTION: 'Daily notes', TRANSP: 'OPAQUE', ...own };
+  const master = withoutNulls(fakeEvent({
     id: 'standup', title: 'Standup',
     startDate: fakeDateTime(dayFromNow(0), 17), endDate: fakeDateTime(dayFromNow(0), 17, 30),
-    properties: { LOCATION: 'Room A', DESCRIPTION: 'Daily notes', TRANSP: 'OPAQUE' },
+    properties: masterProperties,
+  }), masterProperties);
+  const exceptions = changed.map(({ n, title = 'Standup', properties = {} }) => {
+    const all = { ...masterProperties, ...properties };
+    return withoutNulls(fakeEvent({
+      id: 'standup', title,
+      startDate: fakeDateTime(dayFromNow(n), 17), endDate: fakeDateTime(dayFromNow(n), 17, 30),
+      recurrenceId: fakeDateTime(dayFromNow(n), 17),
+      properties: all,
+    }), all);
   });
-  const exceptions = changed.map(({ n, title = 'Standup', properties = {} }) => fakeEvent({
-    id: 'standup', title,
-    startDate: fakeDateTime(dayFromNow(n), 17), endDate: fakeDateTime(dayFromNow(n), 17, 30),
-    recurrenceId: fakeDateTime(dayFromNow(n), 17),
-    properties: { LOCATION: 'Room A', DESCRIPTION: 'Daily notes', TRANSP: 'OPAQUE', ...properties },
-  }));
   master.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY')], { exceptions });
   master.recurrenceInfo.item = master;
   return master;
@@ -171,7 +179,7 @@ describe('a one-off event: "" removes the location or the notes', () => {
     expect(before.get(oneOffKey).location).toBe('Room A');
     expect(after.get(oneOffKey)).toEqual({ ...before.get(oneOffKey), location: '' });
     expect(stored[0].getProperty('LOCATION')).toBeNull();
-    expect(card).toMatch(/\*\*Location:\*\*\n\s+Room A → /);
+    expect(card).toMatch(/\*\*Location:\*\*\n\s+Room A → \*\*\(cleared\)\*\*/);
   });
 
   it('description "": the event has no notes, the card shows the old ones going, and the reported success matches the calendar', async () => {
@@ -180,7 +188,7 @@ describe('a one-off event: "" removes the location or the notes', () => {
     expect(before.get(oneOffKey).description).toBe('Bring the forms');
     expect(after.get(oneOffKey)).toEqual({ ...before.get(oneOffKey), description: '' });
     expect(stored[0].getProperty('DESCRIPTION')).toBeNull();
-    expect(card).toMatch(/\*\*Description:\*\*\n\s+Bring the forms → /);
+    expect(card).toMatch(/\*\*Description:\*\*\n\s+Bring the forms → \*\*\(cleared\)\*\*/);
   });
 
   it('description "" on notes with HTML copies: no copy is left for Thunderbird to show', async () => {
@@ -244,5 +252,39 @@ describe('a repeating event: "" removes the field from every occurrence the edit
     const following = stored.find((it) => it.id !== 'standup');
     expect(following).toBeTruthy();
     expect(following.getProperty('LOCATION')).toBeNull();
+  });
+});
+
+// Guards for the one comparison (restatedFields): "" over a field that is
+// already empty only restates it, so the card shows no line for it and the
+// write changes nothing for it.
+describe('"" over a location that is already empty is no change', () => {
+  it('"All events": no Location line, and an occurrence with its own place keeps it', async () => {
+    const master = series({ properties: { LOCATION: null }, changed: [{ n: 2, properties: { LOCATION: 'Room B' } }] });
+    const { card, before, after, reported } = await confirmEdit(master, { edit_scope: 'all', title: 'Standup (new)', location: '' });
+    expectReportedDone(reported);
+    // Not vacuous: the series has no place, one occurrence has its own.
+    expect(before.get(slotKey(1)).location).toBe('');
+    expect(before.get(slotKey(2)).location).toBe('Room B');
+    expect(card).toContain('**Title:**');
+    expect(card).not.toContain('**Location:**');
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+    for (const [key, was] of before) expect(after.get(key), key).toEqual({ ...was, title: 'Standup (new)' });
+  });
+
+  it('a split at an occurrence with no place of its own: "" is restated there, and the later ones keep the series\' place', async () => {
+    const master = series({ changed: [{ n: 3, properties: { LOCATION: null } }] });
+    const { card, before, after, reported } = await confirmEdit(master, {
+      edit_scope: 'this_and_following', recurrence_id: naiveAt(3, 17), title: 'Standup (new)', location: '',
+    });
+    expectReportedDone(reported);
+    expect(before.get(slotKey(3)).location).toBe('');
+    expect(before.get(slotKey(4)).location).toBe('Room A');
+    expect(card).toContain('**Title:**');
+    expect(card).not.toContain('**Location:**');
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+    for (const [key, was] of before) {
+      expect(after.get(key), key).toEqual(key >= slotKey(3) ? { ...was, title: 'Standup (new)' } : was);
+    }
   });
 });

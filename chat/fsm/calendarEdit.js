@@ -117,18 +117,20 @@ function formatChangesForDisplay(editArgs, currentDetails, check = {}) {
         `  ${d.isAllDay ? "yes" : "no"} → **${a.all_day ? "yes" : "no"}**`
       );
     }
-    if (a.location && !restated.includes("location")) {
+    // An empty new location or notes clears the field (#383).
+    if (typeof a.location === "string" && !restated.includes("location")) {
       lines.push(`**Location:**`);
-      lines.push(`  ${d.location || "(empty)"} → **${a.location}**`);
+      lines.push(`  ${d.location || "(empty)"} → **${a.location || "(cleared)"}**`);
     }
-    if (a.description && !restated.includes("description")) {
+    if (typeof a.description === "string" && !restated.includes("description")) {
       const oldDesc = d.description
         ? d.description.length > 50
           ? d.description.slice(0, 50) + "..."
           : d.description
         : "(empty)";
-      const newDesc =
-        a.description.length > 50
+      const newDesc = !a.description
+        ? "(cleared)"
+        : a.description.length > 50
           ? a.description.slice(0, 50) + "..."
           : a.description;
       lines.push(`**Description:**`);
