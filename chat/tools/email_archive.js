@@ -145,15 +145,20 @@ async function _runArchiveEmails(args = {}, options = {}) {
 // FSM tool completion handler – optional, report simple outcome
 export async function completeExecution(currentState, prevState) {
   const pid = ctx.activePid || ctx.activeToolCallId || 0;
+  const sess = pid && ctx.fsmSessions ? ctx.fsmSessions[pid] : null;
   const failReason = (pid && ctx.fsmSessions && ctx.fsmSessions[pid] && ctx.fsmSessions[pid].failReason) || "";
   if (failReason) {
     log(`[TMDBG Tools] email_archive.completeExecution: failed – ${failReason}`);
     return `Failed: ${failReason}`;
   }
   // If previous state was email_archive_execute, consider success
-  if (prevState === "email_archive_execute") {
-    log(`[TMDBG Tools] email_archive.completeExecution: archived via FSM`);
-    return "Selected emails archived.";
+  if (prevState === "email_archive_execute" && sess?.archiveResult) {
+    const { requested, archived, notMoved = [] } = sess.archiveResult;
+    log(`[TMDBG Tools] email_archive.completeExecution: archived ${archived} of ${requested} via FSM`);
+    if (archived === requested) {
+      return archived === 1 ? "Selected email archived." : `All ${requested} selected emails archived.`;
+    }
+    return `Archived ${archived} of ${requested} selected emails. Not archived (unchanged): ${notMoved.join(", ")}.`;
   }
   log(`[TMDBG Tools] email_archive.completeExecution: completed`);
   return "Archive workflow completed.";

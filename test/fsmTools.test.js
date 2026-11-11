@@ -113,6 +113,7 @@ vi.mock('../chat/fsm/core.js', () => ({
 // ---------------------------------------------------------------------------
 // Import after mocks
 // ---------------------------------------------------------------------------
+import { ctx } from '../chat/modules/context.js';
 import { run as deleteRun, completeExecution as deleteComplete, _testExports as deleteTestExports } from '../chat/tools/email_delete.js';
 import { run as archiveRun, completeExecution as archiveComplete, _testExports as archiveTestExports } from '../chat/tools/email_archive.js';
 const { normalizeArgs: deleteNormalizeArgs } = deleteTestExports;
@@ -156,9 +157,12 @@ describe('email_delete', () => {
   });
 
   describe('completeExecution', () => {
-    it('should return success when prevState is email_delete_execute', async () => {
+    it('should return success when prevState is email_delete_execute and every message moved', async () => {
+      ctx.activePid = 'pid-delete-done';
+      ctx.fsmSessions['pid-delete-done'] = { deleteResult: { requested: 1, deleted: 1, notMoved: [] } };
       const result = await deleteComplete('done', 'email_delete_execute');
-      expect(result).toContain('deleted');
+      ctx.activePid = 0;
+      expect(result).toBe('Selected email deleted.');
     });
 
     it('should return generic completion otherwise', async () => {
@@ -191,9 +195,12 @@ describe('email_archive', () => {
   });
 
   describe('completeExecution', () => {
-    it('should return success when prevState is email_archive_execute', async () => {
+    it('should return success when prevState is email_archive_execute and every message moved', async () => {
+      ctx.activePid = 'pid-archive-done';
+      ctx.fsmSessions['pid-archive-done'] = { archiveResult: { requested: 1, archived: 1, notMoved: [] } };
       const result = await archiveComplete('done', 'email_archive_execute');
-      expect(result).toContain('archived');
+      ctx.activePid = 0;
+      expect(result).toBe('Selected email archived.');
     });
 
     it('should return generic completion for other states', async () => {

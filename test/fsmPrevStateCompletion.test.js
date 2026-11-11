@@ -56,11 +56,11 @@ vi.mock('../agent/modules/templateManager.js', () => ({
 }));
 
 // Exec-runner stand-in: record the result field, move to exec_success, re-enter.
-function execRunner(resultKey) {
+function execRunner(resultKey, sourceKey = resultKey) {
   return async () => {
     const { ctx } = await import('../chat/modules/context.js');
     const pid = ctx.activePid || ctx.activeToolCallId || 0;
-    if (resultKey) ctx.fsmSessions[pid][resultKey] = h.results[resultKey];
+    if (resultKey) ctx.fsmSessions[pid][resultKey] = h.results[sourceKey];
     ctx.state = 'exec_success';
     const core = await import('../chat/fsm/core.js');
     await core.executeAgentAction();
@@ -85,11 +85,11 @@ vi.mock('../chat/fsm/contactsDelete.js', () => ({
 }));
 vi.mock('../chat/fsm/emailArchive.js', () => ({
   runStateArchiveListEmails: vi.fn(),
-  runStateArchiveExecute: execRunner(null),
+  runStateArchiveExecute: execRunner('archiveResult', 'emailArchiveResult'),
 }));
 vi.mock('../chat/fsm/emailDelete.js', () => ({
   runStateDeleteListEmails: vi.fn(),
-  runStateDeleteExecute: execRunner(null),
+  runStateDeleteExecute: execRunner('deleteResult', 'emailDeleteResult'),
 }));
 vi.mock('../chat/fsm/emailCompose.js', () => ({
   runStateSendEmail: vi.fn(),
@@ -118,6 +118,7 @@ vi.mock('../chat/fsm/templateDownload.js', () => ({
 }));
 
 import { ctx, initFsmSession } from '../chat/modules/context.js';
+import { sendChat, processJSONResponse } from '../agent/modules/llm.js';
 import { executeAgentAction } from '../chat/fsm/core.js';
 
 const PID = 'call-381';
@@ -147,6 +148,8 @@ beforeEach(() => {
     deleteResult: { event_id: 'ev-3', id: 'tpl-3', name: 'Tpl3' },
     shareResult: { id: 'tpl-4', name: 'Tpl4' },
     downloadResult: { id: 'tpl-5', name: 'Tpl5' },
+    emailDeleteResult: { requested: 2, deleted: 2, notMoved: [] },
+    emailArchiveResult: { requested: 2, archived: 2, notMoved: [] },
   };
 });
 
@@ -175,8 +178,8 @@ describe('FSM completion receives the pre-terminal state (#381)', () => {
   const simple = [
     ['calendar_event_delete', 'calendar_event_delete_list', 'calendar_event_delete_exec', { result: 'Calendar event deleted successfully.' }],
     ['contacts_delete', 'contacts_delete_list', 'contacts_delete_execute', 'Selected contact(s) deleted.'],
-    ['email_archive', 'email_archive_list', 'email_archive_execute', 'Selected emails archived.'],
-    ['email_delete', 'email_delete_list', 'email_delete_execute', 'Selected emails deleted.'],
+    ['email_archive', 'email_archive_list', 'email_archive_execute', 'All 2 selected emails archived.'],
+    ['email_delete', 'email_delete_list', 'email_delete_execute', 'All 2 selected emails deleted.'],
     ['template_create', 'template_create_list', 'template_create_exec', { result: 'Template created successfully.' }],
     ['template_edit', 'template_edit_list', 'template_edit_exec', { result: 'Template updated successfully.' }],
     ['template_delete', 'template_delete_list', 'template_delete_exec', null],
@@ -207,5 +210,21 @@ describe('FSM completion receives the pre-terminal state (#381)', () => {
     const r = await waited;
     expect(r.ok).toBe(false);
     expect(r.output).toEqual({ ok: false, error: 'boom' });
+  });
+
+  it('a planner hop to exec_success keeps the exec state as the previous state', async () => {
+    initFsmSession(PID, 'template_edit');
+    ctx.activePid = PID;
+    ctx.activeToolCallId = PID;
+    ctx.fsmSessions[PID].fsmPrevState = 'template_edit_exec';
+    ctx.fsmSessions[PID].editResult = h.results.editResult;
+    sendChat.mockResolvedValueOnce({ assistant: '{"action":"exec_success"}' });
+    processJSONResponse.mockReturnValueOnce({ action: 'exec_success' });
+    const waited = new Promise((resolve) => { ctx.fsmWaiters[PID] = { resolve }; });
+    ctx.state = 'plan_next_action';
+    await executeAgentAction();
+    const r = await waited;
+    expect(sendChat.mock.calls.at(-1)[0][0].prev_state).toBe('template_edit_exec');
+    expect(r.output).toMatchObject({ result: 'Template updated successfully.', template_id: 'tpl-2' });
   });
 });

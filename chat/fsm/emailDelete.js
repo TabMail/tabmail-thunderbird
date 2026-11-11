@@ -194,57 +194,63 @@ export async function runStateDeleteExecute() {
   let deletedCount = 0;
   const trashCache = new Map();
 
+  const notMoved = [];
   for (const email of ctx.selectedEmailList) {
+    const countBefore = deletedCount;
     try {
-      // Resolve uniqueId to internal weID if needed
-      let msgId = email.messageId; // Backward compatibility
-      if (!msgId && email.uniqueId) {
-        const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
-        const resolved = await resolveUniqueMessageKey(email.uniqueId);
-        if (!resolved) {
-          log(
-            `[DeleteExecute] Failed to resolve uniqueId '${email.uniqueId}' to one live message`,
-            "warn"
-          );
+      try {
+        // Resolve uniqueId to internal weID if needed
+        let msgId = email.messageId; // Backward compatibility
+        if (!msgId && email.uniqueId) {
+          const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+          const resolved = await resolveUniqueMessageKey(email.uniqueId);
+          if (!resolved) {
+            log(
+              `[DeleteExecute] Failed to resolve uniqueId '${email.uniqueId}' to one live message`,
+              "warn"
+            );
+            continue;
+          }
+          msgId = resolved.weID;
+        }
+
+        const header = await browser.messages.get(msgId);
+        if (!header) {
+          log(`[DeleteExecute] No header for msgId ${msgId}`, "warn");
           continue;
         }
-        msgId = resolved.weID;
-      }
 
-      const header = await browser.messages.get(msgId);
-      if (!header) {
-        log(`[DeleteExecute] No header for msgId ${msgId}`, "warn");
-        continue;
-      }
+        const acctId = header.folder?.accountId;
+        let trashFolder = trashCache.get(acctId);
+        if (trashFolder === undefined) {
+          trashFolder = await getTrashFolderForHeader(header);
+          trashCache.set(acctId, trashFolder || null);
+        }
 
-      const acctId = header.folder?.accountId;
-      let trashFolder = trashCache.get(acctId);
-      if (trashFolder === undefined) {
-        trashFolder = await getTrashFolderForHeader(header);
-        trashCache.set(acctId, trashFolder || null);
-      }
-
-      if (trashFolder) {
-        await browser.messages.move([msgId], trashFolder.id, {
-          isUserAction: true,
-        });
+        if (trashFolder) {
+          await browser.messages.move([msgId], trashFolder.id, {
+            isUserAction: true,
+          });
+          log(
+            `[DeleteExecute] Moved message ${msgId} to Trash ${trashFolder.path}.`
+          );
+          deletedCount++;
+        } else {
+          log(
+            `[DeleteExecute] Trash folder not found for account ${acctId}; skipping ${msgId}.`,
+            "warn"
+          );
+        }
+      } catch (err) {
         log(
-          `[DeleteExecute] Moved message ${msgId} to Trash ${trashFolder.path}.`
-        );
-        deletedCount++;
-      } else {
-        log(
-          `[DeleteExecute] Trash folder not found for account ${acctId}; skipping ${msgId}.`,
-          "warn"
+          `[DeleteExecute] Error processing email (uniqueId: ${
+            email.uniqueId || "unknown"
+          }, msgId: ${email.messageId || "unknown"}): ${err}`,
+          "error"
         );
       }
-    } catch (err) {
-      log(
-        `[DeleteExecute] Error processing email (uniqueId: ${
-          email.uniqueId || "unknown"
-        }, msgId: ${email.messageId || "unknown"}): ${err}`,
-        "error"
-      );
+    } finally {
+      if (deletedCount === countBefore) notMoved.push(email.uniqueId || email.messageId || "unknown");
     }
   }
 
@@ -257,7 +263,18 @@ export async function runStateDeleteExecute() {
       : `Deleted ${deletedCount} emails.`;
   streamText(agentBubble, resultText);
 
-  ctx.state = "exec_success";
+  // Record what actually moved so completeExecution reports it truthfully;
+  // a run where nothing moved is a failure, not a success.
+  const requestedCount = ctx.selectedEmailList.length;
+  const execPid = ctx.activePid || ctx.activeToolCallId || 0;
+  const execSess = execPid ? ctx.fsmSessions[execPid] : null;
+  if (execSess) execSess.deleteResult = { requested: requestedCount, deleted: deletedCount, notMoved };
+  if (deletedCount === 0) {
+    if (execSess) execSess.failReason = `None of the ${requestedCount} selected email(s) could be deleted: ${notMoved.join(", ")}.`;
+    ctx.state = "exec_fail";
+  } else {
+    ctx.state = "exec_success";
+  }
   const core = await import("./core.js");
   await core.executeAgentAction();
 }
