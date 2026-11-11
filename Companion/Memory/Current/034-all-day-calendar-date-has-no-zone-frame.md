@@ -121,8 +121,11 @@ UNTIL's day, the rewritten one keeps it)
   times through `shownEventTimesIso(details)` (keyed by `startDay`/`endDay`), never
   `new Date(details.start)`, and the edit, delete and create cards print every start and end through
   ONE formatter, `formatCardTime(naiveIso, { allDay, endAfter, timezone })` in `chat/modules/helpers.js`.
-  An all-day value prints as `<Weekday> YYYY/MM/DD` from its date digits only (weekday and the day
-  before by calendar arithmetic: no epoch, no Date object, no zone); an all-day end prints the last
+  An all-day value prints as `<Weekday> YYYY/MM/DD` from its date digits only, never through the
+  DATE's epoch or a zone: the weekday and the day before come from `new Date(Date.UTC(y, m - 1,
+  d + shift))` read back through the getUTC* getters only (the zone-free day arithmetic
+  `isValidPlainDate` and the bridge's `dayDigitsFrom` use; a local getter names the previous day
+  west of UTC, a local constructor the previous day east of it); an all-day end prints the last
   day, the day before the exclusive DTEND, never before the start shown beside it (`endAfter`), so a
   DTEND equal to DTSTART shows one day, as Google Calendar does. A timed value prints through
   `formatNaiveIsoInTimezone`, unchanged. All-day change lines read **Start date**/**End date** (the
@@ -132,7 +135,8 @@ UNTIL's day, the rewritten one keeps it)
   comparing formatted strings, which outside UTC showed an unchanged all-day start as a change. The
   Scope line names an all-day occurrence (`recurrence_id`, `recurrenceIdSlot`) by its date, taking
   the kind from the event read. Pinned by `test/calendarCardAllDayDates.test.js` (Thunderbird's own
-  dates, west and east of UTC).
+  dates, west and east of UTC, plus a four-year sweep from today over every month end, year end and
+  leap day against a local-noon oracle).
 
 ## The second filter that dropped the item
 

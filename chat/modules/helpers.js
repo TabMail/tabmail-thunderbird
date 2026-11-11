@@ -912,42 +912,26 @@ export function formatNaiveIsoInTimezone(naiveIso, timezoneId) {
 }
 
 const CARD_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-// Sakamoto's weekday offsets, one per month.
-const CARD_WEEKDAY_MONTH_OFFSETS = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-
-function isLeapYear(y) {
-  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+// A day's digits (`YYYY-MM-DD`) shifted by `shift` days, as a UTC instant read
+// back only through the getUTC* getters: zone-free civil-date arithmetic, as
+// isValidPlainDate in recurrence.js does it.
+function utcDay(day, shift = 0) {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + shift));
 }
 
-function daysInMonth(y, m) {
-  if (m === 2) return isLeapYear(y) ? 29 : 28;
-  return [4, 6, 9, 11].includes(m) ? 30 : 31;
-}
-
-const dayParts = (day) => day.split("-").map(Number);
-const dayOf = (y, m, d) => `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-
-function dayBefore(day) {
-  const [y, m, d] = dayParts(day);
-  if (d > 1) return dayOf(y, m, d - 1);
-  if (m > 1) return dayOf(y, m - 1, daysInMonth(y, m - 1));
-  return dayOf(y - 1, 12, 31);
-}
-
-function weekdayOf(day) {
-  const [y0, m, d] = dayParts(day);
-  const y = m < 3 ? y0 - 1 : y0;
-  const n = y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) + CARD_WEEKDAY_MONTH_OFFSETS[m - 1] + d;
-  return CARD_WEEKDAYS[n % 7];
-}
+const utcDigits = (dt) =>
+  `${String(dt.getUTCFullYear()).padStart(4, "0")}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 
 /**
  * A start or end as a calendar confirmation card prints it.
  *
  * An all-day value is a DATE with no zone (an all-day `naiveIso` is the date at
  * `T00:00:00`), so it is printed from its date digits alone, as
- * `<Weekday> YYYY/MM/DD`: never through an epoch, a Date object or a zone,
- * which would name the previous day west of UTC. An all-day end is exclusive
+ * `<Weekday> YYYY/MM/DD`: never through the DATE's epoch or a zone, which
+ * would name the previous day west of UTC. The weekday and the day before
+ * come from UTC arithmetic over the digits (`Date.UTC`, read back through the
+ * getUTC* getters only). An all-day end is exclusive
  * (RFC 5545 DTEND, the day after the last day); given `endAfter`, the start
  * shown on the same card, the card prints the last day, the day before the
  * end, and never a day before the start (a DTEND equal to DTSTART is one
@@ -960,10 +944,10 @@ export function formatCardTime(naiveIso, { allDay = false, endAfter = null, time
   let day = String(naiveIso).slice(0, 10);
   if (endAfter) {
     const start = String(endAfter).slice(0, 10);
-    const last = dayBefore(day);
+    const last = utcDigits(utcDay(day, -1));
     day = last < start ? start : last;
   }
-  return `${weekdayOf(day)} ${day.replaceAll("-", "/")}`;
+  return `${CARD_WEEKDAYS[utcDay(day).getUTCDay()]} ${day.replaceAll("-", "/")}`;
 }
 
 // Ensures an internal container for bubble content, so we can prepend inline icons without

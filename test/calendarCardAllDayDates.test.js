@@ -54,7 +54,7 @@ const { run: runCreate } = await import('../chat/tools/calendar_event_create.js'
 const { runStateEditCalendarEventList } = await import('../chat/fsm/calendarEdit.js');
 const { runStateDeleteCalendarEventList } = await import('../chat/fsm/calendarDelete.js');
 const { runStateCreateCalendarEventList } = await import('../chat/fsm/calendarCreate.js');
-const { streamText, formatTimestampForAgent } = await import('../chat/modules/helpers.js');
+const { streamText, formatTimestampForAgent, formatNaiveIsoInTimezone, formatCardTime } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
 const { checked } = await import('./helpers/calendarSchemaCheck.js');
 
@@ -149,7 +149,11 @@ function nativeLoaded(items, zone) {
   cal.timezoneService.UTC = new NativeZone(ICAL.Timezone.utcTimezone);
   cal.timezoneService.floating = new NativeZone(ICAL.Timezone.localTimezone);
   cal.timezoneService.defaultTimezone = new NativeZone(zone);
-  cal.timezoneService.getTimezone = (tzid) => (tzid === zone.tzid ? new NativeZone(zone) : null);
+  // The user's zone, and the other test zone for an edit given another `timezone`.
+  cal.timezoneService.getTimezone = (tzid) => {
+    const known = ZONES.find((z) => z.tz === tzid);
+    return known ? new NativeZone(known.zone) : null;
+  };
   globalThis.browser.tmCalendar = checked(loaded.api, []);
   return loaded;
 }
@@ -213,7 +217,12 @@ function expectDatesOnly(text) {
   }
 }
 
+// Four years and a day: always holds 48 month ends, 4 year ends and a leap day.
+const SWEEP_DAYS = 4 * 365 + 1;
+
 for (const { name, tz, zone } of ZONES) {
+  // Another zone than the user's, for an edit given a `timezone`.
+  const otherTz = ZONES.find((z) => z.tz !== tz).tz;
   describe(`calendar cards print all-day dates from their digits, the user ${name}`, () => {
     let was;
     beforeAll(() => { was = process.env.TZ; process.env.TZ = tz; });
@@ -268,7 +277,90 @@ for (const { name, tz, zone } of ZONES) {
         expect(change(changes, 'Start time')).toBe(`  ${cardDate(0)} → **${formatTimestampForAgent(new Date(at(1, 9)))}**`);
         expect(change(changes, 'End time')).toBe(`  ${cardDate(0)} → **${formatTimestampForAgent(new Date(at(1, 10)))}**`);
       });
+
+      // The new end's last day is never before the start the edit leaves: the
+      // given start, else the stored one.
+      it(`${kind}: an end given alone prints its last day against the stored start, with no Start line`, async () => {
+        const { changes, text } = await editCard([allDayEvent(zoneOf(zone))], zone, { end_iso: midnight(3) });
+        expect(change(changes, 'Start date')).toBeNull();
+        expect(change(changes, 'Start time')).toBeNull();
+        expect(change(changes, 'End date')).toBe(`  ${cardDate(0)} → **${cardDate(2)}**`);
+        expectDatesOnly(text);
+      });
+
+      it(`${kind}: a one-day event moved earlier than its own day prints the new end against the new start`, async () => {
+        const later = fakeEvent({ id: 'evt', title: 'Holiday', startDate: dateOn(5, zoneOf(zone)), endDate: dateOn(6, zoneOf(zone)) });
+        const { changes } = await editCard([later], zone, { start_iso: midnight(0), end_iso: midnight(1) });
+        expect(change(changes, 'Start date')).toBe(`  ${cardDate(5)} → **${cardDate(0)}**`);
+        expect(change(changes, 'End date')).toBe(`  ${cardDate(5)} → **${cardDate(0)}**`);
+      });
+
+      it(`${kind}: an all-day edit given a timezone prints dates only, and a restated day shows no line`, async () => {
+        const { changes, text } = await editCard([allDayEvent(zoneOf(zone))], zone, { start_iso: midnight(0), end_iso: midnight(3), timezone: otherTz });
+        expect(change(changes, 'Start date')).toBeNull();
+        expect(change(changes, 'Start time')).toBeNull();
+        expect(change(changes, 'End date')).toBe(`  ${cardDate(0)} → **${cardDate(2)}**`);
+        expect(changes).toContain(`**Timezone:**\n  ${otherTz}`);
+        expectDatesOnly(text);
+      });
+
+      it(`${kind}: an all-day event changed to timed on its own day at 00:00 keeps the Start line`, async () => {
+        const { changes } = await editCard([allDayEvent(zoneOf(zone))], zone, { all_day: false, start_iso: at(0, 0), end_iso: at(0, 1) });
+        expect(change(changes, 'Start time')).toBe(`  ${cardDate(0)} → **${formatTimestampForAgent(new Date(at(0, 0)))}**`);
+        expect(change(changes, 'End time')).toBe(`  ${cardDate(0)} → **${formatTimestampForAgent(new Date(at(0, 1)))}**`);
+      });
     }
+
+    it('a timed edit with the same digits in another timezone shows the Start and End time lines', async () => {
+      const timed = fakeEvent({ id: 'evt', title: 'Sync', startDate: timeOn(0, 9, zone), endDate: timeOn(0, 10, zone) });
+      const { changes } = await editCard([timed], zone, { start_iso: at(0, 9), end_iso: at(0, 10), timezone: otherTz });
+      expect(change(changes, 'Start time')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 9)))} → **${formatNaiveIsoInTimezone(at(0, 9), otherTz)}**`);
+      expect(change(changes, 'End time')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 10)))} → **${formatNaiveIsoInTimezone(at(0, 10), otherTz)}**`);
+    });
+
+    it('a timed 09:00 event made all-day on its own day keeps the Start line', async () => {
+      const timed = fakeEvent({ id: 'evt', title: 'Sync', startDate: timeOn(0, 9, zone), endDate: timeOn(0, 10, zone) });
+      const { changes } = await editCard([timed], zone, { all_day: true, start_iso: midnight(0), end_iso: midnight(1) });
+      expect(change(changes, 'Start date')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 9)))} → **${cardDate(0)}**`);
+      expect(change(changes, 'End date')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 10)))} → **${cardDate(0)}**`);
+    });
+
+    // A sweep over about four years of days from today (every month end, year
+    // end and leap day in it), against an oracle that walks the process's own
+    // calendar at local noon, independent of the formatter.
+    it('every all-day day for four years from today prints its weekday and date, and an end its last day', () => {
+      const sweepDay = (n) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + n); return d; };
+      const digitsOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const printed = (d) => `${WEEKDAYS[d.getDay()]} ${digitsOf(d).replaceAll('-', '/')}`;
+      const seen = { monthEnds: 0, yearEnds: 0, leapDays: 0 };
+      for (let n = 0; n <= SWEEP_DAYS; n += 1) {
+        const d = sweepDay(n);
+        const next = sweepDay(n + 1);
+        const iso = `${digitsOf(d)}T00:00:00`;
+        const nextIso = `${digitsOf(next)}T00:00:00`;
+        expect(formatCardTime(iso, { allDay: true }), iso).toBe(printed(d));
+        // A one-day event's exclusive end is the next day; its last day is this one.
+        expect(formatCardTime(nextIso, { allDay: true, endAfter: iso }), nextIso).toBe(printed(d));
+        // A stored end equal to the start is never printed before the start.
+        expect(formatCardTime(iso, { allDay: true, endAfter: iso }), iso).toBe(printed(d));
+        if (next.getDate() === 1) seen.monthEnds += 1;
+        if (next.getDate() === 1 && next.getMonth() === 0) seen.yearEnds += 1;
+        if (d.getMonth() === 1 && d.getDate() === 29) seen.leapDays += 1;
+      }
+      expect(seen.monthEnds).toBeGreaterThanOrEqual(48);
+      expect(seen.yearEnds).toBeGreaterThanOrEqual(4);
+      expect(seen.leapDays).toBeGreaterThanOrEqual(1);
+    });
+
+    // On the harness's dates: an occurrence on day 7 moved on its own to day 8.
+    it('a this-and-following edit of an all-day series names the occurrence and its original slot by their dates', async () => {
+      const moved = fakeEvent({ id: 'evt', title: 'Moved', startDate: fakeDate(day(8)), endDate: fakeDate(day(9)), recurrenceId: fakeDate(day(7)) });
+      const ev = fakeEvent({ id: 'evt', title: 'Leave', startDate: fakeDate(day(0)), endDate: fakeDate(day(1)) });
+      ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=WEEKLY;COUNT=4')], { exceptions: [moved] });
+      ev.recurrenceInfo.item = ev;
+      const { changes } = await editCard([ev], null, { edit_scope: 'this_and_following', recurrence_id: midnight(8), title: 'Away' });
+      expect(changes).toContain(`**Scope:** This occurrence and all future occurrences (starting ${cardDate(8)}, originally ${cardDate(7)})`);
+    });
 
     it('a timed event changed to all-day shows the old time and the new date', async () => {
       const timed = fakeEvent({ id: 'evt', title: 'Sync', startDate: timeOn(0, 17, zone), endDate: timeOn(0, 18, zone) });
