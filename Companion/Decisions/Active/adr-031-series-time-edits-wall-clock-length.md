@@ -48,8 +48,10 @@ no change.
 - **One zone conversion.** A time given in another zone reaches the event's frame only through
   `atInstantInFrameOf` (whole days by the clock, then the elapsed rest), via `intoFrameOf`. A null result
   (the first pass of a repeated hour, which the frame cannot store) and digits the given zone skips are
-  refusals made before any write. No function on the edit path calls `getInTimezone`; a source fence
-  test parses the bridge and pins it.
+  refusals made before any write. No function that reads or writes an edit's times (the set the source
+  fence test owns; it parses the bridge and pins it) calls `getInTimezone`. The RECURRENCE-ID conversions
+  (`addExdateToItem`, `isFirstOccurrence`, the split point in `splitRecurringEvent`) and the all-day UNTIL
+  day in `asAllDayItem` still call it; they remain and are a separate known limit (#367).
 - **The card and the no-change path read the check.** The check (`check_only`) returns `changes`,
   `times` (from the named occurrence as printed to that occurrence as written) and
   `resetsChangedOccurrences`; the card's time lines come only from `times` (no Timezone line), and
