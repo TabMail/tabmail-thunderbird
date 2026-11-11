@@ -255,7 +255,7 @@ describe('an all-day event given a time of day without all_day is refused, askin
     const moved = { start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${nextDay(MOVED_DAY)}T00:00:00`, check_only: true };
     for (const scope of [{}, { edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00` }, { edit_scope: 'this_and_following', recurrence_id: `${SPLIT_DAY}T00:00:00` }]) {
       const res = await loaded.api.modifyCalendarEvent({ event_id: loaded.res.event_id, calendar_id: 'cal1', ...scope, ...moved });
-      expect(res).toEqual({ ok: true });
+      expect(res).toMatchObject({ ok: true, changes: true });
     }
     expect(loaded.modifications).toEqual([]);
     expect(loaded.calendar.items).toHaveLength(1);

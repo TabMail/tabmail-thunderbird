@@ -419,11 +419,12 @@ describe('calendar_event_edit', () => {
       expect(sess.editEventArgs).toBeUndefined();
     });
 
-    it('a check that throws leaves the edit to the bridge', async () => {
+    it('a check that throws refuses the edit before the card', async () => {
       browser.tmCalendar.modifyCalendarEvent.mockImplementation(async () => { throw new Error('bridge down'); });
       const sess = await runEdit({ event_id: 'evt1', start_iso: '2099-10-20T00:00:00' }, 'pid-chk-4');
-      expect(sess.failReason).toBeUndefined();
-      expect(sess.editEventArgs).toMatchObject({ start_iso: '2099-10-20T00:00:00' });
+      expect(sess.failReason).toBe('the calendar could not check this edit (Error: bridge down); try again');
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
     });
   });
 

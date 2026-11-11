@@ -7,8 +7,10 @@
 // longer or shorter. The start kept is the item's own: the event's, one
 // occurrence's current start (moved or not), a split's slot, and an occurrence
 // changed on its own that the edit names keeps its own start. On a whole
-// series an end alone moves no start, so the occurrences changed on their own
-// keep their own times and excluded dates stay excluded. Every item's new times
+// series (or a split's part) an end alone is a new length, measured from the
+// start of the occurrence it names: the series' first occurrence and each
+// occurrence changed on its own take that length from their own starts; it
+// moves no start, so excluded dates stay excluded. Every item's new times
 // are checked: an end before the start, a start and an end of different kinds,
 // and an all-day end on or before the start are refused before the
 // confirmation card, with nothing written. Through the real bridge and the
@@ -183,7 +185,7 @@ describe('a whole series given an end alone keeps every start', () => {
     extraItems: [recurrenceDate('EXDATE', fakeDateTime(day(7), 17))],
   });
 
-  it('every occurrence keeps its start, the ones changed on their own keep their own times, an excluded date stays excluded', async () => {
+  it('every occurrence keeps its start and takes the new length, the ones changed on their own from their own starts; an excluded date stays excluded', async () => {
     const master = full();
     const starts = seriesOccurrences(master, ...RANGE()).map(({ start }) => start.toString());
     expect(starts).not.toContain(digits(7, 17));
@@ -194,43 +196,43 @@ describe('a whole series given an end alone keeps every start', () => {
     expect(item.endDate.toString()).toBe(digits(0, 19));
     expect(seriesOccurrences(item, ...RANGE()).map(({ start }) => start.toString())).toEqual(starts);
     expect(item.recurrenceInfo.getRecurrenceItems().find((r) => r.icalProperty.propertyName === 'RRULE').icalProperty.value).toBe('FREQ=DAILY;COUNT=10');
-    expect(changedOf(item, 3).endDate.toString()).toBe(digits(3, 18));
-    expect(changedOf(item, 4).endDate.toString()).toBe(digits(4, 18, 30));
+    expect(changedOf(item, 3).endDate.toString()).toBe(digits(3, 19));
+    expect(changedOf(item, 4).endDate.toString()).toBe(digits(4, 19));
     expect(changedOf(item, 5).startDate.toString()).toBe(digits(5, 19));
-    expect(changedOf(item, 5).endDate.toString()).toBe(digits(5, 20));
+    expect(changedOf(item, 5).endDate.toString()).toBe(digits(5, 21));
     expect(occurrences(item).filter((k) => / (Kept|Long|Moved)$/.test(k))).toHaveLength(3);
   });
 
-  it('named from its first occurrence, moved on its own to 19:00: it keeps its start and takes the end', async () => {
+  it('named from its first occurrence, moved on its own to 19:00: the length is read from 19:00, so it ends at the end given and the series lasts as long', async () => {
     const master = series({ exceptions: [changed(0, 'Early', fakeDateTime(day(0), 19), fakeDateTime(day(0), 20))] });
     const { res, saved } = await edit(master, { edit_scope: 'all', recurrence_id: at(0, 19), end_iso: at(0, 21) });
     expect(res, res.error).toMatchObject({ ok: true });
     const item = saved[0];
-    expect([item.startDate.toString(), item.endDate.toString()]).toEqual([digits(0, 17), digits(0, 21)]);
+    expect([item.startDate.toString(), item.endDate.toString()]).toEqual([digits(0, 17), digits(0, 19)]);
     const x = changedOf(item, 0);
     expect([x.startDate.toString(), x.endDate.toString(), x.title]).toEqual([digits(0, 19), digits(0, 21), 'Early']);
   });
 
   it('named from its first occurrence, moved on its own to 19:00, given an end before 19:00, is refused with nothing written', async () => {
     const master = () => series({ exceptions: [changed(0, 'Early', fakeDateTime(day(0), 19), fakeDateTime(day(0), 20))] });
-    await expectRefused(master, { edit_scope: 'all', recurrence_id: at(0, 19), end_iso: at(0, 18, 30) }, /keeps its own start: the event would end before it starts/);
+    await expectRefused(master, { edit_scope: 'all', recurrence_id: at(0, 19), end_iso: at(0, 18, 30) }, /^the event would end before it starts\. An end_iso alone changes only the end/);
   });
 });
 
 describe('a split given an end alone starts at the slot', () => {
   const withMoved = () => series({ exceptions: [changed(5, 'Moved', fakeDateTime(day(5), 19), fakeDateTime(day(5), 20))] });
 
-  it('at an occurrence moved on its own to 19:00 (its slot 17:00): the part starts at 17:00, and that occurrence keeps 19:00 and takes the end', async () => {
+  it('at an occurrence moved on its own to 19:00 (its slot 17:00): the part starts at 17:00 and takes the length read from 19:00; that occurrence keeps 19:00 and takes the end', async () => {
     const { res, saved } = await edit(withMoved(), { edit_scope: 'this_and_following', recurrence_id: at(5, 19), end_iso: at(5, 21) });
     expect(res, res.error).toMatchObject({ ok: true });
     const part = saved.find((it) => it.id !== 'evt');
-    expect([part.startDate.toString(), part.endDate.toString()]).toEqual([digits(5, 17), digits(5, 21)]);
+    expect([part.startDate.toString(), part.endDate.toString()]).toEqual([digits(5, 17), digits(5, 19)]);
     const x = changedOf(part, 5);
     expect([x.startDate.toString(), x.endDate.toString(), x.title]).toEqual([digits(5, 19), digits(5, 21), 'Moved']);
   });
 
   it('there, an end before 19:00 is refused with nothing written', async () => {
-    await expectRefused(withMoved, { edit_scope: 'this_and_following', recurrence_id: at(5, 19), end_iso: at(5, 18, 30) }, /keeps its own start: the event would end before it starts/);
+    await expectRefused(withMoved, { edit_scope: 'this_and_following', recurrence_id: at(5, 19), end_iso: at(5, 18, 30) }, /^the event would end before it starts\. An end_iso alone changes only the end/);
   });
 
   it('the card names that occurrence by the time the user sees and states its original time', async () => {
@@ -263,10 +265,14 @@ describe('a split given an end alone starts at the slot', () => {
     expect(await card(pid)).toContain(`(starting ${shown(movedTo)}, originally ${shown(slot)})`);
   });
 
-  it('given an end before the slot, the refusal names the slot the part would start at', async () => {
-    const early = () => series({ exceptions: [changed(5, 'Early', fakeDateTime(day(5), 15), fakeDateTime(day(5), 16))] });
-    await expectRefused(early, { edit_scope: 'this_and_following', recurrence_id: at(5, 15), end_iso: at(5, 16, 30) },
-      new RegExp(`^the following occurrences start at ${at(5, 17)}, their usual time: the event would end before it starts\\. An end_iso alone`));
+  it('at an occurrence moved before its slot, an end before the slot is a length read from that occurrence: the part starts at the slot and lasts as long', async () => {
+    const early = series({ exceptions: [changed(5, 'Early', fakeDateTime(day(5), 15), fakeDateTime(day(5), 16))] });
+    const { res, saved } = await edit(early, { edit_scope: 'this_and_following', recurrence_id: at(5, 15), end_iso: at(5, 16, 30) });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const part = saved.find((it) => it.id !== 'evt');
+    expect([part.startDate.toString(), part.endDate.toString()]).toEqual([digits(5, 17), digits(5, 18, 30)]);
+    const x = changedOf(part, 5);
+    expect([x.startDate.toString(), x.endDate.toString(), x.title]).toEqual([digits(5, 15), digits(5, 16, 30), 'Early']);
   });
 
   it('the card states no original time for an occurrence at its slot', async () => {

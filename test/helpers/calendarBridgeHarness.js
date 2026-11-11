@@ -26,6 +26,11 @@
 // and a changed occurrence at its own time. Setting a master's start moves its
 // recurrence the way CalRecurrenceInfo.onStartDateChange does, and setting its
 // id renames its changed occurrences (onIdChange).
+//
+// Every one of these also runs on Thunderbird's own dates and lengths
+// (test/fixtures/mozilla, through nativeCalendarDates.js): on them the harness
+// keys, expands, moves and searches with their own conversions and clock
+// arithmetic instead of the fakes'.
 
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -43,11 +48,24 @@ export function fixedZone(tzid, offsetMinutes) {
 const pad2 = (n) => String(n).padStart(2, '0');
 
 
-// A calIDuration-like length (CalDuration): its seconds and sign, and a copy
-// (CalDuration.clone), so a bridge that copies a length runs as in Thunderbird.
-function fakeDuration(inSeconds, isNegative) {
-  return { inSeconds, isNegative, clone: () => fakeDuration(inSeconds, isNegative) };
+// A calIDuration-like length (CalDuration): its seconds, signed and settable
+// as CalDuration.inSeconds is (toSeconds / fromSeconds), its sign, and a copy
+// (CalDuration.clone), so a bridge that makes or copies a length runs as in
+// Thunderbird.
+function fakeDuration(seconds = 0) {
+  let s = seconds;
+  const d = {
+    get inSeconds() { return s; },
+    set inSeconds(v) { s = v; },
+    get isNegative() { return s < 0; },
+    set isNegative(v) { if (!!v !== s < 0) s = -s; },
+    clone: () => fakeDuration(s),
+  };
+  return d;
 }
+// A length's signed seconds: a calIDuration's, or a plain `{ inSeconds,
+// isNegative }` a test writes with unsigned seconds and a sign.
+const signedSeconds = (dur) => (dur.isNegative && dur.inSeconds > 0 ? -dur.inSeconds : dur.inSeconds);
 export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second = 0, isDate = false, timezone } = {}) {
   const dt = { year, month, day, hour, minute, second, isDate, timezone: timezone || (isDate ? UTC_ZONE : LOCAL_ZONE) };
   dt.resetTo = (y, mo, d, h, mi, s, tz) => {
@@ -94,13 +112,12 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
     return Math.sign(epochMs() - other.nativeTime / 1000);
   };
   dt.subtractDate = (other) => {
-    const seconds = Math.round((epochMs() - other.nativeTime / 1000) / 1000);
-    return fakeDuration(Math.abs(seconds), seconds < 0);
+    return fakeDuration(Math.round((epochMs() - other.nativeTime / 1000) / 1000));
   };
   dt.addDuration = (dur) => {
-    const sign = dur.isNegative ? -1 : 1;
+    const seconds = signedSeconds(dur);
     // ical.js adds only a duration's whole days to a DATE (Time.adjust).
-    const ms = sign * (dt.isDate ? Math.floor(dur.inSeconds / 86400) * 86400 : dur.inSeconds) * 1000;
+    const ms = (dt.isDate ? Math.trunc(seconds / 86400) * 86400 : seconds) * 1000;
     if (dt.isDate || dt.timezone !== LOCAL_ZONE) {
       // ical.js steps the value's own digits and keeps its zone and value type.
       const u = new Date(Date.UTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second) + ms);
@@ -267,8 +284,20 @@ export function fakeEvent({
 // it is floating or UTC (a DATE is its digits). A DATE and a same-day DATE-TIME
 // are different keys.
 function ridKey(dt) {
+  if (isNative(dt)) {
+    const tzid = dt.timezone.tzid;
+    return dt.isDate || tzid === 'UTC' || tzid === 'floating' ? dt.icalString : dt.getInTimezone(NATIVE_UTC).icalString;
+  }
   return dt.isDate || dt.timezone === UTC_ZONE || dt.timezone === FLOATING_ZONE ? dt.toString() : dt.getInTimezone(UTC_ZONE).toString();
 }
+
+// Thunderbird's own dates (test/fixtures/mozilla, loaded by
+// nativeCalendarDates.js) carry their ical.js value as `innerObject`; on them
+// the harness uses their own conversions, in ical.js's UTC zone.
+const isNative = (dt) => !!dt?.innerObject;
+const NATIVE_UTC = { wrappedJSObject: { innerObject: ICAL.Timezone.utcTimezone } };
+// A date's iCalendar digits ("YYYYMMDD" or "YYYYMMDDTHHMMSS"), without its zone.
+const icalOf = (dt) => (isNative(dt) ? dt.icalString : dt.toString());
 
 /**
  * A calIRecurrenceInfo holding RRULE / RDATE / EXDATE items, each an object
@@ -294,6 +323,9 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
   const findException = (rid) => changed.findIndex((ex) => ridKey(ex.recurrenceId) === ridKey(rid));
   const info = {
     get item() { return base; },
+    // CalRecurrenceInfo.getOccurrenceFor: the changed occurrence at that
+    // RECURRENCE-ID, else the series' plain occurrence there (createProxy).
+    getOccurrenceFor: (rid) => info.getExceptionFor(rid) || base.createProxy(rid),
     set item(value) {
       if (value && value === base) return;
       base = value;
@@ -347,7 +379,9 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
       // (Read field by field, so a Thunderbird date from test/fixtures/mozilla,
       // whose fields are getters, takes part too.)
       const inUtc = (dt) => (dt.isDate ? fakeCalDateTime({ year: dt.year, month: dt.month, day: dt.day, isDate: true, timezone: UTC_ZONE }) : dt);
-      const diff = inUtc(newStart).subtractDate(inUtc(oldStart));
+      const diff = isNative(newStart)
+        ? newStart.getInTimezone(NATIVE_UTC).subtractDate(oldStart.getInTimezone(NATIVE_UTC))
+        : inUtc(newStart).subtractDate(inUtc(oldStart));
       for (const r of list) {
         if (r.date) {
           const moved = r.date.clone();
@@ -430,9 +464,17 @@ function ruleOccurrences(value, start, rangeStart, rangeEnd, maxCount) {
   for (let n = 0; n < MAX_OCCURRENCES_PER_QUERY; n++) {
     const next = iterator.next();
     if (!next) break;
-    const occ = fakeCalDateTime({
-      year: next.year, month: next.month - 1, day: next.day, hour: next.hour, minute: next.minute, second: next.second, isDate: start.isDate, timezone: start.timezone,
-    });
+    let occ;
+    if (isNative(start)) {
+      // Thunderbird's own date in the start's zone, at the stepped digits.
+      occ = start.clone();
+      occ.resetTo(next.year, next.month - 1, next.day, next.hour, next.minute, next.second, start.timezone);
+      occ.isDate = start.isDate;
+    } else {
+      occ = fakeCalDateTime({
+        year: next.year, month: next.month - 1, day: next.day, hour: next.hour, minute: next.minute, second: next.second, isDate: start.isDate, timezone: start.timezone,
+      });
+    }
     if (until && occ.nativeTime / 1000 > untilInstantMs(until)) break;
     if (rangeEnd && occ.compare(rangeEnd) >= 0) break;
     if (rangeStart && occ.compare(rangeStart) < 0) continue;
@@ -458,7 +500,7 @@ function fakeRecurrenceRule() {
     get untilDate() { return untilOfRule(prop?.value || ''); },
     set untilDate(dt) {
       const parts = String(prop.value).split(';').filter((p) => !/^UNTIL=/i.test(p));
-      if (dt) parts.push(`UNTIL=${dt.isDate || dt.timezone === FLOATING_ZONE ? dt.toString() : dt.getInTimezone(UTC_ZONE).toString()}`);
+      if (dt) parts.push(`UNTIL=${ridKey(dt)}`);
       rule.icalProperty = { propertyName: 'RRULE', value: parts.join(';') };
     },
     getOccurrences: (start, rangeStart, rangeEnd, maxCount) => ruleOccurrences(prop.value, start, rangeStart, rangeEnd, maxCount),
@@ -479,7 +521,7 @@ function fakeRecurrenceDate() {
     isNegative: false,
     get date() { return date; },
     set date(value) { date = value; },
-    get icalProperty() { return { propertyName: item.isNegative ? 'EXDATE' : 'RDATE', value: date ? date.toString() : '' }; },
+    get icalProperty() { return { propertyName: item.isNegative ? 'EXDATE' : 'RDATE', value: date ? icalOf(date) : '' }; },
     clone() {
       const copy = fakeRecurrenceDate();
       copy.isNegative = item.isNegative;
@@ -543,8 +585,9 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
   // an excluded slot still shows at its own time in a range without the slot.
   const searchStart = rangeStart.clone();
   if (item.endDate && item.startDate) {
-    const duration = item.endDate.subtractDate(item.startDate);
-    searchStart.addDuration({ inSeconds: duration.inSeconds, isNegative: true });
+    const back = item.endDate.subtractDate(item.startDate);
+    back.inSeconds = -back.inSeconds;
+    searchStart.addDuration(back);
   }
   const removed = new Set(items
     .filter((r) => r.date && r.isNegative && r.date.compare(searchStart) >= 0 && r.date.compare(rangeEnd) < 0)
@@ -553,7 +596,7 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
   // characters of the occurrence's own date in its own zone (bug 734245), a
   // changed one by its RECURRENCE-ID; a DATE-TIME one only its own instant.
   const removedDays = new Set([...removed].filter((key) => key.length === 8));
-  const onRemovedDay = (dt) => removedDays.has(dt.toString().slice(0, 8));
+  const onRemovedDay = (dt) => removedDays.has(icalOf(dt).slice(0, 8));
   const changed = info.getExceptionIds().map((rid) => info.getExceptionFor(rid))
     .filter((ex) => !removed.has(ridKey(ex.recurrenceId)) && !onRemovedDay(ex.recurrenceId));
   for (const key of removed) dates.delete(key);
@@ -671,12 +714,14 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   const ctx = vm.createContext({
     Date, ReadableStream, Intl,
     console,
-    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIDateTime: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
-    // The datetime contract is the only XPCOM lookup the query/details/modify
-    // paths need; timers are optional (the bridge resolves without them).
+    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIDateTime: {}, calIDuration: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
+    // The datetime and duration contracts and the recurrence and event ones
+    // are the XPCOM lookups the query/details/modify paths need; timers are
+    // optional (the bridge resolves without them).
     Cc: new Proxy({}, {
       get(_t, key) {
         if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => fakeCalDateTime() };
+        if (key === '@mozilla.org/calendar/duration;1') return { createInstance: () => fakeDuration() };
         if (key === '@mozilla.org/calendar/recurrence-rule;1') return { createInstance: () => fakeRecurrenceRule() };
         if (key === '@mozilla.org/calendar/recurrence-info;1') return { createInstance: () => fakeRecurrenceInfo() };
         if (key === '@mozilla.org/calendar/recurrence-date;1') return { createInstance: () => fakeRecurrenceDate() };

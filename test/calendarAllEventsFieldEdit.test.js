@@ -59,7 +59,7 @@ vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ t
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}) }));
 
 const { loadCalendarBridge, fakeAttendee, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem } = await import('./helpers/calendarBridgeHarness.js');
-const { run: editRun } = await import('../chat/tools/calendar_event_edit.js');
+const { run: editRun, completeExecution } = await import('../chat/tools/calendar_event_edit.js');
 const { runStateEditCalendarEventExec, runStateEditCalendarEventList } = await import('../chat/fsm/calendarEdit.js');
 const { streamText } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
@@ -369,10 +369,30 @@ describe('a field the edit only restates is no change', () => {
     for (const [rid, was] of before) expect(after.get(rid), rid).toEqual({ ...was, location: 'Room C' });
   });
 
-  it('"All events" restating the place alone: the card shows no Location line, and nothing is changed', async () => {
-    const { card, before, after } = await confirmEdit(withOwnPlace(), { edit_scope: 'all', location: 'Room A' });
-    expect(card).not.toContain('**Location:**');
-    expect(after).toEqual(before);
+  it('"All events" restating the place alone: no card is shown, nothing is written, and the assistant is told nothing changed', async () => {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [withOwnPlace()] });
+    globalThis.browser.tmCalendar = loaded.api;
+    const before = await shown(loaded.api);
+    const pid = `pid-restate-${nextPid += 1}`;
+    ctx.fsmSessions[pid] = {};
+    ctx.state = null;
+    streamText.mockClear();
+    await editRun({ event_id: 'standup', calendar_id: 'cal1', edit_scope: 'all', location: 'Room A' }, { callId: pid });
+    await new Promise((r) => setTimeout(r, 5));
+    const sess = ctx.fsmSessions[pid];
+    expect(sess.failReason).toBeUndefined();
+    expect(sess.editEventArgs).toBeUndefined();
+    expect(ctx.state).toBe('exec_success');
+    expect(streamText.mock.calls.some((c) => String(c[1]).includes('Proposed changes:'))).toBe(false);
+    const was = ctx.activePid;
+    ctx.activePid = pid;
+    try {
+      expect(await completeExecution(ctx.state, sess.fsmPrevState)).toMatchObject({ ok: true, result: expect.stringMatching(/^Nothing changed/) });
+    } finally {
+      ctx.activePid = was;
+    }
+    expect(loaded.modifications).toEqual([]);
+    expect(await shown(loaded.api)).toEqual(before);
   });
 
   it('"All events" restating the series\' title with new notes: the changed occurrence keeps its own title, and the card shows no Title line', async () => {
