@@ -162,6 +162,7 @@ describe('email_delete', () => {
       ctx.fsmSessions['pid-delete-done'] = { deleteResult: { requested: 1, deleted: 1, notMoved: [] } };
       const result = await deleteComplete('done', 'email_delete_execute');
       ctx.activePid = 0;
+      delete ctx.fsmSessions['pid-delete-done'];
       expect(result).toBe('Selected email deleted.');
     });
 
@@ -200,6 +201,7 @@ describe('email_archive', () => {
       ctx.fsmSessions['pid-archive-done'] = { archiveResult: { requested: 1, archived: 1, notMoved: [] } };
       const result = await archiveComplete('done', 'email_archive_execute');
       ctx.activePid = 0;
+      delete ctx.fsmSessions['pid-archive-done'];
       expect(result).toBe('Selected email archived.');
     });
 

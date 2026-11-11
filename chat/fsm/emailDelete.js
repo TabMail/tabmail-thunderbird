@@ -97,6 +97,18 @@ export async function runStateDeleteListEmails() {
     );
   }
 
+  // One entry per message: a repeated id (e.g. the same unique_id sent twice)
+  // would otherwise be moved once and then reported as not moved.
+  {
+    const seen = new Set();
+    deleteContextArray = deleteContextArray.filter((e) => {
+      const key = e.uniqueId || e.internalId;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   let assistantText = "";
   if (deleteContextArray.length > 1) {
     assistantText = `${deleteContextArray.length} messages to delete.\n`;
@@ -270,7 +282,11 @@ export async function runStateDeleteExecute() {
   const execSess = execPid ? ctx.fsmSessions[execPid] : null;
   if (execSess) execSess.deleteResult = { requested: requestedCount, deleted: deletedCount, notMoved };
   if (deletedCount === 0) {
-    if (execSess) execSess.failReason = `None of the ${requestedCount} selected email(s) could be deleted: ${notMoved.join(", ")}.`;
+    if (execSess) {
+      execSess.failReason = requestedCount === 0
+        ? "No emails were selected."
+        : `None of the ${requestedCount} selected email(s) could be deleted: ${notMoved.join(", ")}.`;
+    }
     ctx.state = "exec_fail";
   } else {
     ctx.state = "exec_success";

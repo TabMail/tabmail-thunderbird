@@ -122,6 +122,18 @@ export async function runStateArchiveListEmails() {
     );
   }
 
+  // One entry per message: a repeated id (e.g. the same unique_id sent twice)
+  // would otherwise be moved once and then reported as not moved.
+  {
+    const seen = new Set();
+    archiveContextArray = archiveContextArray.filter((e) => {
+      const key = e.uniqueId || e.internalId;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   let assistantText = "";
   if (archiveContextArray.length > 1) {
     assistantText = `${archiveContextArray.length} messages to archive.\n`;
@@ -310,7 +322,11 @@ export async function runStateArchiveExecute() {
   const execSess = execPid ? ctx.fsmSessions[execPid] : null;
   if (execSess) execSess.archiveResult = { requested: requestedCount, archived: archivedCount, notMoved };
   if (archivedCount === 0) {
-    if (execSess) execSess.failReason = `None of the ${requestedCount} selected email(s) could be archived: ${notMoved.join(", ")}.`;
+    if (execSess) {
+      execSess.failReason = requestedCount === 0
+        ? "No emails were selected."
+        : `None of the ${requestedCount} selected email(s) could be archived: ${notMoved.join(", ")}.`;
+    }
     ctx.state = "exec_fail";
   } else {
     ctx.state = "exec_success";
