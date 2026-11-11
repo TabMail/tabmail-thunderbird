@@ -42,8 +42,7 @@ vi.mock('../chat/modules/context.js', () => ({
 
 vi.mock('../chat/modules/converse.js', () => ({ awaitUserInput: vi.fn() }));
 vi.mock('../chat/modules/helpers.js', () => ({
-  formatNaiveIsoInTimezone: vi.fn((iso) => iso),
-  formatTimestampForAgent: vi.fn((d) => String(d)),
+  formatCardTime: vi.fn((iso) => iso),
   streamText: vi.fn(),
   toNaiveIso: vi.fn((s) => s),
 }));
