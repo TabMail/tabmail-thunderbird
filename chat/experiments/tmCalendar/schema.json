@@ -17,7 +17,7 @@
         "parameters": [
           { "name": "event_id", "type": "string", "description": "Event identifier" },
           { "name": "calendar_id", "type": "string", "optional": true, "description": "Optional calendar ID for faster lookup. If provided, searches this calendar first." },
-          { "name": "recurrence_id", "type": "string", "optional": true, "description": "Optional start_iso of an occurrence of a repeating event, as the read tools show it; the result then says whether it is the series' first occurrence." }
+          { "name": "recurrence_id", "type": "string", "optional": true, "description": "Optional start_iso of an occurrence of a repeating event, as the read tools show it; the result then says whether it is the series' first occurrence, and its original time when it was moved off it." }
         ],
         "returns": {
           "type": "object",
@@ -47,6 +47,7 @@
             "calendarName": { "type": "string" },
             "isRecurring": { "type": "boolean" },
             "recurrenceIdIsFirst": { "type": "boolean", "optional": true, "description": "With recurrence_id: whether it names the series' first occurrence; absent when it names no single occurrence." },
+            "recurrenceIdSlot": { "type": "string", "optional": true, "description": "With recurrence_id naming an occurrence moved off its usual time: that usual (original) time, as the read tools show a start_iso; absent otherwise." },
             "recurrence": { "type": "object", "optional": true, "additionalProperties": { "type": "any" }, "description": "The rule in the create/edit tools' fields (freq, interval, count, until as the last day, byDay, byMonthDay, byMonth, wkst; other = parts those fields cannot express); null when the event does not repeat." },
             "transparency": { "type": "string", "description": "Event availability: 'busy' or 'free'" },
             "error": { "type": "string", "description": "Error message if ok is false" }

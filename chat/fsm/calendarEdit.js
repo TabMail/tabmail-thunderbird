@@ -177,7 +177,11 @@ function formatChangesForDisplay(editArgs, currentDetails) {
     if (scope === "this_only" && a.recurrence_id) {
       lines.push(`**Scope:** Just this occurrence (${a.recurrence_id})`);
     } else if (scope === "this_and_following" && a.recurrence_id) {
-      lines.push(`**Scope:** This occurrence and all future occurrences (starting ${a.recurrence_id})`);
+      // Named by the start the user sees; an occurrence moved off its usual
+      // time also shows that original time, where the following part starts
+      // unless the edit gives a new start.
+      const originally = d.recurrenceIdSlot ? `, originally ${d.recurrenceIdSlot}` : "";
+      lines.push(`**Scope:** This occurrence and all future occurrences (starting ${a.recurrence_id}${originally})`);
     } else if (scope === "all") {
       lines.push(`**Scope:** Entire recurring series`);
     }

@@ -9,7 +9,8 @@
 // real bridge, west of UTC (where an all-day date read as a time is the
 // previous evening at UTC), for every edit that writes new times: a whole
 // event, a series, a new start or end alone, one occurrence, and a "this and
-// following" split. An all-day event given a time of day without all_day, or
+// following" split (a start alone keeps the length, an end alone keeps the
+// start). An all-day event given a time of day without all_day, or
 // an all-day end on or before its start, is refused before anything is
 // written, and the assistant is told to ask the user.
 
@@ -90,10 +91,10 @@ describe('an all-day event edited without all_day stays all-day', () => {
     expectAllDay(item.endDate, nextDay(nextDay(MOVED_DAY)));
   });
 
-  it('a new end alone: the start follows it', async () => {
+  it('a new end alone: the start stays, and the event lasts until the new end', async () => {
     const loaded = await created();
     const item = await edited(loaded, loaded.res.event_id, { end_iso: `${nextDay(MOVED_DAY)}T00:00:00` });
-    expectAllDay(item.startDate, MOVED_DAY);
+    expectAllDay(item.startDate, START_DAY);
     expectAllDay(item.endDate, nextDay(MOVED_DAY));
   });
 

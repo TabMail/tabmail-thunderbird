@@ -285,9 +285,11 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   ctx.rawUserTexts.push(fakeUserText);
   log(`[TMDBG Tools] calendar_event_edit: Established FSM marker in chat history`);
 
-  // Optionally validate existence of event here by fetching details
+  // Optionally validate existence of event here by fetching details. A split
+  // names its occurrence, so the card can state that occurrence's original
+  // time when it was moved off it.
   try {
-    const details = await safeFetchEventDetails(norm.event_id);
+    const details = await safeFetchEventDetails(norm.event_id, norm.calendar_id, norm.edit_scope === "this_and_following" ? norm.recurrence_id : null);
     if (details && details.ok) {
       try { const pid = ctx.activePid || ctx.activeToolCallId || 0; if (pid) ctx.fsmSessions[pid].editEventDetails = details; } catch (_) {}
       log(`[TMDBG Tools] calendar_event_edit: pre-fetched event details for id=${norm.event_id}`);

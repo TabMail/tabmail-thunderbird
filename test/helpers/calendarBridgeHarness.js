@@ -43,10 +43,9 @@ export function fixedZone(tzid, offsetMinutes) {
 const pad2 = (n) => String(n).padStart(2, '0');
 
 
-// A calIDuration-like length (CalDuration): its seconds and sign, and a copy,
-// which applyDurationPreservation negates to move a start back from a new end.
+// A calIDuration-like length (CalDuration): its seconds and sign.
 function fakeDuration(inSeconds, isNegative) {
-  return { inSeconds, isNegative, clone: () => fakeDuration(inSeconds, isNegative) };
+  return { inSeconds, isNegative };
 }
 export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second = 0, isDate = false, timezone } = {}) {
   const dt = { year, month, day, hour, minute, second, isDate, timezone: timezone || (isDate ? UTC_ZONE : LOCAL_ZONE) };
