@@ -225,7 +225,7 @@
             "calendar_id": { "type": "string", "optional": true },
             "event_id": { "type": "string", "optional": true },
             "old_event_id": { "type": "string", "optional": true, "description": "On edit_scope 'this_and_following': the series' id (now ending before the split); event_id is the new series'." },
-            "recurrence_id": { "type": "string", "optional": true, "description": "The occurrence event_id names: on edit_scope 'this_only', the one edited; on 'this_and_following', the new series' first occurrence (its start, moved when the edit moved it)." },
+            "recurrence_id": { "type": "string", "optional": true, "description": "The occurrence event_id names: on edit_scope 'this_only', the one edited (its start as written, as the read tools print its recurrence_id); on 'this_and_following', the new series' first occurrence (its start, moved when the edit moved it)." },
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
             "split_at": { "type": "string", "optional": true, "description": "On edit_scope 'this_and_following': where the new series starts." },

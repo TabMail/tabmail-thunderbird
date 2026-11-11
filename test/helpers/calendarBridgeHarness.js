@@ -682,8 +682,10 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         // ADDING one.
         const info = oldItem.parentItem.recurrenceInfo;
         // CalMemoryCalendar.modifyItem then resolves with the PARENT series,
-        // not the occurrence (aNewItem = aNewItem.parentItem), so the item it
-        // returns has the series' title, not the occurrence's.
+        // not the occurrence (comm-central calendar/providers/memory/
+        // CalMemoryCalendar.sys.mjs: `modifiedItem = aNewItem.parentItem.clone()`,
+        // `modifyException(aNewItem, false)`, `return modifiedItem`), so the
+        // item it returns has the series' title, not the occurrence's.
         if (typeof info.modifyException === 'function') {
           info.modifyException(newItem);
           return oldItem.parentItem;

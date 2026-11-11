@@ -122,4 +122,34 @@ describe('what the assistant is told after the edit', () => {
     const read = await flow.readOccurrence(run.result.recurrence_id);
     expect(read.start_iso).toBe(iso('2099-01-13', 9));
   });
+
+  // Round trip: the recurrence_id an edit returns is the read tools'
+  // recurrence_id for that occurrence, and given back it names that occurrence.
+  async function roundTrip(eventId, rid, startIso) {
+    const read = await flow.readOccurrence(startIso);
+    expect(flow.field(read.text, 'recurrence_id'), 'read prints the returned id').toBe(rid);
+    const again = await edit({ event_id: eventId, edit_scope: 'this_only', recurrence_id: rid, title: 'Renamed' });
+    expect(again.failReason, 'the returned id names an occurrence').toBeUndefined();
+    expect(again.state).toBe('exec_success');
+    expect((await flow.readOccurrence(startIso)).text).toContain('Renamed');
+  }
+
+  it('round trip: one occurrence moved, then edited again by the id the move returned', async () => {
+    onCalendar([series()], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_only', recurrence_id: iso('2099-01-12', 10), start_iso: iso('2099-01-12', 15), end_iso: iso('2099-01-12', 16) });
+    expect(run.state).toBe('exec_success');
+    expect(run.result.event_id).toBe('ser');
+    expect(run.result.recurrence_id).toBe(iso('2099-01-12', 15));
+    await roundTrip('ser', run.result.recurrence_id, iso('2099-01-12', 15));
+  });
+
+  it('round trip: a split moved a day earlier, then edited by the pair it returned', async () => {
+    const loaded = onCalendar([series()], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso('2099-01-14', 10), start_iso: iso('2099-01-13', 9), end_iso: iso('2099-01-13', 10) });
+    expect(run.state).toBe('exec_success');
+    const part = loaded.calendar.items.find((it) => it.id !== 'ser');
+    expect(run.result.event_id).toBe(part.id);
+    await roundTrip(run.result.event_id, run.result.recurrence_id, iso('2099-01-13', 9));
+  });
 });
+
