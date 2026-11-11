@@ -827,19 +827,19 @@ function applyEditToNamedOccurrence(item, patch) {
   return info.getExceptionFor(item.startDate);
 }
 
-// Every occurrence changed on its own that a whole-series ("All events") edit
-// keeps takes each field the edit names, as the series does and as Google
-// Calendar's "All events" edit makes it: title, location, description,
-// busy/free. Fields the edit does not name keep the occurrence's own value,
-// and no time is written here: its start and end are the time path's.
-// Guest changes are not made here: applyGuestChangeToSeries makes them on
-// every item the edit covers.
+// Every occurrence changed on its own that `item` keeps takes each field the
+// edit names, as `item` does and as Google Calendar's "All events" edit makes
+// it: title, location, description, busy/free. `item` is the series on a
+// whole-series edit, or the following part of a split, whose changed
+// occurrences (the one it starts at included) take the fields in that one
+// write; the earlier part's keep their own. Fields the edit does not name keep
+// the occurrence's own value, and no time is written here: its start and end
+// are the time path's. Guest changes are not made here:
+// applyGuestChangeToSeries makes them on every item the edit covers.
 function applyEditToChangedOccurrences(item, patch) {
   const info = item.recurrenceInfo;
   for (const rid of [...(info?.getExceptionIds({}) || [])]) {
-    const ex = info.getExceptionFor(rid);
-    if (!ex) continue;
-    const named = ex.clone();
+    const named = info.getExceptionFor(rid).clone();
     if (typeof patch.title === "string" && patch.title) named.title = patch.title;
     if (typeof patch.location === "string") named.setProperty("LOCATION", patch.location);
     // A new description replaces the occurrence's in every form (see the split).
@@ -2904,6 +2904,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // takes the edit there, in this one write.
             const atSplit = newEv.recurrenceInfo ? applyEditToNamedOccurrence(newEv, patch) : null;
             if (atSplit?.error) return { ok: false, error: atSplit.error };
+            // Every changed occurrence carried into the following part takes
+            // the fields the edit names, as on a whole-series edit. Before the
+            // answers below, so a new place asks its attendees again.
+            applyEditToChangedOccurrences(newEv, patch);
 
             // The attendees answered for the series' times and place. When the
             // split moves the following occurrences (their start or end, all-day

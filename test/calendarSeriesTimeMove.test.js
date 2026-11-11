@@ -274,9 +274,11 @@ describe('a series named from a later occurrence changes it and the following on
       it(`a series ${kind} (${rule.replace(/;UNTIL=.*/, ';UNTIL')}): a day and an hour later leaves the earlier occurrences and moves the following ones`, async () => {
         const start = makeStart();
         const at = fullSeries(start, rule).dates[3];
-        // The two parts as a split there makes them, with no change of time.
+        // The two parts as a split there makes them, with no change of time
+        // (new notes, which every occurrence of the following part takes and
+        // the keys do not show; a title would rename its changed occurrences).
         const plain = load(fullSeries(start, rule).series);
-        const plainRes = await plain.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), title: 'Sync' });
+        const plainRes = await plain.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), description: 'From here on' });
         expect(plainRes, plainRes.error).toMatchObject({ ok: true });
         const earlier = occurrenceKeys(plain.calendar.items.find((it) => it.id === 'ser'));
         const following = occurrenceKeys(plain.calendar.items.find((it) => it.id !== 'ser'));

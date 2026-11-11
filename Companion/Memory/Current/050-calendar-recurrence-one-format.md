@@ -326,15 +326,31 @@ same design (tabmail-ios #421).
   changed occurrence of the series each non-time field the edit names: title, location, description (in every
   form: `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC` go, as on the series) and busy/free. Guests are not made
   there: `applyGuestChangeToSeries` already changes every changed occurrence's own list (051). A field the edit
-  does not name keeps each occurrence's own value; the step writes no time (start, end, all-day and the reset
-  rules are the time path's, above, unchanged), and an excluded occurrence stays excluded. The plain occurrences
-  take the fields from the series itself. `this_only` changes one occurrence; the split is unchanged: its
-  following part's changed occurrences keep their own fields, except the one it starts at, which takes the edit
-  (`applyEditToNamedOccurrence`). Superseded: on an `all` edit a changed occurrence kept its own title, place,
-  notes and busy/free, so an occurrence renamed or moved once never took a later rename of the series (only a
-  first occurrence named on a time change took the edit's fields). Pinned through the real bridge and its read
-  path by `test/calendarAllEventsFieldEdit.test.js` (every occurrence reads each named field, every other field
-  and both times as before, the same occurrences shown; controls for `this_only` and `this_and_following`).
+  does not name keeps each occurrence's own value; the step writes no time (start, end and all-day are the
+  time rules', above, unchanged), and an excluded occurrence stays excluded. The plain occurrences
+  take the fields from the series itself. A split (`this_and_following`) does the same over its following
+  part, in `splitRecurringEvent` after the occurrence it starts at takes the edit and before the attendee
+  answers are decided: every changed occurrence carried into the part takes each field the split names, so a
+  new place asks that occurrence's attendees again (the split's rule, above); the earlier part's keep their own.
+  `this_only` changes one occurrence.
+  - **A field the edit only restates is no change** (2026-11-11; Google Calendar leaves an occurrence's own
+    value alone when the field is not changed in its form). ONE comparison, `restatedFields` in
+    `chat/tools/calendar_event_edit.js`: a named title, place, notes or busy/free equal to what
+    `getCalendarEventDetails` reads (the series). The confirmation card (`formatChangesForDisplay`) shows no
+    line for those fields, and on `all` and `this_and_following` the tool drops them from the edit before the
+    check, with the same details the card then shows, so the card, the check and the write see one edit: an
+    occurrence changed on its own (the one a split starts at included) keeps its own value of a restated field.
+    The details carry no notes, so named notes always count as a change. When the details cannot be read, such
+    an edit is refused before the card ("could not read this event"). `this_only` is not pruned: its card
+    still compares with the series, not the occurrence (open).
+  - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
+  occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
+  time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it
+  starts at; and (first #351 version) a restated field was written over every changed occurrence while the card
+  showed no line for it. Pinned through the real bridge and its read path by
+  `test/calendarAllEventsFieldEdit.test.js` (every occurrence reads each named field, every other field and both
+  times as before, the same occurrences shown; the split's carried occurrences and their answers; the HTML
+  copies; restated fields from the tool's `run` through the card; a control for `this_only`).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
 
 ## How it is pinned
