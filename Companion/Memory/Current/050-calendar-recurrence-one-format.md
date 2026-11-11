@@ -351,6 +351,10 @@ same design (tabmail-ios #421).
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card
   with every field.
+- The delete card's lines (#355): `test/calendarSeriesDeleteCard.test.js`, through the real bridge and delete states
+  (series by id and by an occurrence row, added dates alone, `other` rules, UNTIL agreeing with `calendar_event_read`,
+  one-off control), and the `recurrenceInWords` table in `test/calendarRecurrenceFormat.test.js` (every position
+  word and suffix, all month names).
 - **One check before the card (#339):** the edit tool calls `modifyCalendarEvent` with `check_only: true` for every
   edit, after its routing, and fails the call with the bridge's refusal. The bridge returns from the check at its
   first write, in both paths: in `modifyCalendarEvent` just before the excluded dates of one occurrence go to its
