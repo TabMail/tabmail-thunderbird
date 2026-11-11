@@ -213,7 +213,7 @@
                 }
               },
               "exdates_add": { "type": "array", "optional": true, "items": { "type": "string" }, "description": "EXDATEs to add (ISO start datetimes of occurrences)." },
-              "check_only": { "type": "boolean", "optional": true, "description": "Run the edit, every refusal included, up to its first write and write nothing (a split through splitRecurringEvent's check). ok: false carries the refusal." }
+              "check_only": { "type": "boolean", "optional": true, "description": "Run the edit, every refusal included, up to its first write and write nothing (a split through splitRecurringEvent's check). ok: false carries the refusal; ok: true carries changes, times and resetsChangedOccurrences." }
             },
             "required": ["event_id"]
           }
@@ -224,8 +224,20 @@
             "ok": { "type": "boolean" },
             "calendar_id": { "type": "string", "optional": true },
             "event_id": { "type": "string", "optional": true },
+            "old_event_id": { "type": "string", "optional": true, "description": "On edit_scope 'this_and_following': the series' id (now ending before the split); event_id is the new series'." },
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
+            "split_at": { "type": "string", "optional": true, "description": "On edit_scope 'this_and_following': where the new series starts." },
+            "changes": { "type": "boolean", "optional": true, "description": "With check_only: whether the edit changes anything (a time or value it only restates is no change)." },
+            "times": {
+              "type": "object", "optional": true,
+              "description": "With check_only: the times the edit changes, as the read tools print them, from the occurrence it names (or the first) to that occurrence as written; absent when it changes none.",
+              "properties": {
+                "from": { "type": "object", "properties": { "start_iso": { "type": "string" }, "end_iso": { "type": "string" }, "all_day": { "type": "boolean" } } },
+                "to": { "type": "object", "properties": { "start_iso": { "type": "string" }, "end_iso": { "type": "string" }, "all_day": { "type": "boolean" } } }
+              }
+            },
+            "resetsChangedOccurrences": { "type": "boolean", "optional": true, "description": "With check_only: whether a new start of the series (or of the part from the split on) resets the occurrences changed on their own and brings back the excluded ones." },
             "error": { "type": "string", "optional": true }
           }
         },
@@ -244,7 +256,7 @@
               "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID. If omitted, the bridge scans all calendars to locate the event." },
               "recurrence_id": { "type": "string", "description": "ISO8601 start datetime of the first occurrence that should belong to the NEW series." },
               "timezone": { "type": "string", "optional": true, "description": "Optional IANA timezone identifier for interpreting naive ISO timestamps." },
-              "check_only": { "type": "boolean", "optional": true, "description": "Build both parts, every refusal included, up to the first write and write nothing. ok: false carries the refusal." },
+              "check_only": { "type": "boolean", "optional": true, "description": "Build both parts, every refusal included, up to the first write and write nothing. ok: false carries the refusal; ok: true carries changes, times and resetsChangedOccurrences." },
               "patch": {
                 "type": "object",
                 "optional": true,
@@ -308,6 +320,16 @@
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
             "split_at": { "type": "string", "optional": true },
+            "changes": { "type": "boolean", "optional": true, "description": "With check_only: whether the edit changes anything (a time or value it only restates is no change)." },
+            "times": {
+              "type": "object", "optional": true,
+              "description": "With check_only: the times the edit changes, as the read tools print them, from the occurrence it names (or the first) to that occurrence as written; absent when it changes none.",
+              "properties": {
+                "from": { "type": "object", "properties": { "start_iso": { "type": "string" }, "end_iso": { "type": "string" }, "all_day": { "type": "boolean" } } },
+                "to": { "type": "object", "properties": { "start_iso": { "type": "string" }, "end_iso": { "type": "string" }, "all_day": { "type": "boolean" } } }
+              }
+            },
+            "resetsChangedOccurrences": { "type": "boolean", "optional": true, "description": "With check_only: whether a new start of the series (or of the part from the split on) resets the occurrences changed on their own and brings back the excluded ones." },
             "error": { "type": "string", "optional": true }
           }
         },

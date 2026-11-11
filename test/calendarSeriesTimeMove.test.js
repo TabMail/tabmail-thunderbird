@@ -6,11 +6,13 @@
 // works as calendar apps make it (#287), through the real bridge and edit tool:
 //   - named from the series' first occurrence (or with no occurrence named, on
 //     the series' own date), every occurrence moves by the same amount: the
-//     days the rule names, the excluded and added dates, and each changed
-//     occurrence, at its slot or moved on its own; the series ends where it did,
-//     moved by that amount (UNTIL), or after as many occurrences (COUNT);
+//     days the rule names and the added dates; the series ends where it did,
+//     moved by that amount (UNTIL), or after as many occurrences (COUNT). As
+//     Google Calendar's "All events" does, a new start resets every occurrence
+//     changed on its own and brings back every excluded date;
 //   - named from a later occurrence, the occurrences before it stay as they
-//     were, and the ones from it on move as above (this and following, #328);
+//     were, and the ones from it on move and reset as above (this and
+//     following, #328);
 //   - with no occurrence named and another date, the tool asks the user which
 //     one they mean;
 //   - a move the rule's days cannot follow, a time change of a rule with set
@@ -116,10 +118,6 @@ const instantKey = (dt) => (dt.isDate ? dt.toString() : new Date(dt.nativeTime /
 const occurrenceKeys = (item) => seriesOccurrences(item, ...RANGE)
   .map(({ start, item: occ }) => (occ.recurrenceId ? `changed ${instantKey(start)} ${occ.title}` : instantKey(start)))
   .sort();
-// Changed occurrences given their own time ('Moved'): a move of the series
-// keeps that time, as calendar apps keep the user's edits; one changed only in
-// its details follows the series.
-const OWN_TIME_TITLES = new Set(['Moved']);
 // A key moved by `days` days and `hours` hours (a DATE by its days alone).
 function shiftedKey(key, days, hours) {
   const one = (k) => {
@@ -130,7 +128,6 @@ function shiftedKey(key, days, hours) {
     return new Date(Date.parse(k) + days * DAY_MS + hours * HOUR_MS).toISOString();
   };
   const m = /^changed (\S+) (.*)$/.exec(key);
-  if (m && OWN_TIME_TITLES.has(m[2])) return key;
   return m ? `changed ${one(m[1])} ${m[2]}` : one(key);
 }
 const shiftAll = (keys, days, hours) => keys.map((k) => shiftedKey(k, days, hours)).sort();
@@ -157,13 +154,16 @@ const RULES = (start) => [`FREQ=WEEKLY;BYDAY=TH,SA;UNTIL=${untilAfter(start, 24)
 function fullSeries(start, rule) {
   const dates = ruleDatesOf(rule, start);
   const series = seriesFrom(start, [rule], {
-    extraItems: [
-      recurrenceDate('EXDATE', dates[6]),
-      recurrenceDate('RDATE', after(start, 1)), recurrenceDate('RDATE', after(dates[3], 1)),
-    ],
+    extraItems: [recurrenceDate('EXDATE', dates[6]), ...addedDates(start, dates)],
     exceptions: [changedAt(dates[4], 'Kept', false), changedAt(dates[5], 'Moved', true)],
   });
   return { series, dates };
+}
+const addedDates = (start, dates) => [recurrenceDate('RDATE', after(start, 1)), recurrenceDate('RDATE', after(dates[3], 1))];
+// fullSeries as a new start leaves it before it moves: no changed occurrence
+// and no excluded date; the rule and the added dates stay.
+function resetSeries(start, rule) {
+  return seriesFrom(start, [rule], { extraItems: addedDates(start, ruleDatesOf(rule, start)) });
 }
 
 function load(master) {
@@ -184,6 +184,8 @@ describe('a whole series named from its first occurrence moves as one', () => {
         const before = occurrenceKeys(series);
         expect(before.filter((k) => k.startsWith('changed '))).toHaveLength(2);
         expect(before.length).toBeGreaterThan(8);
+        const reset = occurrenceKeys(resetSeries(start, rule));
+        expect(reset.length).toBeGreaterThan(before.length);
         const { api, calendar } = load(series);
         const res = await api.modifyCalendarEvent({
           event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', recurrence_id: startIsoOf(start), ...movedTo(start, 1, 1),
@@ -192,49 +194,47 @@ describe('a whole series named from its first occurrence moves as one', () => {
         const saved = calendar.items[0];
         // A timed series keeps its zone; an all-day date has none (note 034).
         if (!start.isDate) expect(saved.startDate.timezone).toBe(start.timezone);
-        expect(occurrenceKeys(saved)).toEqual(shiftAll(before, 1, start.isDate ? 0 : 1));
+        expect(occurrenceKeys(saved)).toEqual(shiftAll(reset, 1, start.isDate ? 0 : 1));
       });
     }
   }
 
-  it('the first occurrence named by its own start after it was moved on its own is still the first: the series moves as one, and that occurrence takes the new time', async () => {
+  it('the first occurrence named by its own start after it was moved on its own is still the first: the series moves as one, and every changed occurrence is reset', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[0];
     const dates = ruleDatesOf(rule, start);
     const first = changedAt(dates[0], 'Early', true);
     const series = seriesFrom(start, [rule], { exceptions: [first, changedAt(dates[3], 'Kept', false)] });
-    const before = occurrenceKeys(series);
+    const plain = occurrenceKeys(seriesFrom(start, [rule]));
     const { api, calendar } = load(series);
     const res = await api.modifyCalendarEvent({
       event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', recurrence_id: startIsoOf(first.startDate), ...movedTo(start, 1, 1),
     });
     expect(res, res.error).toMatchObject({ ok: true });
     expect(calendar.items).toHaveLength(1);
-    const others = before.filter((k) => !k.endsWith(' Early'));
-    expect(occurrenceKeys(calendar.items[0])).toEqual([...shiftAll(others, 1, 1), `changed ${instantKey(after(start, 1, 1))} Early`].sort());
+    expect(occurrenceKeys(calendar.items[0])).toEqual(shiftAll(plain, 1, 1));
   });
 
-  it('with no occurrence named, a first occurrence moved on its own keeps its own time while the series moves', async () => {
+  it('with no occurrence named, a new time on the series\' own date resets a first occurrence moved on its own', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[0];
     const dates = ruleDatesOf(rule, start);
     const series = seriesFrom(start, [rule], { exceptions: [changedAt(dates[0], 'Early', true), changedAt(dates[3], 'Kept', false)] });
-    const before = occurrenceKeys(series);
-    const early = before.find((k) => k.endsWith(' Early'));
+    const plain = occurrenceKeys(seriesFrom(start, [rule]));
     const { api, calendar } = load(series);
     const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...movedTo(start, 0, 1) });
     expect(res, res.error).toMatchObject({ ok: true });
-    expect(occurrenceKeys(calendar.items[0])).toEqual([...shiftAll(before.filter((k) => k !== early), 0, 1), early].sort());
+    expect(occurrenceKeys(calendar.items[0])).toEqual(shiftAll(plain, 0, 1));
   });
 
-  it('with no occurrence named, a new time on the series\' own date moves every occurrence, a changed one given its own time keeping it', async () => {
+  it('with no occurrence named, a new time on the series\' own date moves every occurrence and resets the changed and excluded ones', async () => {
     const start = makeUserStart();
     const { series } = fullSeries(start, RULES(start)[0]);
-    const before = occurrenceKeys(series);
+    const reset = occurrenceKeys(resetSeries(start, RULES(start)[0]));
     const { api, calendar } = load(series);
     const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...movedTo(start, 0, 1) });
     expect(res, res.error).toMatchObject({ ok: true });
-    expect(occurrenceKeys(calendar.items[0])).toEqual(shiftAll(before, 0, 1));
+    expect(occurrenceKeys(calendar.items[0])).toEqual(shiftAll(reset, 0, 1));
   });
 
   // Day parts a whole number of days can move: the month days of a monthly
@@ -271,18 +271,24 @@ function makeUserStart() { return START_KINDS["timed in the user's zone"](); }
 describe('a series named from a later occurrence changes it and the following ones', () => {
   for (const [kind, makeStart] of Object.entries(START_KINDS)) {
     for (const rule of RULES(makeStart())) {
-      it(`a series ${kind} (${rule.replace(/;UNTIL=.*/, ';UNTIL')}): a day and an hour later leaves the earlier occurrences and moves the following ones`, async () => {
+      it(`a series ${kind} (${rule.replace(/;UNTIL=.*/, ';UNTIL')}): a day and an hour later leaves the earlier occurrences and moves and resets the following ones`, async () => {
         const start = makeStart();
         const at = fullSeries(start, rule).dates[3];
         // The two parts as a split there makes them, with no change of time
         // (new notes, which every occurrence of the following part takes and
-        // the keys do not show; a title would rename its changed occurrences).
-        const plain = load(fullSeries(start, rule).series);
-        const plainRes = await plain.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), description: 'From here on' });
-        expect(plainRes, plainRes.error).toMatchObject({ ok: true });
-        const earlier = occurrenceKeys(plain.calendar.items.find((it) => it.id === 'ser'));
-        const following = occurrenceKeys(plain.calendar.items.find((it) => it.id !== 'ser'));
-        expect(following.filter((k) => k.startsWith('changed '))).toHaveLength(2);
+        // the keys do not show; a title would rename its changed occurrences):
+        // the earlier part of the full series, and the following part of the
+        // series as a new start resets it.
+        const parts = async (series) => {
+          const plain = load(series);
+          const plainRes = await plain.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), description: 'From here on' });
+          expect(plainRes, plainRes.error).toMatchObject({ ok: true });
+          return [plain.calendar.items.find((it) => it.id === 'ser'), plain.calendar.items.find((it) => it.id !== 'ser')].map(occurrenceKeys);
+        };
+        const [earlier, fullFollowing] = await parts(fullSeries(start, rule).series);
+        expect(fullFollowing.filter((k) => k.startsWith('changed '))).toHaveLength(2);
+        const [, following] = await parts(resetSeries(start, rule));
+        expect(following.length).toBeGreaterThan(fullFollowing.length);
 
         const { api, calendar } = load(fullSeries(start, rule).series);
         const res = await api.modifyCalendarEvent({
@@ -364,8 +370,10 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
   // Thunderbird moves a series' excluded and added dates, UNTIL and changed
   // occurrences' RECURRENCE-IDs by the start's change in UTC and keeps their
   // value type, so a change between all-day and timed would leave them off
-  // their occurrences, on its own day as on another.
-  const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app';
+  // their occurrences, on its own day as on another. A new start has reset the
+  // changed occurrences and excluded dates already, so the added dates and the
+  // end date are what is refused.
+  const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates or end date in the other form; change it in the calendar app';
   const KIND_CHANGE_UNTIL = 'changing these occurrences between all-day and timed would leave their end date (UNTIL) in the other form; give the repeat rule again, its end included, in the same edit (a move to another day goes first, in its own edit)';
   const dayOf = (dt, days) => startIsoOf(after(dt, days)).slice(0, 10);
   const asAllDay = (dt, days) => ({ start_iso: `${dayOf(dt, days)}T00:00:00`, end_iso: `${dayOf(dt, days + 1)}T00:00:00`, all_day: true });
@@ -376,19 +384,21 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     const made = { EXDATE: recurrenceDate('EXDATE', dates[2]), RDATE: recurrenceDate('RDATE', after(dates[3], 1)) };
     return seriesFrom(start, [rule], { extraItems: kinds.map((k) => made[k]) });
   };
+  const ALL_DAY_RULE = RULES(fakeDate(START_DAY))[1];
   const allDayWithOneChanged = () => {
     const start = fakeDate(START_DAY);
-    const rule = RULES(start)[1];
-    return seriesFrom(start, [rule], { exceptions: [changedAt(ruleDatesOf(rule, start)[5], 'Moved', true)] });
+    return seriesFrom(start, [ALL_DAY_RULE], { exceptions: [changedAt(ruleDatesOf(ALL_DAY_RULE, start)[5], 'Moved', true)] });
+  };
+  const allDayWithAddedDate = () => {
+    const start = fakeDate(START_DAY);
+    return seriesFrom(start, [ALL_DAY_RULE], { extraItems: [recurrenceDate('RDATE', after(ruleDatesOf(ALL_DAY_RULE, start)[3], 1))] });
   };
   for (const [name, make, change, error] of [
     ['a timed series with changed occurrences and excluded and added dates, made all-day on its own day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[1]).series, (s) => asAllDay(s, 0), KIND_CHANGE],
     ['a timed series with changed occurrences and excluded and added dates, made all-day on the next day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[1]).series, (s) => asAllDay(s, 1), KIND_CHANGE],
     ['a timed series with an excluded and an added date only, made all-day on the next day', () => timedWithDatesOnly(makeUserStart()), (s) => asAllDay(s, 1), KIND_CHANGE],
-    ['a timed series with an excluded date only, made all-day on its own day', () => timedWithDatesOnly(makeUserStart(), ['EXDATE']), (s) => asAllDay(s, 0), KIND_CHANGE],
     ['a timed series with an added date only, made all-day on its own day', () => timedWithDatesOnly(makeUserStart(), ['RDATE']), (s) => asAllDay(s, 0), KIND_CHANGE],
-    ['an all-day series with one changed occurrence, made timed on the next day', allDayWithOneChanged, (s) => asTimed(s, 1), KIND_CHANGE],
-    ['an all-day series with one changed occurrence, made timed on its own day', allDayWithOneChanged, (s) => asTimed(s, 0), KIND_CHANGE],
+    ['an all-day series with an added date, made timed on the next day', allDayWithAddedDate, (s) => asTimed(s, 1), KIND_CHANGE],
     ['a timed series with an end date (UNTIL), made all-day on its own day', () => seriesFrom(makeUserStart(), [RULES(makeUserStart())[0]]), (s) => asAllDay(s, 0), KIND_CHANGE_UNTIL],
   ]) {
     it(`${name}: refused, and nothing is written`, async () => {
@@ -402,6 +412,25 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
       expect(modifications).toEqual([]);
       expect(calendar.items).toEqual([series]);
       expect(occurrenceKeys(series)).toEqual(before);
+    });
+  }
+
+  // A series whose only such parts are changed occurrences and excluded dates
+  // takes the change: the new start resets them first.
+  for (const [name, make, change, expected] of [
+    ['a timed series with an excluded date only, made all-day on its own day', () => timedWithDatesOnly(makeUserStart(), ['EXDATE']), (s) => asAllDay(s, 0),
+      () => seriesFrom(fakeDate(START_DAY), [ALL_DAY_RULE])],
+    ['an all-day series with one changed occurrence, made timed on its own day', allDayWithOneChanged, (s) => asTimed(s, 0),
+      () => seriesFrom(fakeDateTime(START_DAY, 9), [ALL_DAY_RULE])],
+  ]) {
+    it(`${name}: made, the changed occurrences and excluded dates reset`, async () => {
+      const series = make();
+      const { api, calendar } = load(series);
+      const res = await api.modifyCalendarEvent({
+        event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', recurrence_id: startIsoOf(series.startDate), ...change(series.startDate),
+      });
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(occurrenceKeys(calendar.items[0])).toEqual(occurrenceKeys(expected()));
     });
   }
 
@@ -427,7 +456,7 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
   // The following part of a split goes through the same check.
   for (const [name, make, change] of [
     ['a timed series with changed occurrences and excluded and added dates, made all-day on the next day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[1]).series, (at) => asAllDay(at, 1)],
-    ['an all-day series with one changed occurrence, made timed on the next day', allDayWithOneChanged, (at) => asTimed(at, 1)],
+    ['an all-day series with an added date, made timed on the next day', allDayWithAddedDate, (at) => asTimed(at, 1)],
   ]) {
     it(`from a later occurrence, ${name}: refused, and nothing is written`, async () => {
       const series = make();
@@ -444,7 +473,21 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     });
   }
 
-  it('from an occurrence changed in its details on, a new time is made in one write: it takes the time, keeps its name and asks its guests again; later ones keep their own times or follow', async () => {
+  it('from a later occurrence, an all-day series with one changed occurrence is made timed: the following part takes the change, that occurrence reset', async () => {
+    const series = allDayWithOneChanged();
+    const at = ruleDatesOf(ALL_DAY_RULE, series.startDate)[3];
+    const { api, calendar } = load(series);
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), ...asTimed(at, 0),
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const following = calendar.items.find((it) => it.id !== 'ser');
+    expect(following.startDate.isDate).toBe(false);
+    expect(following.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(occurrenceKeys(following).every((k) => !k.startsWith('changed ') && !/^\d{8}$/.test(k))).toBe(true);
+  });
+
+  it('from an occurrence changed in its details on, a new time is made in one write: the earlier part keeps its changed occurrences, the following part moves and every changed occurrence in it is reset', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[1];
     const dates = ruleDatesOf(rule, start);
@@ -457,7 +500,7 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     const splitMs = dates[3].nativeTime / 1000;
     const keyMs = (k) => Date.parse(k.replace(/^changed (\S+) .*$/, '$1'));
     const earlier = before.filter((k) => keyMs(k) < splitMs);
-    const following = before.filter((k) => keyMs(k) >= splitMs);
+    const following = occurrenceKeys(seriesFrom(start, [rule])).filter((k) => keyMs(k) >= splitMs);
     const { api, calendar } = load(series);
     const res = await api.modifyCalendarEvent({
       event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(dates[3]), ...movedTo(dates[3], 0, 2),
@@ -467,9 +510,7 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     const fresh = calendar.items.find((it) => it.id !== 'ser');
     expect(occurrenceKeys(capped)).toEqual(earlier);
     expect(occurrenceKeys(fresh)).toEqual(shiftAll(following, 0, 2));
-    const x = fresh.recurrenceInfo.getExceptionFor(fresh.startDate);
-    expect(x.title).toBe('Planning');
-    expect(x.getAttendees().map((a) => [a.id, a.participationStatus])).toEqual([['mailto:ana@example.com', 'NEEDS-ACTION']]);
+    expect(fresh.recurrenceInfo.getExceptionIds()).toEqual([]);
   });
 
   // Guests answer for an occurrence's own time and place.
@@ -492,7 +533,7 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     expect(answers(changedNamed(fresh, 'Review'))).toEqual([['mailto:ana@example.com', 'ACCEPTED']]);
   });
 
-  it('a split that moves a later changed occurrence asks its guests again; one that keeps its own time keeps their answers', async () => {
+  it('a split with a new start resets the later changed occurrences, their guests\' own answers with them', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[1];
     const dates = ruleDatesOf(rule, start);
@@ -505,27 +546,30 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     });
     expect(res, res.error).toMatchObject({ ok: true });
     const fresh = calendar.items.find((it) => it.id !== 'ser');
-    expect(answers(changedNamed(fresh, 'Kept'))).toEqual([['mailto:ana@example.com', 'NEEDS-ACTION']]);
-    expect(answers(changedNamed(fresh, 'Moved'))).toEqual([['mailto:bo@example.com', 'ACCEPTED']]);
+    expect(fresh.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(answers(fresh)).toEqual([]);
   });
 
-  it('from an occurrence moved on its own, a new time equal to the series\' asks its guests again', async () => {
+  it('from an occurrence moved on its own, the series\' own time is no change: the check reports none, and that occurrence keeps its time and its guests\' answers', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[1];
     const dates = ruleDatesOf(rule, start);
     const own = withGuests(changedAt(dates[3], 'Planning', true), [guest('ana')]);
-    const { api, calendar } = load(seriesFrom(start, [rule], { exceptions: [own] }));
-    const res = await api.modifyCalendarEvent({
+    const args = {
       event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(own.startDate), start_iso: startIsoOf(dates[3]),
-    });
+    };
+    const checked = load(seriesFrom(start, [rule], { exceptions: [own] }));
+    expect(await checked.api.modifyCalendarEvent({ ...args, check_only: true })).toMatchObject({ ok: true, changes: false });
+    const { api, calendar } = load(seriesFrom(start, [rule], { exceptions: [withGuests(changedAt(dates[3], 'Planning', true), [guest('ana')])] }));
+    const res = await api.modifyCalendarEvent(args);
     expect(res, res.error).toMatchObject({ ok: true });
     const fresh = calendar.items.find((it) => it.id !== 'ser');
     const x = changedNamed(fresh, 'Planning');
-    expect(x.startDate.toString()).toBe(fresh.startDate.toString());
-    expect(answers(x)).toEqual([['mailto:ana@example.com', 'NEEDS-ACTION']]);
+    expect(x.startDate.toString()).toBe(after(dates[3], 0, 2).toString());
+    expect(answers(x)).toEqual([['mailto:ana@example.com', 'ACCEPTED']]);
   });
 
-  it('a whole-series move named from a changed first occurrence gives that occurrence the edit\'s place too', async () => {
+  it('a whole-series move named from a changed first occurrence resets it: the series takes the edit\'s place', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[1];
     const first = changedAt(ruleDatesOf(rule, start)[0], 'Early', true);
@@ -534,12 +578,12 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
       event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', recurrence_id: startIsoOf(first.startDate), ...movedTo(start, 0, 1), location: 'Room 9',
     });
     expect(res, res.error).toMatchObject({ ok: true });
-    const x = changedNamed(calendar.items[0], 'Early');
-    expect(x.getProperty('LOCATION')).toBe('Room 9');
-    expect(x.startDate.toString()).toBe(calendar.items[0].startDate.toString());
+    expect(calendar.items[0].recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(calendar.items[0].getProperty('LOCATION')).toBe('Room 9');
+    expect(calendar.items[0].startDate.toString()).toBe(after(start, 0, 1).toString());
   });
 
-  it('a whole-series move named from a changed first occurrence that adds a guest gives the guest to the series, to a changed occurrence it moves and to that first occurrence', async () => {
+  it('a whole-series move named from a changed first occurrence that adds a guest gives the guest to the series, every changed occurrence reset', async () => {
     const start = makeUserStart();
     const rule = RULES(start)[1];
     const dates = ruleDatesOf(rule, start);
@@ -556,12 +600,8 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     const ids = (item) => item.getAttendees().map((a) => a.id);
     const both = ['mailto:ana@example.com', 'mailto:dee@example.com'];
     expect(ids(saved)).toEqual(both);
-    const movedKept = changedNamed(saved, 'Kept');
-    expect(movedKept.startDate.toString()).toBe(after(dates[3], 1, 1).toString());
-    expect(ids(movedKept)).toEqual(both);
-    const named = changedNamed(saved, 'Early');
-    expect(named.startDate.toString()).toBe(saved.startDate.toString());
-    expect(ids(named)).toEqual(both);
+    expect(saved.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(saved.startDate.toString()).toBe(after(start, 1, 1).toString());
   });
 
   it('stopping the repeat from a later occurrence while making it all-day is made, though the series has excluded and added dates', async () => {
@@ -648,7 +688,7 @@ describe('a move the series cannot follow is refused and writes nothing', () => 
     ['set hours', () => seriesFrom(makeUserStart(), ['FREQ=DAILY;BYHOUR=17,20;COUNT=8']), (at) => movedTo(at, 0, 1), SET_HOURS],
     ['a rule that cancels occurrences (EXRULE)', () => withExrule(makeUserStart()), (at) => movedTo(at, 1, 0), EXRULE_MOVE],
     ['a change between timed and all-day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[1]).series, (at) => asAllDay(at, 1), KIND_CHANGE],
-    ['a change between all-day and timed', allDayWithOneChanged, (at) => asTimed(at, 1), KIND_CHANGE],
+    ['a change between all-day and timed', allDayWithAddedDate, (at) => asTimed(at, 1), KIND_CHANGE],
     ['a new repeat rule with a move to another day', () => fullSeries(makeUserStart(), RULES(makeUserStart())[0]).series, (at) => ({ ...movedTo(at, 1, 0), recurrence: { freq: 'DAILY', count: 3 } }), NEW_RULE_MOVE],
   ];
   // A later occurrence the rule makes, at the series' own time of day.
@@ -716,7 +756,10 @@ describe('the edit tool routes a whole-series time change before the card', () =
       expect(asked.sess.failReason).toBe(ASK);
       expect(asked.sess.editEventArgs).toBeUndefined();
       expect(asked.modifications).toEqual([]);
-      const own = await runEdit(fullSeries(start, RULES(start)[0]).series, movedTo(start, 0, 1));
+      // An all-day start on its own date restates it (no change), so the
+      // all-day edit lengthens the series to two days as well.
+      const ownEdit = start.isDate ? { ...movedTo(start, 0, 1), end_iso: startIsoOf(after(start, 2)) } : movedTo(start, 0, 1);
+      const own = await runEdit(fullSeries(start, RULES(start)[0]).series, ownEdit);
       expect(own.sess.failReason).toBeUndefined();
       expect(own.sess.editEventArgs).not.toHaveProperty('edit_scope');
     });

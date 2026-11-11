@@ -15,8 +15,6 @@
 process.env.TZ = 'America/Los_Angeles';
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
 import { resolve } from 'node:path';
 import ICAL from './fixtures/mozilla/Ical.sys.mjs';
 
@@ -54,27 +52,19 @@ const { run: runCreate } = await import('../chat/tools/calendar_event_create.js'
 const { runStateEditCalendarEventList } = await import('../chat/fsm/calendarEdit.js');
 const { runStateDeleteCalendarEventList } = await import('../chat/fsm/calendarDelete.js');
 const { runStateCreateCalendarEventList } = await import('../chat/fsm/calendarCreate.js');
-const { streamText, formatTimestampForAgent, formatNaiveIsoInTimezone, formatCardTime } = await import('../chat/modules/helpers.js');
+const { streamText, formatTimestampForAgent, formatCardTime } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
 const { checked } = await import('./helpers/calendarSchemaCheck.js');
+const { intlOffsetAt } = await import('./helpers/zoneOffsetTable.js');
+// The instant a "YYYY-MM-DDTHH:MM:SS" names in the zone `tzid` (away from a
+// clock change).
+const instantIn = (naiveIso, tzid) => {
+  const asUtc = Date.parse(`${naiveIso}Z`);
+  return new Date(asUtc - intlOffsetAt(tzid, asUtc) * 60 * 1000);
+};
 
-// ---------- Thunderbird's own dates (as calendarRecurrenceNative.test.js) ----------
-class NativeZone {
-  constructor(innerObject) { this.innerObject = innerObject; this.wrappedJSObject = this; }
-  get tzid() { return this.innerObject.tzid; }
-}
-const nativeScope = vm.createContext({
-  ICAL,
-  Components: { ID: (x) => x },
-  ChromeUtils: {
-    generateQI: () => () => {},
-    defineESModuleGetters(target) { target.CalTimezone = NativeZone; },
-  },
-});
-vm.runInContext(readFileSync(resolve('test/fixtures/mozilla/CalDateTime.sys.mjs'), 'utf8')
-  .replace('import ICAL from "resource:///modules/calendar/Ical.sys.mjs";', '')
-  .replace('export function CalDateTime', 'function CalDateTime'), nativeScope);
-const NativeDateTime = nativeScope.CalDateTime;
+// ---------- Thunderbird's own dates and lengths (nativeCalendarDates.js) ----------
+const { NativeZone, NativeDateTime, NativeDuration } = await import('./helpers/nativeCalendarDates.js');
 
 function vtimezone(tzid, daylight, standard) {
   return new ICAL.Timezone({
@@ -143,7 +133,11 @@ function nativeLoaded(items, zone) {
   const loaded = loadCalendarBridge(resolve('chat/experiments/tmCalendar/tmCalendar.sys.mjs'), { items });
   const fakeCc = loaded.ctx.Cc;
   loaded.ctx.Cc = new Proxy({}, {
-    get: (_t, key) => (key === '@mozilla.org/calendar/datetime;1' ? { createInstance: () => new NativeDateTime() } : fakeCc[key]),
+    get: (_t, key) => {
+      if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => new NativeDateTime() };
+      if (key === '@mozilla.org/calendar/duration;1') return { createInstance: () => new NativeDuration() };
+      return fakeCc[key];
+    },
   });
   const { cal } = loaded.ctx.ChromeUtils.importESModule('resource:///modules/calendar/calUtils.sys.mjs');
   cal.timezoneService.UTC = new NativeZone(ICAL.Timezone.utcTimezone);
@@ -300,7 +294,8 @@ for (const { name, tz, zone } of ZONES) {
         expect(change(changes, 'Start date')).toBeNull();
         expect(change(changes, 'Start time')).toBeNull();
         expect(change(changes, 'End date')).toBe(`  ${cardDate(0)} → **${cardDate(2)}**`);
-        expect(changes).toContain(`**Timezone:**\n  ${otherTz}`);
+        // The card prints the times as written, on the user's clock: no zone line.
+        expect(changes).not.toContain('**Timezone:**');
         expectDatesOnly(text);
       });
 
@@ -311,11 +306,12 @@ for (const { name, tz, zone } of ZONES) {
       });
     }
 
-    it('a timed edit with the same digits in another timezone shows the Start and End time lines', async () => {
+    it('a timed edit with the same digits in another timezone shows the Start and End time lines, the new times on the user\'s clock', async () => {
       const timed = fakeEvent({ id: 'evt', title: 'Sync', startDate: timeOn(0, 9, zone), endDate: timeOn(0, 10, zone) });
       const { changes } = await editCard([timed], zone, { start_iso: at(0, 9), end_iso: at(0, 10), timezone: otherTz });
-      expect(change(changes, 'Start time')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 9)))} → **${formatNaiveIsoInTimezone(at(0, 9), otherTz)}**`);
-      expect(change(changes, 'End time')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 10)))} → **${formatNaiveIsoInTimezone(at(0, 10), otherTz)}**`);
+      expect(change(changes, 'Start time')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 9)))} → **${formatTimestampForAgent(instantIn(at(0, 9), otherTz))}**`);
+      expect(change(changes, 'End time')).toBe(`  ${formatTimestampForAgent(new Date(at(0, 10)))} → **${formatTimestampForAgent(instantIn(at(0, 10), otherTz))}**`);
+      expect(changes).not.toContain('**Timezone:**');
     });
 
     it('a timed 09:00 event made all-day on its own day keeps the Start line', async () => {

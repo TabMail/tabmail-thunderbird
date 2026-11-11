@@ -124,7 +124,7 @@ const noCalendarManager = (loaded) => {
 const EVENT_NOT_FOUND = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
 const SCOPE_NEEDS_RID = (scope) => `edit_scope='${scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.`;
 const NO_OCCURRENCE = (field, iso) => `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`;
-const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app';
+const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates or end date in the other form; change it in the calendar app';
 const KIND_CHANGE_UNTIL = 'changing these occurrences between all-day and timed would leave their end date (UNTIL) in the other form; give the repeat rule again, its end included, in the same edit (a move to another day goes first, in its own edit)';
 const SET_HOURS = 'this series repeats at set hours or minutes, so its time cannot be moved here; tell the user to change it in their calendar app';
 const NEW_RULE_MOVE = 'a new repeat rule cannot be given with a move of the series to another day; make the move first, then change the repeat in a second edit (calendar_event_read then shows the moved end)';
@@ -133,7 +133,14 @@ const RULE_DAYS = 'this series repeats on days its rule names in a way a move ca
 const ALL_DAY_TIME = /^this is an all-day event, and the edit gives a time of day without all_day\. Ask the user/;
 const ALL_DAY_END = /^this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso\. Ask the user/;
 const END_BEFORE = /^the event would end before it starts\. An end_iso alone changes only the end/;
-const NAMED_KEEPS_START = /^the occurrence the edit names was changed on its own and keeps its own start: the event would end before it starts/;
+// The bridge's check before the card failing: the tool refuses the edit.
+const checkThrows = (loaded) => {
+  const modify = loaded.api.modifyCalendarEvent;
+  loaded.api.modifyCalendarEvent = async (details) => {
+    if (details.check_only) throw new Error('calendar busy');
+    return modify(details);
+  };
+};
 
 // Each row: the refusal (as the census names it), the stored event (none for
 // an event that does not exist), the edit, a setup of the calendar, and the
@@ -160,8 +167,8 @@ const REFUSALS = [
   ['a timed end before its start', oneOff, { end_iso: isoAt(1, 16) }, null, END_BEFORE],
   ['an all-day event given a timed end alone', allDayOneOff, { all_day: false, end_iso: `${DAY(6)}T15:00:00` }, null, /^the edit would leave the start all-day and the end timed/],
   ['a whole series named from its first occurrence, changed on its own, given an end before that occurrence starts', () => series({ exceptions: [changed(1, { startOn: [1, 19] })] }),
-    { edit_scope: 'all', recurrence_id: isoAt(1, 19), end_iso: `${DAY(1)}T18:30:00` }, null, NAMED_KEEPS_START],
-  ['a whole series made all-day with an excluded date', () => series({ items: [recurrenceDate('EXDATE', fakeDateTime(DAY(6), 17))] }),
+    { edit_scope: 'all', recurrence_id: isoAt(1, 19), end_iso: `${DAY(1)}T18:30:00` }, null, END_BEFORE],
+  ['a whole series made all-day with an added date', () => series({ items: [recurrenceDate('RDATE', fakeDateTime(DAY(6), 19))] }),
     { edit_scope: 'all', recurrence_id: isoAt(1), start_iso: `${DAY(1)}T00:00:00`, end_iso: `${DAY(2)}T00:00:00`, all_day: true }, null, KIND_CHANGE],
   ['a whole series made all-day keeping an UNTIL', () => series({ rules: ['FREQ=DAILY;UNTIL=20991011T065959Z'] }),
     { edit_scope: 'all', recurrence_id: isoAt(1), start_iso: `${DAY(1)}T00:00:00`, end_iso: `${DAY(2)}T00:00:00`, all_day: true }, null, KIND_CHANGE_UNTIL],
@@ -196,10 +203,10 @@ const REFUSALS = [
   ['a split whose following part\'s rule cannot be written', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), title: 'Renamed' }, ruleWriteThrowsAt(2), /^failed to build the new series' recurrence: Error: NS_ERROR_OBJECT_IS_IMMUTABLE/],
   ['a split of an all-day series given a time of day without all_day', () => series({ start: fakeDate(DAY(1)) }),
     { edit_scope: 'this_and_following', recurrence_id: `${DAY(4)}T00:00:00`, start_iso: `${DAY(4)}T09:00:00` }, null, ALL_DAY_TIME],
-  ['a split made all-day whose following part has an excluded date', () => series({ items: [recurrenceDate('EXDATE', fakeDateTime(DAY(7), 17))] }),
+  ['a split made all-day whose following part has an added date', () => series({ items: [recurrenceDate('RDATE', fakeDateTime(DAY(7), 19))] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: `${DAY(4)}T00:00:00`, end_iso: `${DAY(5)}T00:00:00`, all_day: true }, null, KIND_CHANGE],
   ['a split at an occurrence changed on its own, given an end before it starts', () => series({ exceptions: [changed(4, { startOn: [4, 19] })] }),
-    { edit_scope: 'this_and_following', recurrence_id: isoAt(4, 19), end_iso: `${DAY(4)}T18:30:00` }, null, NAMED_KEEPS_START],
+    { edit_scope: 'this_and_following', recurrence_id: isoAt(4, 19), end_iso: `${DAY(4)}T18:30:00` }, null, END_BEFORE],
   ['a split with a new rule and a move to another day', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: isoAt(5), recurrence: { freq: 'DAILY', count: 3 } }, null, NEW_RULE_MOVE],
   ['a split asking for invitations once everyone is removed', () => series({ attendees: [guest('ana')] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4), remove_attendees: [{ email: '*' }], send_invitations: true }, null,
@@ -214,6 +221,9 @@ const REFUSALS = [
   ['stopping the repeat at an occurrence changed on its own, with new times', () => series({ exceptions: [changed(4)] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: isoAt(4, 18), recurrence: {} }, null,
     `the occurrence at ${isoAt(4)} was changed on its own, and ending the series there would lose its changes; change it in the calendar app`],
+
+  // The edit tool
+  ['the check before the card failing', oneOff, { title: 'Renamed' }, checkThrows, 'the calendar could not check this edit (Error: calendar busy); try again'],
 ];
 
 // The refusals of the two functions no edit from the tool reaches, and why:

@@ -300,7 +300,7 @@ describe('a series stored with a zoned all-day start', () => {
     expect(changed.parentItem).toBe(item);
   });
 
-  it('a one-occurrence edit restating its dates changes that occurrence alone', async () => {
+  it('a one-occurrence edit restating its dates changes that occurrence alone, and its dates, restated, are kept as the series stores them', async () => {
     const loaded = loadCalendarBridge(bridgeUrl, { items: [stored()] });
     const before = occurrenceDays(stored());
     const edit = await loaded.api.modifyCalendarEvent({
@@ -312,7 +312,10 @@ describe('a series stored with a zoned all-day start', () => {
     expect(occurrenceDays(item)).toEqual(before);
     expect({ excluded: excludedDays(item), changed: exceptionDays(item) }).toEqual({ excluded: [DAILY.excluded], changed: [DAILY.changed, '2099-10-12'] });
     const one = item.recurrenceInfo.getExceptionFor(item.recurrenceInfo.getExceptionIds().find((rid) => dayOf(rid) === '2099-10-12'));
-    expectAllDayWithoutZone(one.startDate, '2099-10-12');
+    // A restated date is no change, so nothing rewrites it: the occurrence keeps
+    // the date Thunderbird built it with, in the series' stored zone.
+    expect(one.title).toBe('One');
+    expect({ isDate: one.startDate.isDate, zone: one.startDate.timezone, day: dayOf(one.startDate) }).toEqual({ isDate: true, zone: LOCAL_ZONE, day: '2099-10-12' });
   });
 
   async function splitStored(series, patch) {
