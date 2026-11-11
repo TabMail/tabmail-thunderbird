@@ -911,6 +911,61 @@ export function formatNaiveIsoInTimezone(naiveIso, timezoneId) {
   }
 }
 
+const CARD_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// Sakamoto's weekday offsets, one per month.
+const CARD_WEEKDAY_MONTH_OFFSETS = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+
+function isLeapYear(y) {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+}
+
+function daysInMonth(y, m) {
+  if (m === 2) return isLeapYear(y) ? 29 : 28;
+  return [4, 6, 9, 11].includes(m) ? 30 : 31;
+}
+
+const dayParts = (day) => day.split("-").map(Number);
+const dayOf = (y, m, d) => `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+function dayBefore(day) {
+  const [y, m, d] = dayParts(day);
+  if (d > 1) return dayOf(y, m, d - 1);
+  if (m > 1) return dayOf(y, m - 1, daysInMonth(y, m - 1));
+  return dayOf(y - 1, 12, 31);
+}
+
+function weekdayOf(day) {
+  const [y0, m, d] = dayParts(day);
+  const y = m < 3 ? y0 - 1 : y0;
+  const n = y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) + CARD_WEEKDAY_MONTH_OFFSETS[m - 1] + d;
+  return CARD_WEEKDAYS[n % 7];
+}
+
+/**
+ * A start or end as a calendar confirmation card prints it.
+ *
+ * An all-day value is a DATE with no zone (an all-day `naiveIso` is the date at
+ * `T00:00:00`), so it is printed from its date digits alone, as
+ * `<Weekday> YYYY/MM/DD`: never through an epoch, a Date object or a zone,
+ * which would name the previous day west of UTC. An all-day end is exclusive
+ * (RFC 5545 DTEND, the day after the last day); given `endAfter`, the start
+ * shown on the same card, the card prints the last day, the day before the
+ * end, and never a day before the start (a DTEND equal to DTSTART is one
+ * day), as Google Calendar shows it.
+ *
+ * A timed value is printed by formatNaiveIsoInTimezone, unchanged.
+ */
+export function formatCardTime(naiveIso, { allDay = false, endAfter = null, timezone } = {}) {
+  if (!allDay) return formatNaiveIsoInTimezone(naiveIso, timezone);
+  let day = String(naiveIso).slice(0, 10);
+  if (endAfter) {
+    const start = String(endAfter).slice(0, 10);
+    const last = dayBefore(day);
+    day = last < start ? start : last;
+  }
+  return `${weekdayOf(day)} ${day.replaceAll("-", "/")}`;
+}
+
 // Ensures an internal container for bubble content, so we can prepend inline icons without
 // interfering with markdown rendering and streaming.
 function _ensureBubbleContentElement(element) {

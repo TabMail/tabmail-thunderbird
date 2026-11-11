@@ -117,6 +117,22 @@ UNTIL's day, the rewritten one keeps it)
 - Consumers key an all-day row by `startDay`, never by the epoch: `calendar_search` uses
   `localMidnightOfDay(startDay)` for the day key and ordering; `calendar_event_read` renders
   `start_iso`/`end_iso` as `${day}T00:00:00` and matches a `start_iso` lookup on the day.
+- The confirmation cards (#312, #358) are consumers too. The edit and delete cards read the stored
+  times through `shownEventTimesIso(details)` (keyed by `startDay`/`endDay`), never
+  `new Date(details.start)`, and the edit, delete and create cards print every start and end through
+  ONE formatter, `formatCardTime(naiveIso, { allDay, endAfter, timezone })` in `chat/modules/helpers.js`.
+  An all-day value prints as `<Weekday> YYYY/MM/DD` from its date digits only (weekday and the day
+  before by calendar arithmetic: no epoch, no Date object, no zone); an all-day end prints the last
+  day, the day before the exclusive DTEND, never before the start shown beside it (`endAfter`), so a
+  DTEND equal to DTSTART shows one day, as Google Calendar does. A timed value prints through
+  `formatNaiveIsoInTimezone`, unchanged. All-day change lines read **Start date**/**End date** (the
+  new value's kind decides), timed ones **Start time**/**End time**. A new value's kind is `all_day`
+  when given, else the event's own. The edit card decides "changed" by the naive values and their
+  kinds (all-day by day; timed by digits, and always shown when `timezone` is given), not by
+  comparing formatted strings, which outside UTC showed an unchanged all-day start as a change. The
+  Scope line names an all-day occurrence (`recurrence_id`, `recurrenceIdSlot`) by its date, taking
+  the kind from the event read. Pinned by `test/calendarCardAllDayDates.test.js` (Thunderbird's own
+  dates, west and east of UTC).
 
 ## The second filter that dropped the item
 
