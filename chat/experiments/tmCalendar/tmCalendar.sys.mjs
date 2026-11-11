@@ -1510,7 +1510,8 @@ function editTimesError(item, patch) {
     return `this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso. Ask the user how many days it should last, or whether it should ${timed}`;
   }
   if (e.compare(s) >= 0) return null;
-  return "the event would end before it starts. An end_iso alone changes only the end and keeps the start; to move the event, give start_iso too, or ask the user when it should start and end";
+  const ask = patch.start_iso ? "Ask" : "An end_iso alone changes only the end and keeps the start; to move the event, give start_iso too, or ask";
+  return `the event would end before it starts. ${ask} the user when it should start and end`;
 }
 
 // toCalIDateTime for an edit of `item`, whose new times it gives in the item's
@@ -2841,8 +2842,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] splitRecurringEvent: duration preservation failed:", durationResult.error);
             }
+            // Without a new start the part starts at the slot, which the
+            // assistant has not seen when the occurrence was moved off it.
             const editError = editTimesError(newEv, patch);
-            if (editError) return { ok: false, error: editError };
+            if (editError) {
+              return { ok: false, error: patch.start_iso ? editError : `the following occurrences start at ${shownNaiveIso(slotStart)}, their usual time: ${editError}` };
+            }
             // The following part moves as a whole series does (#287): its rule's
             // days and its changed occurrences go with its start.
             const followingShift = shiftSeriesWithStart(newEv, slotStart, patch);

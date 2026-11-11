@@ -167,7 +167,8 @@ same design (tabmail-ios #421).
     of day without `all_day`, or whose all-day end would fall on or before its start, is refused before anything is
     written, asking the user (`editTimesError`, formerly `allDayEditError`, in the split too; note 034); so is a start
     and an end of different kinds (a side the edit leaves out keeps its kind; #318) and a timed end before the start
-    (an end at the start is written, a zero-length event as Google makes one). The same check runs on the
+    (an end at the start is written, a zero-length event as Google makes one; the refusal explains that an end alone keeps
+    the start only when no start was given, and a split's names the slot its part starts at). The same check runs on the
     occurrence the edit names (`applyEditToNamedOccurrence`). `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
     all-day comes with them.

@@ -51,7 +51,7 @@ vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ t
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}) }));
 
 const {
-  loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem, recurrenceDate, seriesOccurrences, LOCAL_ZONE,
+  loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem, recurrenceDate, seriesOccurrences, fixedZone, LOCAL_ZONE,
 } = await import('./helpers/calendarBridgeHarness.js');
 const { run } = await import('../chat/tools/calendar_event_edit.js');
 const { runStateEditCalendarEventList } = await import('../chat/fsm/calendarEdit.js');
@@ -94,6 +94,12 @@ const occurrences = (item) => seriesOccurrences(item, ...RANGE())
   .map(({ start, item: occ }) => `${start.toString()}-${(occ.recurrenceId ? occ.endDate : null)?.toString() || ''}${occ.recurrenceId ? ` ${occ.title}` : ''}`)
   .sort();
 const changedOf = (item, n) => item.recurrenceInfo.getExceptionFor(fakeDateTime(day(n), 17));
+// A zone east of the user's, and a time in it as the read tools show it (the user's zone).
+const EAST = fixedZone('Test/East+0900', 9 * 60);
+const shown = (dt) => {
+  const d = dt.getInTimezone(LOCAL_ZONE);
+  return `${d.year}-${pad2(d.month + 1)}-${pad2(d.day)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
+};
 
 async function edit(item, args) {
   const loaded = loadCalendarBridge(bridgeUrl, { items: [item] });
@@ -119,6 +125,8 @@ async function expectRefused(makeItem, args, pattern) {
 let nextPid = 0;
 async function runTool(item, args) {
   const loaded = loadCalendarBridge(bridgeUrl, { items: [item] });
+  const { cal } = loaded.ctx.ChromeUtils.importESModule('resource:///modules/calendar/calUtils.sys.mjs');
+  cal.timezoneService.getTimezone = (tzid) => (tzid === EAST.tzid ? EAST : null);
   globalThis.browser.tmCalendar = checked(loaded.api, []);
   const pid = `pid-end-alone-${nextPid += 1}`;
   ctx.fsmSessions[pid] = {};
@@ -231,6 +239,36 @@ describe('a split given an end alone starts at the slot', () => {
     expect(await card(pid)).toContain(`(starting ${at(5, 19)}, originally ${at(5, 17)})`);
   });
 
+  it('a whole-series edit named from that later occurrence becomes a split, and its card states the original time too', async () => {
+    const { sess, pid } = await runTool(withMoved(), { edit_scope: 'all', recurrence_id: at(5, 19), end_iso: at(5, 21) });
+    expect(sess.failReason).toBeUndefined();
+    expect(await card(pid)).toContain(`(starting ${at(5, 19)}, originally ${at(5, 17)})`);
+  });
+
+  it('in a series in a zone east of the user\'s, the card states both times in the user\'s zone', async () => {
+    const slot = fakeDateTime(day(5), 10, 0, EAST);
+    const movedTo = fakeDateTime(day(5), 12, 0, EAST);
+    const eastSeries = () => {
+      const ev = fakeEvent({ id: 'evt', title: 'Sync', startDate: fakeDateTime(day(0), 10, 0, EAST), endDate: fakeDateTime(day(0), 11, 0, EAST) });
+      const moved = fakeEvent({ id: 'evt', title: 'Moved', startDate: movedTo.clone(), endDate: fakeDateTime(day(5), 13, 0, EAST), recurrenceId: slot.clone() });
+      ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY;COUNT=10')], { exceptions: [moved] });
+      ev.recurrenceInfo.item = ev;
+      return ev;
+    };
+    // The user's day differs from the series' (west of UTC), so the zone shows.
+    expect(shown(slot).slice(0, 10)).not.toBe(day(5));
+    const end = fakeDateTime(day(5), 14, 0, EAST);
+    const { sess, pid } = await runTool(eastSeries(), { edit_scope: 'this_and_following', recurrence_id: shown(movedTo), end_iso: shown(end) });
+    expect(sess.failReason).toBeUndefined();
+    expect(await card(pid)).toContain(`(starting ${shown(movedTo)}, originally ${shown(slot)})`);
+  });
+
+  it('given an end before the slot, the refusal names the slot the part would start at', async () => {
+    const early = () => series({ exceptions: [changed(5, 'Early', fakeDateTime(day(5), 15), fakeDateTime(day(5), 16))] });
+    await expectRefused(early, { edit_scope: 'this_and_following', recurrence_id: at(5, 15), end_iso: at(5, 16, 30) },
+      new RegExp(`^the following occurrences start at ${at(5, 17)}, their usual time: the event would end before it starts\\. An end_iso alone`));
+  });
+
   it('the card states no original time for an occurrence at its slot', async () => {
     const { sess, pid } = await runTool(withMoved(), { edit_scope: 'this_and_following', recurrence_id: at(3, 17), end_iso: at(3, 19) });
     expect(sess.failReason).toBeUndefined();
@@ -258,7 +296,7 @@ describe('new times that cannot be written are refused before the card, with not
   });
 
   it('a timed start and end given the wrong way round', async () => {
-    await expectRefused(oneOff, { start_iso: at(0, 19), end_iso: at(0, 18) }, /^the event would end before it starts/);
+    await expectRefused(oneOff, { start_iso: at(0, 19), end_iso: at(0, 18) }, /^the event would end before it starts\. Ask the user when it should start and end$/);
   });
 
   it('all_day: false with an end alone on an all-day event', async () => {

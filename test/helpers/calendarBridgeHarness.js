@@ -43,9 +43,10 @@ export function fixedZone(tzid, offsetMinutes) {
 const pad2 = (n) => String(n).padStart(2, '0');
 
 
-// A calIDuration-like length (CalDuration): its seconds and sign.
+// A calIDuration-like length (CalDuration): its seconds and sign, and a copy
+// (CalDuration.clone), so a bridge that copies a length runs as in Thunderbird.
 function fakeDuration(inSeconds, isNegative) {
-  return { inSeconds, isNegative };
+  return { inSeconds, isNegative, clone: () => fakeDuration(inSeconds, isNegative) };
 }
 export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second = 0, isDate = false, timezone } = {}) {
   const dt = { year, month, day, hour, minute, second, isDate, timezone: timezone || (isDate ? UTC_ZONE : LOCAL_ZONE) };

@@ -132,6 +132,8 @@ const EXRULE_MOVE = 'this series cancels occurrences by a rule (EXRULE), which a
 const RULE_DAYS = 'this series repeats on days its rule names in a way a move cannot carry (for example the second Tuesday, or the last day of the month), so it cannot be moved to another day here; move only its time of day, or tell the user to change its days in their calendar app';
 const ALL_DAY_TIME = /^this is an all-day event, and the edit gives a time of day without all_day\. Ask the user/;
 const ALL_DAY_END = /^this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso\. Ask the user/;
+const END_BEFORE = /^the event would end before it starts\. An end_iso alone changes only the end/;
+const NAMED_KEEPS_START = /^the occurrence the edit names was changed on its own and keeps its own start: the event would end before it starts/;
 
 // Each row: the refusal (as the census names it), the stored event (none for
 // an event that does not exist), the edit, a setup of the calendar, and the
@@ -155,6 +157,10 @@ const REFUSALS = [
   ['a whole-series time change named by a time that is no occurrence', series, { edit_scope: 'all', recurrence_id: isoAt(1, 18), start_iso: isoAt(1, 19) }, null, NO_OCCURRENCE('recurrence_id', isoAt(1, 18))],
   ['an all-day event given a time of day without all_day', allDayOneOff, { start_iso: `${DAY(8)}T15:00:00` }, null, ALL_DAY_TIME],
   ['an all-day end on its start', allDayOneOff, { start_iso: `${DAY(8)}T00:00:00`, end_iso: `${DAY(8)}T00:00:00` }, null, ALL_DAY_END],
+  ['a timed end before its start', oneOff, { end_iso: isoAt(1, 16) }, null, END_BEFORE],
+  ['an all-day event given a timed end alone', allDayOneOff, { all_day: false, end_iso: `${DAY(6)}T15:00:00` }, null, /^the edit would leave the start all-day and the end timed/],
+  ['a whole series named from its first occurrence, changed on its own, given an end before that occurrence starts', () => series({ exceptions: [changed(1, { startOn: [1, 19] })] }),
+    { edit_scope: 'all', recurrence_id: isoAt(1, 19), end_iso: `${DAY(1)}T18:30:00` }, null, NAMED_KEEPS_START],
   ['a whole series made all-day with an excluded date', () => series({ items: [recurrenceDate('EXDATE', fakeDateTime(DAY(6), 17))] }),
     { edit_scope: 'all', recurrence_id: isoAt(1), start_iso: `${DAY(1)}T00:00:00`, end_iso: `${DAY(2)}T00:00:00`, all_day: true }, null, KIND_CHANGE],
   ['a whole series made all-day keeping an UNTIL', () => series({ rules: ['FREQ=DAILY;UNTIL=20991011T065959Z'] }),
@@ -192,6 +198,8 @@ const REFUSALS = [
     { edit_scope: 'this_and_following', recurrence_id: `${DAY(4)}T00:00:00`, start_iso: `${DAY(4)}T09:00:00` }, null, ALL_DAY_TIME],
   ['a split made all-day whose following part has an excluded date', () => series({ items: [recurrenceDate('EXDATE', fakeDateTime(DAY(7), 17))] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: `${DAY(4)}T00:00:00`, end_iso: `${DAY(5)}T00:00:00`, all_day: true }, null, KIND_CHANGE],
+  ['a split at an occurrence changed on its own, given an end before it starts', () => series({ exceptions: [changed(4, { startOn: [4, 19] })] }),
+    { edit_scope: 'this_and_following', recurrence_id: isoAt(4, 19), end_iso: `${DAY(4)}T18:30:00` }, null, NAMED_KEEPS_START],
   ['a split with a new rule and a move to another day', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: isoAt(5), recurrence: { freq: 'DAILY', count: 3 } }, null, NEW_RULE_MOVE],
   ['a split asking for invitations once everyone is removed', () => series({ attendees: [guest('ana')] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4), remove_attendees: [{ email: '*' }], send_invitations: true }, null,
