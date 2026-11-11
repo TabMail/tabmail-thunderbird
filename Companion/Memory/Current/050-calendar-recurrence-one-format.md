@@ -151,7 +151,11 @@ same design (tabmail-ios #421).
     its changed occurrences still at their slots and its rule's days go with it, which closes #328, where a part
     moved to another day kept naming the old days; one given its own time keeps it). Superseded: the changed
     occurrences kept their own times; then (first #287 version) every changed occurrence moved. The new times are read in the user's zone (or the edit's `timezone`; one Thunderbird does not know is refused by name, nothing written, for create and every edit scope: `toCalIDateTime` throws it outside its own null-returning try, #314; before, it was read in the user's zone) and
-    written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`):
+    written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`;
+    as Google Calendar does, a start alone keeps the length and an end alone changes only the end, the start kept
+    being the item's own: the event's, one occurrence's current start, the split's slot; until #350 an end alone
+    moved the start back by the stored length, which moved a whole series' occurrences and the occurrence a
+    split starts at):
     a zoned series' own zone at the same instant, a floating series at the user's clock digits, kept floating (the
     inverse of `asShown`), as Thunderbird's event dialog keeps an event's zone. Read straight in the user's zone,
     a new start moved the series into it: its rule expanded there (a Thursday east of UTC can be a Wednesday in
@@ -161,7 +165,11 @@ same design (tabmail-ios #421).
     edit from all day to timed is written as read. An edit that leaves `all_day` out keeps the item's kind, all-day
     or timed (the edit tool's "Leave empty to keep existing"; #309, note 034); one that gives an all-day item a time
     of day without `all_day`, or whose all-day end would fall on or before its start, is refused before anything is
-    written, asking the user (`allDayEditError`, in the split too; note 034). `all_day` alone
+    written, asking the user (`editTimesError`, formerly `allDayEditError`, in the split too; note 034); so is a start
+    and an end of different kinds (a side the edit leaves out keeps its kind; #318) and a timed end before the start
+    (an end at the start is written, a zero-length event as Google makes one; the refusal explains that an end alone keeps
+    the start only when no start was given, and a split's names the slot its part starts at). The same check runs on the
+    occurrence the edit names (`applyEditToNamedOccurrence`). `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
     all-day comes with them.
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
@@ -169,7 +177,9 @@ same design (tabmail-ios #421).
   - **A split at an occurrence that was changed on its own** (X) is made in one write (2026-11-10): "from X on, new
     time" applies the time to X and everything after it, and X keeps its rename. X is carried
     into the following part with its own fields, then takes the edit there (`applyEditToNamedOccurrence`): with
-    new times, the part's start and end; every field the edit names (title, location, description, busy/free);
+    a new start, the part's start and end; with an end alone, the part's end, keeping its own start (the part
+    starts at the slot, and the card names X by its own start and states its original time, `recurrenceIdSlot`
+    from `getCalendarEventDetails`; an end before X's start is refused); every field the edit names (title, location, description, busy/free);
     its own changes the edit does not name are kept. A guest change is not made there: the bridge's one guest merge
     makes it on every item the split covers, X included (051). Every changed occurrence of the part whose own
     start, end or place the split changes (X, ones at their slots moved with the part) has its own attendees
@@ -252,12 +262,14 @@ same design (tabmail-ios #421).
     alone the new end, on the series' own date as the read tools show it, `shownEventTimesIso` in
     `calendar_event_read.js`): a plain shift of every occurrence. Thunderbird's `onStartDateChange` moves
     EXDATE/RDATE, UNTIL and the RECURRENCE-IDs by the start's change in UTC; `shiftSeriesWithStart` (bridge,
-    after `allDayEditError`) handles the changed occurrences as calendar apps keep the user's edits
+    after `editTimesError`) handles the changed occurrences as calendar apps keep the user's edits
     (2026-11-10): one still at its slot (its own start, moved by that UTC amount, lands on its
     moved RECURRENCE-ID; changed only in title, notes, place, guests or length) moves by the same amount and keeps
-    its changes; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
-    replaces its slot and shows once). A first occurrence the edit names by `recurrence_id` takes the edit (its
-    times and named fields, `applyEditToNamedOccurrence`), even when given its own time; with no `recurrence_id`
+    its changes, its own length included; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
+    replaces its slot and shows once). An end alone moves no start, so it changes no changed occurrence (#350
+    kept this rule as it was), and excluded dates stay excluded. A first occurrence the edit names by `recurrence_id` takes the edit (its
+    times and named fields, `applyEditToNamedOccurrence`: a new start gives it the series' start and end, an end
+    alone the series' end with its own start kept), even when given its own time; with no `recurrence_id`
     none is named. Superseded: (first #287 version) every changed occurrence moved by the shift, one given its own
     time included (a 9:00 series moved to 10:00 took one moved to 11:00 to 12:00, a time nobody chose); (before
     #287) the changed occurrences kept their times while their RECURRENCE-IDs moved. And on a move to another day (days counted from the date digits in the old start's zone)

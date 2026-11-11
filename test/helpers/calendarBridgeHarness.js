@@ -43,8 +43,8 @@ export function fixedZone(tzid, offsetMinutes) {
 const pad2 = (n) => String(n).padStart(2, '0');
 
 
-// A calIDuration-like length (CalDuration): its seconds and sign, and a copy,
-// which applyDurationPreservation negates to move a start back from a new end.
+// A calIDuration-like length (CalDuration): its seconds and sign, and a copy
+// (CalDuration.clone), so a bridge that copies a length runs as in Thunderbird.
 function fakeDuration(inSeconds, isNegative) {
   return { inSeconds, isNegative, clone: () => fakeDuration(inSeconds, isNegative) };
 }

@@ -29,7 +29,9 @@ the digits stay as read, a relabel converts nothing). Its callers:
   `all_day` read as false, so new dates for an all-day event made it a timed one at midnight. This
   is the one place an edit's kind is decided: `applyDurationPreservation` (and its mirror) writes
   the converter's values as given (`test/calendarEditKeepsAllDay.test.js`). Two edits of an
-  all-day item are refused before anything is written (`allDayEditError`, after the times are
+  all-day item are refused before anything is written (`editTimesError`, `allDayEditError` until
+  #350, which also refuses a start and an end of different kinds and a timed end before the start;
+  an end alone keeps the item's own start, so its all-day end is compared with that start, after the times are
   applied, in `modifyCalendarEvent` and in the split's following part), and the message tells the
   assistant to ask the user: a `start_iso` or `end_iso` with a time of day and no `all_day` (the
   user may want a timed event or that date all day; a date at midnight, `T00:00:00` as the read

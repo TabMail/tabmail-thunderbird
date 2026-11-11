@@ -66,20 +66,6 @@ export function applyDurationPreservation({
       return { derived: null, error: e };
     }
   }
-  if (hasEndPatch && !hasStartPatch && origDuration) {
-    try {
-      const negDur = origDuration.clone();
-      negDur.isNegative = !negDur.isNegative;
-      const newStart = clone.endDate.clone();
-      newStart.addDuration(negDur);
-      clone.startDate = newStart;
-      log("derived startDate from new end + existing duration");
-      return { derived: "start" };
-    } catch (e) {
-      log("failed to derive startDate from duration: " + e);
-      return { derived: null, error: e };
-    }
-  }
   return { derived: null };
 }
 // ----- end applyDurationPreservation -----
