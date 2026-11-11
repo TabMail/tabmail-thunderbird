@@ -12,7 +12,12 @@ same design (tabmail-ios #421).
   `queryCalendarItems` row and on `getCalendarEventDetails`. It is null when the event does not repeat. The
   raw `recurrenceRRule` field is gone.
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
-  in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing.
+  in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing. The delete card
+  (`calendarDelete.js`, #355) adds `Repeating event: every occurrence will be deleted` for any repeating event (keyed on
+  `isRecurring`, so a series by added dates alone gets it too: the delete removes the whole item) and
+  `Repeats <words>` from `recurrenceInWords`, the iOS card's wording (`every 2 weeks on Monday, Wednesday (10 times)`,
+  count over until, `(1 time)`). A rule with `other` parts or no `freq` gets no Repeats line: a part left out would
+  name a different rule (iOS words the known parts instead). One occurrence is removed with the edit tool's `exdates_add`.
 - **Only the stated fields are shown.** Thunderbird never stores `INTERVAL=1` or `WKST=MO` (ical.js `Recur.toString`
   omits both), so neither is ever shown.
 - **The rule is read from `recurrenceInfo` only** (`ruleValuesOfItem` / `rruleOfItem`, used by both read tools and

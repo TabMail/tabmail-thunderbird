@@ -588,11 +588,12 @@ const ITEM_FILTER_INCLUDE_OCCURRENCES = 2;
 /**
  * Load the bridge with one in-memory calendar holding `items` (masters; a
  * recurring master carries its occurrences). Returns the experiment API, the
- * recorded provider calls, and the provider itself for state assertions.
+ * recorded provider calls (deletions included), and the provider itself for state assertions.
  */
 export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} } } = {}) {
   const getItemsCalls = [];
   const modifications = [];
+  const deletions = [];
   const calendar = {
     id: calendarId,
     name: 'Personal',
@@ -621,6 +622,14 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       item.calendar = calendar;
       items.push(item);
       return item;
+    },
+    // CalMemoryCalendar.deleteItem: the stored item with that id goes, a
+    // series with every occurrence; an unknown id is an error.
+    async deleteItem(item) {
+      const idx = items.findIndex((it) => String(it.id) === String(item.id));
+      if (idx < 0) throw new Error('deleteItem: unknown item');
+      deletions.push(items[idx]);
+      items.splice(idx, 1);
     },
     async modifyItem(newItem, oldItem) {
       modifications.push({ newItem, oldItem });
@@ -689,5 +698,5 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   });
   vm.runInContext(readFileSync(bridgePath, 'utf8'), ctx, { filename: 'tmCalendar.sys.mjs' });
   const api = new ctx.tmCalendar().getAPI({}).tmCalendar;
-  return { api, getItemsCalls, modifications, calendar, ctx };
+  return { api, getItemsCalls, modifications, deletions, calendar, ctx };
 }
