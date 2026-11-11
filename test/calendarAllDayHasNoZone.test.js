@@ -216,7 +216,7 @@ function storedZonedSeries(rule, { excluded, added, changed, days = 1 }) {
   const day = (d) => fakeDate(d, LOCAL_ZONE);
   const after = (d, n) => { let out = d; for (let i = 0; i < n; i++) out = nextDay(out); return out; };
   const ev = fakeEvent({ id: 'ser', title: 'Old', startDate: day(START_DAY), endDate: day(after(START_DAY, days)) });
-  const exception = fakeEvent({ id: 'ser', title: 'Changed', startDate: day(changed), endDate: day(after(changed, days)), recurrenceId: day(changed) });
+  const exception = fakeEvent({ id: 'ser', title: 'Changed', startDate: day(changed), endDate: day(after(changed, days)), recurrenceId: day(changed), properties: { LOCATION: 'Changed room' } });
   ev.recurrenceInfo = fakeRecurrenceInfo([
     recurrenceItem('RRULE', rule), recurrenceDate('EXDATE', day(excluded)), recurrenceDate('RDATE', day(added)),
   ], { exceptions: [exception] });
@@ -290,8 +290,13 @@ describe('a series stored with a zoned all-day start', () => {
     expect(occurrenceDays(item)).toEqual([...without(daysFrom(START_DAY, LAST_DAY), DAILY.excluded), DAILY.added]);
     expect(datesOf(item)).toEqual(DAILY_DATES);
     expect(zonedAllDayValues(item)).toEqual([]);
+    // The changed occurrence is still keyed to its day, and is the same
+    // occurrence: it takes the title the edit names, as every occurrence of
+    // the series does (#351), and keeps its own place, which the edit does
+    // not name.
     const changed = item.recurrenceInfo.getExceptionFor(fakeDate(DAILY.changed));
-    expect(changed).toMatchObject({ title: 'Changed' });
+    expect(changed).toMatchObject({ title: 'Renamed' });
+    expect(changed.getProperty('LOCATION')).toBe('Changed room');
     expect(changed.parentItem).toBe(item);
   });
 

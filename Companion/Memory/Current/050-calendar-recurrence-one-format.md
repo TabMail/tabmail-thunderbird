@@ -270,7 +270,8 @@ same design (tabmail-ios #421).
     after `editTimesError`) handles the changed occurrences as calendar apps keep the user's edits
     (2026-11-10): one still at its slot (its own start, moved by that UTC amount, lands on its
     moved RECURRENCE-ID; changed only in title, notes, place, guests or length) moves by the same amount and keeps
-    its changes, its own length included; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
+    its changes, its own length included (a field the edit names is then written over every changed occurrence,
+    #351, *An "All events" edit* below); one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
     replaces its slot and shows once). An end alone moves no start, so it changes no changed occurrence (#350
     kept this rule as it was), and excluded dates stay excluded. A first occurrence the edit names by `recurrence_id` takes the edit (its
     times and named fields, `applyEditToNamedOccurrence`: a new start gives it the series' start and end, an end
@@ -319,6 +320,48 @@ same design (tabmail-ios #421).
   result said the whole series. A `recurrence` (a rule, or `{}`) on a `this_only` edit is refused before the card
   in `_runEditCalendarEvent`, as Thunderbird never expands a rule written onto an occurrence; the edit used to report
   success while the series kept its rule.
+- **An "All events" edit writes each field it names over every occurrence (#351), as Google Calendar's "All
+  events" edit does.** On `edit_scope` `all`, `applyEditToChangedOccurrences` (bridge, in `modifyCalendarEvent`
+  after the rule is written and before the check's return, so the check and the write run it alike) gives every
+  changed occurrence of the series each non-time field the edit names: title, location, description (in every
+  form: `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC` go, as on the series) and busy/free. Guests are not made
+  there: `applyGuestChangeToSeries` already changes every changed occurrence's own list (051). A field the edit
+  does not name keeps each occurrence's own value; the step writes no time (start, end and all-day are the
+  time rules', above, unchanged), and an excluded occurrence stays excluded. The plain occurrences
+  take the fields from the series itself. A split (`this_and_following`) does the same over its following
+  part, in `splitRecurringEvent` after the occurrence it starts at takes the edit and before the attendee
+  answers are decided: every changed occurrence carried into the part takes each field the split names, so a
+  new place asks that occurrence's attendees again (the split's rule, above); the earlier part's keep their own.
+  `this_only` changes one occurrence.
+  - **A field the edit only restates is no change** (2026-11-11; Google Calendar leaves an occurrence's own
+    value alone when the field is not changed in its form, and that form, opened from an occurrence, holds the
+    occurrence's own values). ONE comparison, `restatedFields` in `chat/tools/calendar_event_edit.js`: a named
+    title, place, notes or busy/free equal to what `getCalendarEventDetails` reads. Those details hold the
+    series' fields, or, when the read names an occurrence (`recurrence_id`, which the tool passes on a split),
+    that occurrence's own (`editableFieldsOf(named.occurrence)`; start, end and kind stay the series'). The
+    notes are read as `queryCalendarItems` reads them (DESCRIPTION). The confirmation card
+    (`formatChangesForDisplay`) shows no line for those fields and shows the real old value of the others, and
+    on `all` and `this_and_following` the tool drops them from the edit before the check, with the same details
+    the card then shows, so the card, the check and the write see one edit: an occurrence changed on its own
+    keeps its own value of a restated field. A split at an occurrence changed on its own compares with that
+    occurrence: "from Wednesday on, back in Room A" when Wednesday to Friday were each moved to Room B is a
+    change, written to Wednesday and every carried occurrence (their attendees asked again; the plain ones
+    keep their answers, as the place equals the series'). When the details cannot be read, such an edit is
+    refused before the card ("could not read this event"). `this_only` is not pruned: its card still compares
+    with the series, not the occurrence (#369).
+  - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
+  occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
+  time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it
+  starts at; (first #351 version) a restated field was written over every changed occurrence while the card
+  showed no line for it; and (second #351 version) the comparison read the series' values on a split too, so
+  "back in Room A" at an occurrence moved to Room B changed nothing, and the details carried no notes, so
+  restated notes overwrote every changed occurrence's own and the card showed the old notes as "(empty)".
+  Pinned through the real bridge and its read path by `test/calendarAllEventsFieldEdit.test.js` (every
+  occurrence reads each named field, every other field and both times as before, the same occurrences shown;
+  the split's carried occurrences and their answers; the HTML copies; restated title, place, notes and
+  busy/free from the tool's `run` through the card; a split at an occurrence with its own place and its own
+  notes; the refusal when the event cannot be read; `this_only` setting an occurrence back to the series'
+  place; a control for `this_only`).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
 
 ## How it is pinned

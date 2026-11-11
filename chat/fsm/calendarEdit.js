@@ -10,6 +10,7 @@ import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { formatCardTime, streamText } from "../modules/helpers.js";
 import { shownEventTimesIso } from "../tools/calendar_event_read.js";
+import { restatedFields } from "../tools/calendar_event_edit.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 
 async function formatEventDetailsForDisplay(details, editArgs) {
@@ -78,9 +79,12 @@ function formatChangesForDisplay(editArgs, currentDetails) {
     const lines = [];
     const a = editArgs || {};
     const d = currentDetails || {};
+    // A field the edit only restates is no change: one comparison, shared
+    // with the edit tool, which drops it from a series edit before the write.
+    const restated = restatedFields(a, d);
 
     // Show what fields are being changed with bold markdown and clear arrows
-    if (a.title && a.title !== d.title) {
+    if (a.title && !restated.includes("title")) {
       lines.push(`**Title:**`);
       lines.push(`  ${d.title || "(empty)"} → **${a.title}**`);
     }
@@ -121,11 +125,11 @@ function formatChangesForDisplay(editArgs, currentDetails) {
         `  ${d.isAllDay ? "yes" : "no"} → **${a.all_day ? "yes" : "no"}**`
       );
     }
-    if (a.location && a.location !== d.location) {
+    if (a.location && !restated.includes("location")) {
       lines.push(`**Location:**`);
       lines.push(`  ${d.location || "(empty)"} → **${a.location}**`);
     }
-    if (a.description) {
+    if (a.description && !restated.includes("description")) {
       const oldDesc = d.description
         ? d.description.length > 50
           ? d.description.slice(0, 50) + "..."
@@ -135,12 +139,10 @@ function formatChangesForDisplay(editArgs, currentDetails) {
         a.description.length > 50
           ? a.description.slice(0, 50) + "..."
           : a.description;
-      if (a.description !== d.description) {
-        lines.push(`**Description:**`);
-        lines.push(`  ${oldDesc} → **${newDesc}**`);
-      }
+      lines.push(`**Description:**`);
+      lines.push(`  ${oldDesc} → **${newDesc}**`);
     }
-    if (typeof a.transparency === "string") {
+    if (typeof a.transparency === "string" && !restated.includes("transparency")) {
       const oldT =
         typeof d.transparency === "string"
           ? d.transparency === "free"
@@ -148,10 +150,8 @@ function formatChangesForDisplay(editArgs, currentDetails) {
             : "busy"
           : "(unchanged)";
       const newT = a.transparency === "free" ? "free" : "busy";
-      if (oldT !== newT) {
-        lines.push(`**Transparency:**`);
-        lines.push(`  ${oldT} → **${newT}**`);
-      }
+      lines.push(`**Transparency:**`);
+      lines.push(`  ${oldT} → **${newT}**`);
     }
     // The guest change, as the people added and removed. The calendar bridge
     // applies it to each item the edit covers, whose lists can differ, so no

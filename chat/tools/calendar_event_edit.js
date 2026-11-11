@@ -105,6 +105,32 @@ function normalizeArgs(args = {}) {
   return out;
 }
 
+// The fields an edit names (title, location, description, busy/free) whose
+// given value is the one `details` already holds: the event as
+// getCalendarEventDetails reads it, for a repeating event its series, or, on a
+// split, the occurrence it starts at (its own values when it was changed on its
+// own). The one comparison of a field with the stored value: the confirmation
+// card shows no line for these fields, and on an edit of a series or of its
+// following part the tool drops them before the check, so the write changes
+// nothing the card does not show. An occurrence changed on its own then keeps
+// its own value of a field the edit only restates, as Google Calendar leaves it
+// when the field is not changed in its form (whose values, opened from an
+// occurrence, are that occurrence's).
+export function restatedFields(editArgs, details) {
+  const a = editArgs || {};
+  const d = details || {};
+  const busyOrFree = (t) => (t === "free" ? "free" : "busy");
+  const holds = {
+    title: Boolean(a.title) && a.title === d.title,
+    location: Boolean(a.location) && a.location === d.location,
+    description: Boolean(a.description) && a.description === d.description,
+    transparency: typeof a.transparency === "string" && typeof d.transparency === "string"
+      && busyOrFree(a.transparency) === busyOrFree(d.transparency),
+  };
+  return Object.keys(holds).filter((field) => holds[field]);
+}
+const RESTATABLE_FIELDS = ["title", "location", "description", "transparency"];
+
 export async function run(args = {}, options = {}) {
   try {
     log(`[TMDBG Tools] calendar_event_edit: Tool called with args: ${JSON.stringify(args)}`);
@@ -221,6 +247,26 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
+  // The event as the confirmation card shows it. On an edit of a series or of
+  // its following part, a field the edit only restates (restatedFields, the
+  // card's own comparison) is dropped here, before the check, so the card, the
+  // check and the write see the same edit: an occurrence changed on its own
+  // keeps its own value of that field. When the event cannot be read, the
+  // edit is refused after the check, so the check's own refusal (an event
+  // that does not exist) comes first.
+  const cardDetailsArgs = [norm.event_id, norm.calendar_id, norm.edit_scope === "this_and_following" ? norm.recurrence_id : null];
+  let cardDetails = null;
+  let unreadable = null;
+  const editsSeries = (norm.edit_scope || (norm.recurrence_id ? "this_only" : "all")) !== "this_only";
+  if (editsSeries && RESTATABLE_FIELDS.some((field) => field in norm)) {
+    cardDetails = await safeFetchEventDetails(...cardDetailsArgs);
+    if (cardDetails?.ok) {
+      for (const field of restatedFields(norm, cardDetails)) delete norm[field];
+    } else {
+      unreadable = `could not read this event (${cardDetails?.error || "unknown error"}); try again`;
+    }
+  }
+
   // Every edit the bridge would refuse (a scope with no occurrence named, an
   // occurrence or excluded date that names none, invitations with no guests,
   // an all-day event given a time of day without all_day, a move the series'
@@ -237,6 +283,10 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   }
   if (check && check.ok === false) {
     await failOut(String(check.error || "the calendar refused this edit"));
+    return;
+  }
+  if (unreadable) {
+    await failOut(unreadable);
     return;
   }
 
@@ -289,7 +339,7 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   // names its occurrence, so the card can state that occurrence's original
   // time when it was moved off it.
   try {
-    const details = await safeFetchEventDetails(norm.event_id, norm.calendar_id, norm.edit_scope === "this_and_following" ? norm.recurrence_id : null);
+    const details = cardDetails || await safeFetchEventDetails(...cardDetailsArgs);
     if (details && details.ok) {
       try { const pid = ctx.activePid || ctx.activeToolCallId || 0; if (pid) ctx.fsmSessions[pid].editEventDetails = details; } catch (_) {}
       log(`[TMDBG Tools] calendar_event_edit: pre-fetched event details for id=${norm.event_id}`);

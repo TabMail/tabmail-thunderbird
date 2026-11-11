@@ -727,7 +727,9 @@ describe('split: the two parts make the series\' occurrences', () => {
         expect(before.filter((k) => k.startsWith('changed ')), rule).toHaveLength(2);
         const ruleDates = master.recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
         const at = ruleDates[12];
-        const { res, capped, fresh } = await split(master, startIsoOf(at));
+        // New notes: the keys show each changed occurrence's title, which a
+        // split naming a title writes over the ones it carries.
+        const { res, capped, fresh } = await split(master, startIsoOf(at), { description: 'From here on' });
         expect(res, `${rule}: ${res.error}`).toMatchObject({ ok: true });
         expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(named);
         expect(lastBefore(occurrenceKeys(capped), at), rule).toBe(lastBefore(named, at));
@@ -835,8 +837,11 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect(itemValues(capped, 'RDATE')).toEqual([]);
     expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T170000']);
     expect(capped.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991008T170000']);
+    // The same changed occurrence, at its own time; it takes the title the
+    // split names, as every occurrence of the following part does (#351).
     const kept = fresh.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-18', 17));
-    expect(kept).toMatchObject({ title: 'Moved', id: fresh.id });
+    expect(kept).toMatchObject({ title: 'Renamed', id: fresh.id });
+    expect(kept.startDate.toString()).toBe(fakeDateTime('2099-10-18', 19).toString());
     expect(kept.parentItem).toBe(fresh);
   });
 
