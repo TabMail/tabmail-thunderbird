@@ -911,6 +911,45 @@ export function formatNaiveIsoInTimezone(naiveIso, timezoneId) {
   }
 }
 
+const CARD_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// A day's digits (`YYYY-MM-DD`) shifted by `shift` days, as a UTC instant read
+// back only through the getUTC* getters: zone-free civil-date arithmetic, as
+// isValidPlainDate in recurrence.js does it.
+function utcDay(day, shift = 0) {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + shift));
+}
+
+const utcDigits = (dt) =>
+  `${String(dt.getUTCFullYear()).padStart(4, "0")}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+
+/**
+ * A start or end as a calendar confirmation card prints it.
+ *
+ * An all-day value is a DATE with no zone (an all-day `naiveIso` is the date at
+ * `T00:00:00`), so it is printed from its date digits alone, as
+ * `<Weekday> YYYY/MM/DD`: never through the DATE's epoch or a zone, which
+ * would name the previous day west of UTC. The weekday and the day before
+ * come from UTC arithmetic over the digits (`Date.UTC`, read back through the
+ * getUTC* getters only). An all-day end is exclusive
+ * (RFC 5545 DTEND, the day after the last day); given `endAfter`, the start
+ * shown on the same card, the card prints the last day, the day before the
+ * end, and never a day before the start (a DTEND equal to DTSTART is one
+ * day), as Google Calendar shows it.
+ *
+ * A timed value is printed by formatNaiveIsoInTimezone, unchanged.
+ */
+export function formatCardTime(naiveIso, { allDay = false, endAfter = null, timezone } = {}) {
+  if (!allDay) return formatNaiveIsoInTimezone(naiveIso, timezone);
+  let day = String(naiveIso).slice(0, 10);
+  if (endAfter) {
+    const start = String(endAfter).slice(0, 10);
+    const last = utcDigits(utcDay(day, -1));
+    day = last < start ? start : last;
+  }
+  return `${CARD_WEEKDAYS[utcDay(day).getUTCDay()]} ${day.replaceAll("-", "/")}`;
+}
+
 // Ensures an internal container for bubble content, so we can prepend inline icons without
 // interfering with markdown rendering and streaming.
 function _ensureBubbleContentElement(element) {

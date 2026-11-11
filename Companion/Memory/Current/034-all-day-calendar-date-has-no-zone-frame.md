@@ -29,7 +29,9 @@ the digits stay as read, a relabel converts nothing). Its callers:
   `all_day` read as false, so new dates for an all-day event made it a timed one at midnight. This
   is the one place an edit's kind is decided: `applyDurationPreservation` (and its mirror) writes
   the converter's values as given (`test/calendarEditKeepsAllDay.test.js`). Two edits of an
-  all-day item are refused before anything is written (`allDayEditError`, after the times are
+  all-day item are refused before anything is written (`editTimesError`, `allDayEditError` until
+  #350, which also refuses a start and an end of different kinds and a timed end before the start;
+  an end alone keeps the item's own start, so its all-day end is compared with that start, after the times are
   applied, in `modifyCalendarEvent` and in the split's following part), and the message tells the
   assistant to ask the user: a `start_iso` or `end_iso` with a time of day and no `all_day` (the
   user may want a timed event or that date all day; a date at midnight, `T00:00:00` as the read
@@ -37,9 +39,10 @@ the digits stay as read, a relabel converts nothing). Its callers:
   after the last day, RFC 5545 DTEND is exclusive, so it would be a zero-length event). Until this
   refusal, #309's converter kept such an edit all-day and dropped the time unasked. The edit tool
   gets these refusals before its confirmation card, so the assistant can ask the user first:
-  `_runEditCalendarEvent` calls `modifyCalendarEvent` with `check_only: true` for an edit that gives
-  times, and the bridge runs the same edit up to this point and returns without writing (the split
-  too), so the rule is not copied into the tool. A create has the same end rule (#316):
+  `_runEditCalendarEvent` calls `modifyCalendarEvent` with `check_only: true` for every edit (#339;
+  until then only for an edit that gives times), and the bridge runs the same edit up to its first
+  write and returns without writing (the split too), so the rule is not copied into the tool.
+  A create has the same end rule (#316):
   `createCalendarEvent` refuses an all-day event whose end is on or before its start, before
   anything is written, with a message that says what to send (the next day as `end_iso`), and the
   create tool gets it before its card the same way (`check_only` on `createCalendarEvent`, sent
@@ -114,6 +117,26 @@ UNTIL's day, the rewritten one keeps it)
 - Consumers key an all-day row by `startDay`, never by the epoch: `calendar_search` uses
   `localMidnightOfDay(startDay)` for the day key and ordering; `calendar_event_read` renders
   `start_iso`/`end_iso` as `${day}T00:00:00` and matches a `start_iso` lookup on the day.
+- The confirmation cards (#312, #358) are consumers too. The edit and delete cards read the stored
+  times through `shownEventTimesIso(details)` (keyed by `startDay`/`endDay`), never
+  `new Date(details.start)`, and the edit, delete and create cards print every start and end through
+  ONE formatter, `formatCardTime(naiveIso, { allDay, endAfter, timezone })` in `chat/modules/helpers.js`.
+  An all-day value prints as `<Weekday> YYYY/MM/DD` from its date digits only, never through the
+  DATE's epoch or a zone: the weekday and the day before come from `new Date(Date.UTC(y, m - 1,
+  d + shift))` read back through the getUTC* getters only (the zone-free day arithmetic
+  `isValidPlainDate` and the bridge's `dayDigitsFrom` use; a local getter names the previous day
+  west of UTC, a local constructor the previous day east of it); an all-day end prints the last
+  day, the day before the exclusive DTEND, never before the start shown beside it (`endAfter`), so a
+  DTEND equal to DTSTART shows one day, as Google Calendar does. A timed value prints through
+  `formatNaiveIsoInTimezone`, unchanged. All-day change lines read **Start date**/**End date** (the
+  new value's kind decides), timed ones **Start time**/**End time**. A new value's kind is `all_day`
+  when given, else the event's own. The edit card decides "changed" by the naive values and their
+  kinds (all-day by day; timed by digits, and always shown when `timezone` is given), not by
+  comparing formatted strings, which outside UTC showed an unchanged all-day start as a change. The
+  Scope line names an all-day occurrence (`recurrence_id`, `recurrenceIdSlot`) by its date, taking
+  the kind from the event read. Pinned by `test/calendarCardAllDayDates.test.js` (Thunderbird's own
+  dates, west and east of UTC, plus a four-year sweep from today over every month end, year end and
+  leap day against a local-noon oracle).
 
 ## The second filter that dropped the item
 

@@ -5,9 +5,9 @@
 // calendarDurationPreservation.test.js — Tests for the
 // applyDurationPreservation helper.
 //
-// The helper runs inside modifyCalendarEvent in tmCalendar.sys.mjs and decides
-// whether to derive the missing side of start/end from the event's existing
-// duration when only one side was patched.
+// The helper runs inside modifyCalendarEvent in tmCalendar.sys.mjs: a start
+// alone keeps the event's length (the end is derived from the existing
+// duration), and an end alone changes only the end, keeping the start.
 //
 // We can't `import` from tmCalendar.sys.mjs directly because TB experiment
 // .sys.mjs files are loaded as classic scripts (not ESM), so adding `export`
@@ -88,18 +88,18 @@ describe("applyDurationPreservation", () => {
     expect(clone.endDate._ms).toBe(PATCHED_START_MS + MIN_30); // 30-min duration preserved
   });
 
-  it("derives startDate from new end - existing duration when only end_iso is patched", () => {
+  it("an end alone sets only the end: the start stays and the length changes", () => {
     const base = mkBase();
-    const clone = mkClone();
+    const clone = { startDate: base.startDate.clone(), endDate: base.endDate.clone() };
     const result = applyDurationPreservation({
       base, clone,
       patch: { end_iso: "2026-01-01T11:30:00" },
       toCalIDateTime,
       editTzOverride: null,
     });
-    expect(result.derived).toBe("start");
+    expect(result.derived).toBeNull();
     expect(clone.endDate._ms).toBe(PATCHED_END_MS);
-    expect(clone.startDate._ms).toBe(PATCHED_END_MS - MIN_30); // 30-min duration preserved
+    expect(clone.startDate._ms).toBe(0); // the event's own start
   });
 
   it("does NOT derive when both start_iso and end_iso are patched (LLM explicitly setting length)", () => {
@@ -145,17 +145,17 @@ describe("applyDurationPreservation", () => {
     expect(clone.endDate).toBeNull();
   });
 
-  it("preserves a 45-min duration symmetrically when end moves", () => {
+  it("an end alone keeps the start of a 45-min event too: it now lasts until the new end", () => {
     const base = { startDate: makeDt(0), endDate: makeDt(MIN_45) };
-    const clone = mkClone();
+    const clone = { startDate: base.startDate.clone(), endDate: base.endDate.clone() };
     const result = applyDurationPreservation({
       base, clone,
       patch: { end_iso: "2026-01-01T11:30:00" },
       toCalIDateTime,
       editTzOverride: null,
     });
-    expect(result.derived).toBe("start");
-    expect(clone.startDate._ms).toBe(PATCHED_END_MS - MIN_45);
+    expect(result.derived).toBeNull();
+    expect(clone.startDate._ms).toBe(0);
     expect(clone.endDate._ms).toBe(PATCHED_END_MS);
   });
 

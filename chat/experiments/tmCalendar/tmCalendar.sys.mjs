@@ -14,12 +14,13 @@ const { ExtensionCommon: ExtensionCommonTMCal } = ChromeUtils.importESModule(
 // tmCalendar experiment API (clean)
 
 // -------- Duration preservation --------
-// Apply start/end updates to `clone` with duration preservation: when only one
-// side of start/end was patched, derive the missing side from the event's
-// existing duration so the length stays the same. Mirrors iOS
-// GoogleCalendarProvider.mergeExistingEventWithPatch — without this, "move it
-// to 3pm" (start_iso only) leaves the old end untouched and silently changes
-// the event's length, or produces a negative duration if start moves past end.
+// Apply start/end updates to `clone`, as Google Calendar makes them: a start
+// alone keeps the event's length (the end is derived from the existing
+// duration), and an end alone changes only the end, so the start stays and the
+// event gets longer or shorter. Without the derivation, "move it to 3pm"
+// (start_iso only) would leave the old end untouched and silently change the
+// event's length, or end it before it starts. An end before the start is
+// refused after this (editTimesError).
 //
 // IMPORTANT: TB experiment .sys.mjs files are loaded as classic scripts, NOT
 // ESM modules, despite the extension. `export` here would fail at parse time
@@ -75,20 +76,6 @@ function applyDurationPreservation({
       return { derived: "end" };
     } catch (e) {
       log("failed to derive endDate from duration: " + e);
-      return { derived: null, error: e };
-    }
-  }
-  if (hasEndPatch && !hasStartPatch && origDuration) {
-    try {
-      const negDur = origDuration.clone();
-      negDur.isNegative = !negDur.isNegative;
-      const newStart = clone.endDate.clone();
-      newStart.addDuration(negDur);
-      clone.startDate = newStart;
-      log("derived startDate from new end + existing duration");
-      return { derived: "start" };
-    } catch (e) {
-      log("failed to derive startDate from duration: " + e);
       return { derived: null, error: e };
     }
   }
@@ -578,6 +565,26 @@ function isFirstOccurrence(master, rid) {
   return at.compare(master.startDate) <= 0;
 }
 
+// The fields an edit can name other than its times, as stored on `item` (an
+// event, a series, or one occurrence of a series), for getCalendarEventDetails:
+// the title, the place, the notes as queryCalendarItems reads them, and
+// busy/free.
+function editableFieldsOf(item) {
+  return {
+    title: item.title || "",
+    location: item.getProperty ? String(item.getProperty("LOCATION") || "") : "",
+    description: String(item.getProperty?.("DESCRIPTION") || ""),
+    transparency: (() => {
+      try {
+        const raw = String(item.getProperty?.("TRANSP") || "");
+        const mapped = raw.toUpperCase() === "TRANSPARENT" ? "free" : "busy";
+        tmCalendarDebugLog("[tmCalendar] getCalendarEventDetails: TRANSP=", raw || "(empty)", "mapped=", mapped);
+        return mapped;
+      } catch (_) { return "busy"; }
+    })(),
+  };
+}
+
 // The RECURRENCE-IDs of the occurrences an edit's exdates_add names, each by its
 // start as the read tools show it (occurrenceNamedBy), in the series as it is
 // before the edit. An EXDATE removes an occurrence by its RECURRENCE-ID, which
@@ -705,6 +712,11 @@ function ruleShiftedByDays(value, days, was, now) {
   return { value: out.join(";") };
 }
 
+// An edit's event_id that names no event on the user's calendars: the id may
+// be stale or another kind of id, so the assistant looks it up again rather
+// than retrying it.
+const EDIT_EVENT_NOT_FOUND_ERROR = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
+
 // A series' start that changes between all-day and timed. RFC 5545 needs its
 // excluded and added dates, each UNTIL and its changed occurrences'
 // RECURRENCE-IDs in the start's value type. Thunderbird keeps theirs and moves
@@ -805,20 +817,22 @@ function shiftSeriesWithStart(item, oldStart, patch) {
 // The occurrence an edit names, at `item`'s start (a whole series named from its
 // first occurrence, or the following part of a split from the occurrence it
 // starts at), takes the edit when it was changed on its own: the new times
-// (the series' or part's start and end) and every field the edit names. It
-// keeps its own changes the edit does not name, as calendar apps keep the
-// user's edits. Guest changes are not made here: applyGuestChangeToSeries
-// makes them on every item the edit covers. Returns that occurrence as stored,
-// or null when there is none.
+// it names (a new start: the series' or part's start and end; an end alone:
+// that end, its own start kept) and every field the edit names. It keeps its
+// own changes the edit does not name, as calendar apps keep the user's edits.
+// Guest changes are not made here: applyGuestChangeToSeries makes them on
+// every item the edit covers. Returns that occurrence as stored, null when
+// there is none, or `{ error }` (editTimesError on its own start) when its new
+// times are refused; nothing is saved then.
 function applyEditToNamedOccurrence(item, patch) {
   const info = item.recurrenceInfo;
   const ex = info?.getExceptionFor(item.startDate);
   if (!ex) return null;
   const named = ex.clone();
-  if (patch.start_iso || patch.end_iso) {
-    named.startDate = item.startDate.clone();
-    named.endDate = item.endDate.clone();
-  }
+  if (patch.start_iso) named.startDate = item.startDate.clone();
+  if (patch.start_iso || patch.end_iso) named.endDate = item.endDate.clone();
+  const timesError = editTimesError(named, patch);
+  if (timesError) return { error: `the occurrence the edit names was changed on its own and keeps its own start: ${timesError}` };
   if (typeof patch.title === "string" && patch.title) named.title = patch.title;
   if (typeof patch.location === "string") named.setProperty("LOCATION", patch.location);
   // A new description replaces the occurrence's in every form (see the split).
@@ -831,6 +845,33 @@ function applyEditToNamedOccurrence(item, patch) {
   }
   info.modifyException(named, false);
   return info.getExceptionFor(item.startDate);
+}
+
+// Every occurrence changed on its own that `item` keeps takes each field the
+// edit names, as `item` does and as Google Calendar's "All events" edit makes
+// it: title, location, description, busy/free. `item` is the series on a
+// whole-series edit, or the following part of a split, whose changed
+// occurrences (the one it starts at included) take the fields in that one
+// write; the earlier part's keep their own. Fields the edit does not name keep
+// the occurrence's own value, and no time is written here: its start and end
+// are the time path's. Guest changes are not made here:
+// applyGuestChangeToSeries makes them on every item the edit covers.
+function applyEditToChangedOccurrences(item, patch) {
+  const info = item.recurrenceInfo;
+  for (const rid of [...(info?.getExceptionIds({}) || [])]) {
+    const named = info.getExceptionFor(rid).clone();
+    if (typeof patch.title === "string" && patch.title) named.title = patch.title;
+    if (typeof patch.location === "string") named.setProperty("LOCATION", patch.location);
+    // A new description replaces the occurrence's in every form (see the split).
+    if (typeof patch.description === "string") {
+      named.descriptionText = patch.description;
+      for (const name of ["X-ALT-DESC", "X-MOZ-HTML", "X-MOZ-ALT-DESC"]) named.deleteProperty(name);
+    }
+    if (typeof patch.transparency === "string") {
+      named.setProperty("TRANSP", patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE");
+    }
+    info.modifyException(named, false);
+  }
 }
 
 // How one rule of `master`'s series divides at `split`, the first occurrence of
@@ -1393,6 +1434,15 @@ function allDayNaiveIso(dayStr) {
   return dayStr ? `${dayStr}T00:00:00` : "";
 }
 
+// A value as the read tools print a start_iso: an all-day date at midnight, a
+// time in the user's zone (a floating one at its own digits, asShown).
+function shownNaiveIso(calDt) {
+  if (calDt.isDate) return allDayNaiveIso(toDayString(calDt));
+  const d = asShown(calDt).getInTimezone(getTimezoneService().defaultTimezone);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${toDayString(d)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
+}
+
 // A value as Thunderbird shows it. A floating time (RFC 5545 local time, no
 // zone) is shown at its own digits on the user's clock, but ical.js gives it
 // offset 0, so its epoch is its digits read as UTC and the read tools would
@@ -1476,25 +1526,39 @@ function namesTimeOfDay(iso) {
   return !!m && (Number(m[1]) > 0 || Number(m[2]) > 0 || Number(m[3] || 0) > 0);
 }
 
-// Why an edit that gave the all-day `item` new times is refused, or null. The
-// item has its new times and is all-day: it was, and the edit left all_day out
-// or stated it. Nothing has been written yet, and the assistant is told to ask
-// the user, since either way would be a guess:
-// - A time of day without all_day: the user may want it timed, or all-day on
-//   that date, and dropping the time would keep it all-day without asking.
-// - An end on or before the start: an all-day end is the day after the last
-//   day (RFC 5545: DTEND is exclusive and later than DTSTART), so this would
-//   be a zero-length event.
-function allDayEditError(item, patch) {
+// Why an edit that gave `item` new times is refused, or null. The item has its
+// new times: a start alone keeps the length, an end alone keeps the start (the
+// item's own: the event's, one occurrence's, a split's slot). Nothing has been
+// written yet, and the assistant is told what to give or to ask the user:
+// - All-day, with a time of day and no all_day: the user may want it timed, or
+//   all-day on that date, and dropping the time would keep it all-day without
+//   asking.
+// - A start and an end of different kinds (one all-day, one timed): RFC 5545
+//   needs DTEND in DTSTART's value type, and a side the edit leaves out keeps
+//   its kind.
+// - An all-day end on or before the start: an all-day end is the day after the
+//   last day (RFC 5545: DTEND is exclusive and later than DTSTART), so this
+//   would be a zero-length event.
+// - A timed end before the start. An end at the start is written (a
+//   zero-length event, as Google Calendar makes one).
+function editTimesError(item, patch) {
   const s = item.startDate, e = item.endDate;
   if (!patch.start_iso && !patch.end_iso) return null;
-  if (!s?.isDate) return null;
+  if (!s || !e) return null;
   const timed = "become a timed event (all_day: false, with the start time and how long it lasts), then retry with their answer";
-  if (typeof patch.all_day !== "boolean" && (namesTimeOfDay(patch.start_iso) || namesTimeOfDay(patch.end_iso))) {
+  if (s.isDate && typeof patch.all_day !== "boolean" && (namesTimeOfDay(patch.start_iso) || namesTimeOfDay(patch.end_iso))) {
     return `this is an all-day event, and the edit gives a time of day without all_day. Ask the user whether it should stay all-day (dates only, with end_iso the day after its last day) or ${timed}`;
   }
-  if (!e || e.compare(s) > 0) return null;
-  return `this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso. Ask the user how many days it should last, or whether it should ${timed}`;
+  if (!!s.isDate !== !!e.isDate) {
+    return `the edit would leave the start ${s.isDate ? "all-day" : "timed"} and the end ${e.isDate ? "all-day" : "timed"}: a start or end the edit leaves out keeps its kind. Give both start_iso and end_iso, with all_day`;
+  }
+  if (s.isDate) {
+    if (e.compare(s) > 0) return null;
+    return `this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso. Ask the user how many days it should last, or whether it should ${timed}`;
+  }
+  if (e.compare(s) >= 0) return null;
+  const ask = patch.start_iso ? "Ask" : "An end_iso alone changes only the end and keeps the start; to move the event, give start_iso too, or ask";
+  return `the event would end before it starts. ${ask} the user when it should start and end`;
 }
 
 // toCalIDateTime for an edit of `item`, whose new times it gives in the item's
@@ -1510,7 +1574,7 @@ function allDayEditError(item, patch) {
 // the item's kind, as the edit tool documents ("Leave empty to keep existing"):
 // read as timed, a new date for an all-day event made it a timed one (#309).
 // An all-day value keeps only the date: a time of day given for an all-day
-// item without all_day is refused once the times are applied (allDayEditError).
+// item without all_day is refused once the times are applied (editTimesError).
 function toCalIDateTimeInFrameOf(item, patch) {
   const start = item && item.startDate;
   const allDay = typeof patch.all_day === "boolean" ? patch.all_day : !!start?.isDate;
@@ -1869,13 +1933,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             } catch (_) {}
             const details = {
               id: eid,
-              title: targetEvent.title || "",
+              ...editableFieldsOf(targetEvent),
               start: (() => { try { return targetEvent.startDate ? asShown(targetEvent.startDate).nativeTime / 1000 : null; } catch { return null; } })(),
               end: (() => { try { return targetEvent.endDate ? asShown(targetEvent.endDate).nativeTime / 1000 : null; } catch { return null; } })(),
               isAllDay: !!(targetEvent.startDate && targetEvent.startDate.isDate),
               startDay: targetEvent.startDate?.isDate ? toDayString(targetEvent.startDate) : "",
               endDay: targetEvent.endDate?.isDate ? toDayString(targetEvent.endDate) : "",
-              location: targetEvent.getProperty ? String(targetEvent.getProperty("LOCATION") || "") : "",
               organizer: (() => { try { return String(targetEvent.organizer ? (targetEvent.organizer.commonName || targetEvent.organizer.id || "") : ""); } catch { return ""; } })(),
               attendees: attendeesCount,
               attendeeList: attendeeList,
@@ -1885,23 +1948,27 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // The rule in the create/edit tools' own fields (see
               // recurrenceFieldsOfItem); null when the event does not repeat.
               recurrence: recurrenceFieldsOfItem(targetEvent.parentItem || targetEvent),
-              transparency: (() => {
-                try {
-                  const raw = String(targetEvent.getProperty?.("TRANSP") || "");
-                  const mapped = raw.toUpperCase() === "TRANSPARENT" ? "free" : "busy";
-                  tmCalendarDebugLog("[tmCalendar] getCalendarEventDetails: TRANSP=", raw || "(empty)", "mapped=", mapped);
-                  return mapped;
-                } catch (_) { return "busy"; }
-              })()
             };
             // Whether a given recurrence_id names the series' first occurrence: a
             // whole-series time change names that one, and one named from a
-            // later occurrence is a change from it on (#287).
+            // later occurrence is a change from it on (#287). One that names no
+            // occurrence is left to the edit, which refuses it. An occurrence
+            // moved off its slot also gives its original time (the slot), which
+            // the confirmation card states: a part split there starts at it
+            // unless the edit gives a new start. The fields an edit can name
+            // (title, place, notes, busy/free) are then that occurrence's own,
+            // as the calendar shows it, so an occurrence changed on its own is
+            // compared and shown with its own values; start, end and kind stay
+            // the series'.
             const series = targetEvent.parentItem || targetEvent;
             if (recurrence_id && series.recurrenceInfo) {
               const named = occurrenceNamedBy(series, recurrence_id);
-              if (named.error) details.recurrenceIdError = named.error;
-              else details.recurrenceIdIsFirst = isFirstOccurrence(series, named.occurrence.recurrenceId);
+              if (!named.error) {
+                const { recurrenceId: slot, startDate } = named.occurrence;
+                details.recurrenceIdIsFirst = isFirstOccurrence(series, slot);
+                if (startDate.compare(slot) !== 0) details.recurrenceIdSlot = shownNaiveIso(slot);
+                Object.assign(details, editableFieldsOf(named.occurrence));
+              }
             }
             // Return the event's own id, not re-derived from master
             const returnedId = String(targetEvent.id || targetEvent.parentItem?.id || "");
@@ -2201,10 +2268,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // We resolve the scope here so the callers don't need a separate JS routing layer.
             const rawScope = typeof details.edit_scope === "string" ? details.edit_scope.toLowerCase() : null;
             const editScope = rawScope || (recurIdStr ? "this_only" : "all");
+            // An edit of one occurrence, or of it and the following ones, names
+            // that occurrence.
+            if ((editScope === "this_only" || editScope === "this_and_following") && !recurIdStr) {
+              return { ok: false, error: `edit_scope='${editScope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.` };
+            }
             if (editScope === "this_and_following") {
-              if (!recurIdStr) {
-                return { ok: false, error: "edit_scope='this_and_following' requires recurrence_id" };
-              }
               // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
               const splitPatch = {};
               for (const k of ["title", "location", "description", "transparency",
@@ -2220,9 +2289,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 patch: splitPatch,
                 check_only: details.check_only,
               });
-            }
-            if (editScope === "this_only" && !recurIdStr) {
-              return { ok: false, error: "edit_scope='this_only' requires recurrence_id" };
             }
             // Only a "this_only" edit targets one occurrence. "all" edits the
             // series and ignores recurrence_id, so the lookup below reads it
@@ -2291,7 +2357,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            if (!item) return { ok: false, error: lookupError || "event not found (id/recurrenceId mismatch)" };
+            if (!item) return { ok: false, error: lookupError || EDIT_EVENT_NOT_FOUND_ERROR };
 
             // The occurrences exdates_add names, in the series as it is before
             // the edit; a value that names none is refused before anything is written.
@@ -2326,9 +2392,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             
             if (typeof patch.title === "string") clone.title = patch.title;
 
-            // Apply start/end with duration preservation when only one side
-            // moves. Extracted to durationPreservation.js so the math is
-            // unit-testable without a full Mozilla cal runtime.
+            // Apply start/end: a start alone keeps the length, an end alone
+            // keeps the start. Mirrored in durationPreservationLogic.js so the
+            // math is unit-testable without a full Mozilla cal runtime.
             const durationResult = applyDurationPreservation({
               base,
               clone,
@@ -2341,13 +2407,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] modifyCalendarEvent: duration preservation failed:", durationResult.error);
             }
-            const editError = allDayEditError(clone, patch);
+            const editError = editTimesError(clone, patch);
             if (editError) return { ok: false, error: editError };
             if (movesSeries) {
               const shifted = shiftSeriesWithStart(clone, base.startDate, patch);
               if (shifted.error) return { ok: false, error: shifted.error };
               // A first occurrence the edit names takes it, even with its own time.
-              if (recurIdStr) applyEditToNamedOccurrence(clone, patch);
+              const named = recurIdStr ? applyEditToNamedOccurrence(clone, patch) : null;
+              if (named?.error) return { ok: false, error: named.error };
             }
 
             // The guest change, on every item the edit covers: the event, the
@@ -2361,8 +2428,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (details.send_invitations && clone.getAttendees().length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee" };
             }
-            // A check before the confirmation card stops here: nothing is written.
-            if (details.check_only) return { ok: true };
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2439,6 +2504,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const recRes = applyRecurrenceToItem(clone, patch.recurrence);
               try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
             }
+
+            // The series' changed occurrences take the fields the edit names.
+            if (scope === "series") applyEditToChangedOccurrences(clone, patch);
+
+            // A check before the confirmation card stops here, at the first
+            // write: every refusal is above, and everything above changed only
+            // the unsaved clone.
+            if (details.check_only) return { ok: true };
 
             // EXDATE additions on an edit of one occurrence go to its series.
             if (exdates.rids.length && scope !== "series") {
@@ -2615,7 +2688,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 if (await visit(c)) break;
               }
             }
-            if (!master || !cal) return { ok: false, error: "event not found" };
+            if (!master || !cal) return { ok: false, error: EDIT_EVENT_NOT_FOUND_ERROR };
 
             // 2. The series must be recurring for a split to make sense.
             if (!master.recurrenceInfo) {
@@ -2815,8 +2888,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] splitRecurringEvent: duration preservation failed:", durationResult.error);
             }
-            const editError = allDayEditError(newEv, patch);
-            if (editError) return { ok: false, error: editError };
+            // Without a new start the part starts at the slot, which the
+            // assistant has not seen when the occurrence was moved off it.
+            const editError = editTimesError(newEv, patch);
+            if (editError) {
+              return { ok: false, error: patch.start_iso ? editError : `the following occurrences start at ${shownNaiveIso(slotStart)}, their usual time: ${editError}` };
+            }
             // The following part moves as a whole series does (#287): its rule's
             // days and its changed occurrences go with its start.
             const followingShift = shiftSeriesWithStart(newEv, slotStart, patch);
@@ -2825,8 +2902,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (sendInvites && newEv.getAttendees().length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
             }
-            // A check before the confirmation card stops here: nothing is written.
-            if (details.check_only) return { ok: true };
 
             // A new rule for the following part (written in its start's value
             // type, after the time change); `{}` stops it repeating.
@@ -2843,7 +2918,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // The occurrence the split starts at, when it was changed on its
             // own, is carried into the following part with its own fields and
             // takes the edit there, in this one write.
-            if (newEv.recurrenceInfo) applyEditToNamedOccurrence(newEv, patch);
+            const atSplit = newEv.recurrenceInfo ? applyEditToNamedOccurrence(newEv, patch) : null;
+            if (atSplit?.error) return { ok: false, error: atSplit.error };
+            // Every changed occurrence carried into the following part takes
+            // the fields the edit names, as on a whole-series edit. Before the
+            // answers below, so a new place asks its attendees again.
+            applyEditToChangedOccurrences(newEv, patch);
 
             // The attendees answered for the series' times and place. When the
             // split moves the following occurrences (their start or end, all-day
@@ -2890,6 +2970,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 partInfo.modifyException(asked, false);
               }
             }
+
+            // A check before the confirmation card stops here, at the first
+            // write: every refusal is above, and both parts are still unsaved
+            // copies.
+            if (details.check_only) return { ok: true };
 
             // 8. Write the earlier part.
             let cappedMaster;

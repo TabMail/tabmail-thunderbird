@@ -8,11 +8,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
-import {
-  formatNaiveIsoInTimezone,
-  formatTimestampForAgent,
-  streamText
-} from "../modules/helpers.js";
+import { formatCardTime, streamText } from "../modules/helpers.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 
 async function formatEventArgsForDisplay(args) {
@@ -41,10 +37,12 @@ async function formatEventArgsForDisplay(args) {
     }
 
     if (a.title) lines.push(`Title: ${a.title}`);
+    // An all-day event's dates, the end as its last day (formatCardTime).
+    const allDay = a.all_day === true;
     if (a.start_iso)
-      lines.push(`Start: ${formatNaiveIsoInTimezone(a.start_iso, a.timezone)}`);
+      lines.push(`Start: ${formatCardTime(a.start_iso, { allDay, timezone: a.timezone })}`);
     if (a.end_iso)
-      lines.push(`End: ${formatNaiveIsoInTimezone(a.end_iso, a.timezone)}`);
+      lines.push(`End: ${formatCardTime(a.end_iso, { allDay, endAfter: a.start_iso, timezone: a.timezone })}`);
     if (typeof a.all_day !== "undefined")
       lines.push(`All-day: ${a.all_day ? "yes" : "no"}`);
     if (a.location) lines.push(`Location: ${a.location}`);

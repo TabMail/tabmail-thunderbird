@@ -42,7 +42,7 @@ const {
   recurrenceDate, seriesOccurrences, fixedZone, FLOATING_ZONE, UTC_ZONE, LOCAL_ZONE,
 } = await import('./helpers/calendarBridgeHarness.js');
 const {
-  recurrenceArgError, otherPartsRefusal, formatRecurrenceLine, recurrenceMark, OTHER_PARTS_NOTE,
+  recurrenceArgError, otherPartsRefusal, formatRecurrenceLine, recurrenceMark, recurrenceInWords, OTHER_PARTS_NOTE,
 } = await import('../chat/modules/recurrence.js');
 
 // A far-future series start: 2099 is the dated-test exception (never goes stale).
@@ -727,7 +727,9 @@ describe('split: the two parts make the series\' occurrences', () => {
         expect(before.filter((k) => k.startsWith('changed ')), rule).toHaveLength(2);
         const ruleDates = master.recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
         const at = ruleDates[12];
-        const { res, capped, fresh } = await split(master, startIsoOf(at));
+        // New notes: the keys show each changed occurrence's title, which a
+        // split naming a title writes over the ones it carries.
+        const { res, capped, fresh } = await split(master, startIsoOf(at), { description: 'From here on' });
         expect(res, `${rule}: ${res.error}`).toMatchObject({ ok: true });
         expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(named);
         expect(lastBefore(occurrenceKeys(capped), at), rule).toBe(lastBefore(named, at));
@@ -835,8 +837,11 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect(itemValues(capped, 'RDATE')).toEqual([]);
     expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T170000']);
     expect(capped.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991008T170000']);
+    // The same changed occurrence, at its own time; it takes the title the
+    // split names, as every occurrence of the following part does (#351).
     const kept = fresh.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-18', 17));
-    expect(kept).toMatchObject({ title: 'Moved', id: fresh.id });
+    expect(kept).toMatchObject({ title: 'Renamed', id: fresh.id });
+    expect(kept.startDate.toString()).toBe(fakeDateTime('2099-10-18', 19).toString());
     expect(kept.parentItem).toBe(fresh);
   });
 
@@ -889,11 +894,11 @@ describe('split: the two parts make the series\' occurrences', () => {
     return loaded;
   };
   for (const [kind, makeStart] of Object.entries(TIMED_KINDS)) {
-    // A new time alone keeps the event's length: a new start moves the end, and
-    // a new end moves the start, so either way the occurrences move with it.
+    // A new start alone keeps the event's length, so the occurrences move with
+    // it. A new end lengthens the event: its start and occurrences stay.
     for (const [change, newTime, field, newValue, moved] of [
       ['a new start', (at) => ({ start_iso: startIsoOf(after(at, 0, 1)) }), 'startDate', (at) => after(at, 0, 1), anHourLater],
-      ['a new end', (at) => ({ end_iso: startIsoOf(after(at, 0, 2)) }), 'endDate', (at) => after(at, 0, 2), anHourLater],
+      ['a new end', (at) => ({ end_iso: startIsoOf(after(at, 0, 2)) }), 'endDate', (at) => after(at, 0, 2), (k) => k],
       ['a new start given in another zone', (at) => ({ start_iso: inEastDigits(after(at, 0, 1)), timezone: EAST.tzid }), 'startDate', (at) => after(at, 0, 1), anHourLater],
     ]) {
       it(`a series ${kind}: ${change} an hour later for this and the following occurrences keeps the series' frame and dates`, async () => {
@@ -1214,8 +1219,9 @@ describe('split: the two parts make the series\' occurrences', () => {
       expect(x).toBeTruthy();
       check(x);
       const timed = !!(change.start_iso || change.end_iso);
-      // With new times it lands at the part's start and end; without, it keeps its own.
-      expect(x.startDate.toString()).toBe(timed ? fresh.startDate.toString() : '20991015T190000');
+      // A new start puts it at the part's start and end; an end alone gives it
+      // the part's end and keeps its own start; without new times it keeps its own.
+      expect(x.startDate.toString()).toBe(change.start_iso ? fresh.startDate.toString() : '20991015T190000');
       expect(x.endDate.toString()).toBe(timed ? fresh.endDate.toString() : '20991015T200000');
       // Shown once, at its own start, in place of its slot.
       const keys = occurrenceKeys(fresh);
@@ -1539,5 +1545,62 @@ describe('a last day after daylight saving time ends keeps its frame', () => {
     expect(m).not.toBeNull();
     expect(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toBeGreaterThanOrEqual(new Date(2099, 10, 30, 23, 30).getTime());
     expect(lastDayAdmitted(start, untilOf(rule))).toBe('2099-11-30');
+  });
+});
+
+// The delete card names a stored rule in words (iOS wording), or says nothing
+// about the rule when its fields cannot fully state it.
+describe('recurrenceInWords: a stored rule in the card\'s words', () => {
+  const someDay = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 45);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  })();
+  const CASES = [
+    [{ freq: 'DAILY' }, 'daily'],
+    [{ freq: 'DAILY', interval: 3 }, 'every 3 days'],
+    [{ freq: 'WEEKLY' }, 'weekly'],
+    [{ freq: 'WEEKLY', interval: 1 }, 'weekly'],
+    [{ freq: 'WEEKLY', interval: 3 }, 'every 3 weeks'],
+    [{ freq: 'MONTHLY' }, 'monthly'],
+    [{ freq: 'MONTHLY', interval: 3 }, 'every 3 months'],
+    [{ freq: 'YEARLY' }, 'yearly'],
+    [{ freq: 'YEARLY', interval: 3 }, 'every 3 years'],
+    [{ freq: 'WEEKLY', byDay: ['MO', 'WE'] }, 'weekly on Monday, Wednesday'],
+    [{ freq: 'MONTHLY', byDay: ['2TU'] }, 'monthly on the second Tuesday'],
+    [{ freq: 'MONTHLY', byDay: ['+2TU'] }, 'monthly on the second Tuesday'],
+    [{ freq: 'MONTHLY', byDay: ['-1FR'] }, 'monthly on the last Friday'],
+    [{ freq: 'MONTHLY', byDay: ['-2MO'] }, 'monthly on the second to last Monday'],
+    [{ freq: 'MONTHLY', byDay: ['1MO', '3WE', '4TH', '5FR'] }, 'monthly on the first Monday, the third Wednesday, the fourth Thursday, the fifth Friday'],
+    [{ freq: 'YEARLY', byDay: ['11MO', '12TU', '23WE', '-3FR'] }, 'yearly on the 11th Monday, the 12th Tuesday, the 23rd Wednesday, the third to last Friday'],
+    [{ freq: 'YEARLY', byDay: ['-4MO', '-5TU'] }, 'yearly on the fourth to last Monday, the fifth to last Tuesday'],
+    [
+      { freq: 'YEARLY', byMonth: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+      'yearly in January, February, March, April, May, June, July, August, September, October, November, December',
+    ],
+    [{ freq: 'YEARLY', byDay: ['21MO', '6TH', '22SA', '13SU'] },'yearly on the 21st Monday, the 6th Thursday, the 22nd Saturday, the 13th Sunday'],
+    [{ freq: 'MONTHLY', byMonthDay: [15] }, 'monthly on day 15'],
+    [{ freq: 'MONTHLY', byMonthDay: [-1] }, 'monthly on the last day'],
+    [{ freq: 'MONTHLY', byMonthDay: [1, -2] }, 'monthly on day 1, the second to last day'],
+    [{ freq: 'YEARLY', byMonth: [3, 9], byMonthDay: [1] }, 'yearly in March, September on day 1'],
+    [{ freq: 'WEEKLY', interval: 2, byDay: ['TU'], wkst: 'SU' }, 'every 2 weeks on Tuesday week starts Sunday'],
+    [{ freq: 'DAILY', count: 1 }, 'daily (1 time)'],
+    [{ freq: 'WEEKLY', interval: 2, byDay: ['MO', 'WE'], count: 10 }, 'every 2 weeks on Monday, Wednesday (10 times)'],
+    [{ freq: 'DAILY', until: someDay }, `daily (until ${someDay})`],
+    [{ freq: 'DAILY', count: 10, until: someDay }, 'daily (10 times)'],
+  ];
+  for (const [fields, words] of CASES) {
+    it(`${JSON.stringify(fields)} → ${words}`, () => {
+      expect(recurrenceInWords(fields)).toBe(words);
+    });
+  }
+
+  it('a rule with parts the fields cannot state, or no frequency, is not worded', () => {
+    expect(recurrenceInWords({ freq: 'MONTHLY', byDay: ['TU'], other: 'BYSETPOS=2' })).toBe('');
+    expect(recurrenceInWords({ other: 'FREQ=HOURLY' })).toBe('');
+    expect(recurrenceInWords({ count: 5 })).toBe('');
+    expect(recurrenceInWords({ freq: 'HOURLY' })).toBe('');
+    expect(recurrenceInWords(null)).toBe('');
+    expect(recurrenceInWords(undefined)).toBe('');
   });
 });

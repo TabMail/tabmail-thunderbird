@@ -12,7 +12,12 @@ same design (tabmail-ios #421).
   `queryCalendarItems` row and on `getCalendarEventDetails`. It is null when the event does not repeat. The
   raw `recurrenceRRule` field is gone.
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
-  in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing.
+  in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing. The delete card
+  (`calendarDelete.js`, #355) adds `Repeating event: every occurrence will be deleted` for any repeating event (keyed on
+  `isRecurring`, so a series by added dates alone gets it too: the delete removes the whole item) and
+  `Repeats <words>` from `recurrenceInWords`, the iOS card's wording (`every 2 weeks on Monday, Wednesday (10 times)`,
+  count over until, `(1 time)`). A rule with `other` parts or no `freq` gets no Repeats line: a part left out would
+  name a different rule (iOS words the known parts instead). One occurrence is removed with the edit tool's `exdates_add`.
 - **Only the stated fields are shown.** Thunderbird never stores `INTERVAL=1` or `WKST=MO` (ical.js `Recur.toString`
   omits both), so neither is ever shown.
 - **The rule is read from `recurrenceInfo` only** (`ruleValuesOfItem` / `rruleOfItem`, used by both read tools and
@@ -151,7 +156,11 @@ same design (tabmail-ios #421).
     its changed occurrences still at their slots and its rule's days go with it, which closes #328, where a part
     moved to another day kept naming the old days; one given its own time keeps it). Superseded: the changed
     occurrences kept their own times; then (first #287 version) every changed occurrence moved. The new times are read in the user's zone (or the edit's `timezone`; one Thunderbird does not know is refused by name, nothing written, for create and every edit scope: `toCalIDateTime` throws it outside its own null-returning try, #314; before, it was read in the user's zone) and
-    written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`):
+    written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`;
+    as Google Calendar does, a start alone keeps the length and an end alone changes only the end, the start kept
+    being the item's own: the event's, one occurrence's current start, the split's slot; until #350 an end alone
+    moved the start back by the stored length, which moved a whole series' occurrences and the occurrence a
+    split starts at):
     a zoned series' own zone at the same instant, a floating series at the user's clock digits, kept floating (the
     inverse of `asShown`), as Thunderbird's event dialog keeps an event's zone. Read straight in the user's zone,
     a new start moved the series into it: its rule expanded there (a Thursday east of UTC can be a Wednesday in
@@ -161,7 +170,11 @@ same design (tabmail-ios #421).
     edit from all day to timed is written as read. An edit that leaves `all_day` out keeps the item's kind, all-day
     or timed (the edit tool's "Leave empty to keep existing"; #309, note 034); one that gives an all-day item a time
     of day without `all_day`, or whose all-day end would fall on or before its start, is refused before anything is
-    written, asking the user (`allDayEditError`, in the split too; note 034). `all_day` alone
+    written, asking the user (`editTimesError`, formerly `allDayEditError`, in the split too; note 034); so is a start
+    and an end of different kinds (a side the edit leaves out keeps its kind; #318) and a timed end before the start
+    (an end at the start is written, a zero-length event as Google makes one; the refusal explains that an end alone keeps
+    the start only when no start was given, and a split's names the slot its part starts at). The same check runs on the
+    occurrence the edit names (`applyEditToNamedOccurrence`). `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
     all-day comes with them.
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
@@ -169,7 +182,9 @@ same design (tabmail-ios #421).
   - **A split at an occurrence that was changed on its own** (X) is made in one write (2026-11-10): "from X on, new
     time" applies the time to X and everything after it, and X keeps its rename. X is carried
     into the following part with its own fields, then takes the edit there (`applyEditToNamedOccurrence`): with
-    new times, the part's start and end; every field the edit names (title, location, description, busy/free);
+    a new start, the part's start and end; with an end alone, the part's end, keeping its own start (the part
+    starts at the slot, and the card names X by its own start and states its original time, `recurrenceIdSlot`
+    from `getCalendarEventDetails`; an end before X's start is refused); every field the edit names (title, location, description, busy/free);
     its own changes the edit does not name are kept. A guest change is not made there: the bridge's one guest merge
     makes it on every item the split covers, X included (051). Every changed occurrence of the part whose own
     start, end or place the split changes (X, ones at their slots moved with the part) has its own attendees
@@ -252,12 +267,15 @@ same design (tabmail-ios #421).
     alone the new end, on the series' own date as the read tools show it, `shownEventTimesIso` in
     `calendar_event_read.js`): a plain shift of every occurrence. Thunderbird's `onStartDateChange` moves
     EXDATE/RDATE, UNTIL and the RECURRENCE-IDs by the start's change in UTC; `shiftSeriesWithStart` (bridge,
-    after `allDayEditError`) handles the changed occurrences as calendar apps keep the user's edits
+    after `editTimesError`) handles the changed occurrences as calendar apps keep the user's edits
     (2026-11-10): one still at its slot (its own start, moved by that UTC amount, lands on its
     moved RECURRENCE-ID; changed only in title, notes, place, guests or length) moves by the same amount and keeps
-    its changes; one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
-    replaces its slot and shows once). A first occurrence the edit names by `recurrence_id` takes the edit (its
-    times and named fields, `applyEditToNamedOccurrence`), even when given its own time; with no `recurrence_id`
+    its changes, its own length included (a field the edit names is then written over every changed occurrence,
+    #351, *An "All events" edit* below); one given its own start keeps its own start and end, only its RECURRENCE-ID moved (so it still
+    replaces its slot and shows once). An end alone moves no start, so it changes no changed occurrence (#350
+    kept this rule as it was), and excluded dates stay excluded. A first occurrence the edit names by `recurrence_id` takes the edit (its
+    times and named fields, `applyEditToNamedOccurrence`: a new start gives it the series' start and end, an end
+    alone the series' end with its own start kept), even when given its own time; with no `recurrence_id`
     none is named. Superseded: (first #287 version) every changed occurrence moved by the shift, one given its own
     time included (a 9:00 series moved to 10:00 took one moved to 11:00 to 12:00, a time nobody chose); (before
     #287) the changed occurrences kept their times while their RECURRENCE-IDs moved. And on a move to another day (days counted from the date digits in the old start's zone)
@@ -283,8 +301,10 @@ same design (tabmail-ios #421).
     RECURRENCE-IDs moved; (second) a same-day change was let through and a day move refused only with changed
     occurrences, advising "make the move first", which led into the same-day breakage.
   - **Named from a later occurrence:** the edit tool rewrites `edit_scope` to `this_and_following` before the card
-    (`routeSeriesTimeChange`, using `getCalendarEventDetails`' optional `recurrence_id` → `recurrenceIdIsFirst` /
-    `recurrenceIdError`), so the card, the bridge and the result agree; the following part gets the same shift.
+    (`routeSeriesTimeChange`, using `getCalendarEventDetails`' optional `recurrence_id` → `recurrenceIdIsFirst`,
+    absent when it names no single occurrence), so the card, the bridge and the result agree; the following part
+    gets the same shift. A `recurrence_id` that names no occurrence is refused by the bridge's check before the card
+    (#339). Superseded: the read also gave `recurrenceIdError`, which the tool returned as its own refusal.
     The bridge refuses an `all` time change named from a later occurrence, naming `this_and_following`.
   - **Unclear:** no `recurrence_id` and another date → the tool refuses before the card, telling the model to ask
     "just that date, or that date and every later one".
@@ -300,6 +320,48 @@ same design (tabmail-ios #421).
   result said the whole series. A `recurrence` (a rule, or `{}`) on a `this_only` edit is refused before the card
   in `_runEditCalendarEvent`, as Thunderbird never expands a rule written onto an occurrence; the edit used to report
   success while the series kept its rule.
+- **An "All events" edit writes each field it names over every occurrence (#351), as Google Calendar's "All
+  events" edit does.** On `edit_scope` `all`, `applyEditToChangedOccurrences` (bridge, in `modifyCalendarEvent`
+  after the rule is written and before the check's return, so the check and the write run it alike) gives every
+  changed occurrence of the series each non-time field the edit names: title, location, description (in every
+  form: `X-ALT-DESC`, `X-MOZ-HTML` and `X-MOZ-ALT-DESC` go, as on the series) and busy/free. Guests are not made
+  there: `applyGuestChangeToSeries` already changes every changed occurrence's own list (051). A field the edit
+  does not name keeps each occurrence's own value; the step writes no time (start, end and all-day are the
+  time rules', above, unchanged), and an excluded occurrence stays excluded. The plain occurrences
+  take the fields from the series itself. A split (`this_and_following`) does the same over its following
+  part, in `splitRecurringEvent` after the occurrence it starts at takes the edit and before the attendee
+  answers are decided: every changed occurrence carried into the part takes each field the split names, so a
+  new place asks that occurrence's attendees again (the split's rule, above); the earlier part's keep their own.
+  `this_only` changes one occurrence.
+  - **A field the edit only restates is no change** (2026-11-11; Google Calendar leaves an occurrence's own
+    value alone when the field is not changed in its form, and that form, opened from an occurrence, holds the
+    occurrence's own values). ONE comparison, `restatedFields` in `chat/tools/calendar_event_edit.js`: a named
+    title, place, notes or busy/free equal to what `getCalendarEventDetails` reads. Those details hold the
+    series' fields, or, when the read names an occurrence (`recurrence_id`, which the tool passes on a split),
+    that occurrence's own (`editableFieldsOf(named.occurrence)`; start, end and kind stay the series'). The
+    notes are read as `queryCalendarItems` reads them (DESCRIPTION). The confirmation card
+    (`formatChangesForDisplay`) shows no line for those fields and shows the real old value of the others, and
+    on `all` and `this_and_following` the tool drops them from the edit before the check, with the same details
+    the card then shows, so the card, the check and the write see one edit: an occurrence changed on its own
+    keeps its own value of a restated field. A split at an occurrence changed on its own compares with that
+    occurrence: "from Wednesday on, back in Room A" when Wednesday to Friday were each moved to Room B is a
+    change, written to Wednesday and every carried occurrence (their attendees asked again; the plain ones
+    keep their answers, as the place equals the series'). When the details cannot be read, such an edit is
+    refused before the card ("could not read this event"). `this_only` is not pruned: its card still compares
+    with the series, not the occurrence (#369).
+  - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
+  occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
+  time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it
+  starts at; (first #351 version) a restated field was written over every changed occurrence while the card
+  showed no line for it; and (second #351 version) the comparison read the series' values on a split too, so
+  "back in Room A" at an occurrence moved to Room B changed nothing, and the details carried no notes, so
+  restated notes overwrote every changed occurrence's own and the card showed the old notes as "(empty)".
+  Pinned through the real bridge and its read path by `test/calendarAllEventsFieldEdit.test.js` (every
+  occurrence reads each named field, every other field and both times as before, the same occurrences shown;
+  the split's carried occurrences and their answers; the HTML copies; restated title, place, notes and
+  busy/free from the tool's `run` through the card; a split at an occurrence with its own place and its own
+  notes; the refusal when the event cannot be read; `this_only` setting an occurrence back to the series'
+  place; a control for `this_only`).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
 
 ## How it is pinned
@@ -332,6 +394,28 @@ same design (tabmail-ios #421).
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card
   with every field.
+- The delete card's lines (#355): `test/calendarSeriesDeleteCard.test.js`, through the real bridge and delete states
+  (series by id and by an occurrence row, added dates alone, `other` rules, UNTIL agreeing with `calendar_event_read`,
+  one-off control), and the `recurrenceInWords` table in `test/calendarRecurrenceFormat.test.js` (every position
+  word and suffix, all month names).
+- **One check before the card (#339):** the edit tool calls `modifyCalendarEvent` with `check_only: true` for every
+  edit, after its routing, and fails the call with the bridge's refusal. The bridge returns from the check at its
+  first write, in both paths: in `modifyCalendarEvent` just before the excluded dates of one occurrence go to its
+  series (the first change to a stored item), in `splitRecurringEvent` just before the earlier part is written. So
+  every refusal is made by the check, the split's new-rule write failure and its refusal to stop repeating at an
+  occurrence changed on its own included (before #339 these two came after the check, so the card was shown for an
+  edit the write then refused). Everything above works on clones. The tool keeps only its own argument checks (a
+  date it cannot read, `event_id`, a rule on one occurrence, `recurrenceArgError`, `otherPartsRefusal`), the
+  question when no occurrence is named on another date, and its refusal when it cannot read the event to route.
+  Deleted copies: "edit_scope needs recurrence_id" (in the tool and in the edit flow; the bridge's message took the
+  tool's wording, which names how to find it), and the tool's "new repeat rule with a move to another day", which
+  compared the date text in the user's zone and so refused a move that is the same day in the series' own zone
+  (the bridge counts days in the series' zone, `NEW_RULE_MOVE`). `getCalendarEventDetails` no longer returns
+  `recurrenceIdError`. An event_id that names no event gets `EDIT_EVENT_NOT_FOUND_ERROR` from both paths, which
+  tells the assistant to look the event up again (calendar_search or calendar_read) and not to retry the same id:
+  before #339 an edit giving no times got that guidance from the list state's read, and the bridge's own text was
+  a terse "event not found". The census of the two functions' refusals is
+  `test/calendarEditRefusedBeforeCard.test.js`.
 - `test/calendarRecurrenceNative.test.js` runs the bridge against Thunderbird's own date and recurrence code
   (`test/fixtures/mozilla/Ical.sys.mjs` and `CalDateTime.sys.mjs`, unmodified copies of comm-central 226a299e,
   Thunderbird 161.0a1, pinned by revision and SHA-256 in that directory's README and checked by the test), because

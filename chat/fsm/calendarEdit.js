@@ -8,11 +8,9 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
-import {
-  formatNaiveIsoInTimezone,
-  formatTimestampForAgent,
-  streamText
-} from "../modules/helpers.js";
+import { formatCardTime, streamText } from "../modules/helpers.js";
+import { shownEventTimesIso } from "../tools/calendar_event_read.js";
+import { restatedFields } from "../tools/calendar_event_edit.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 
 async function formatEventDetailsForDisplay(details, editArgs) {
@@ -46,9 +44,14 @@ async function formatEventDetailsForDisplay(details, editArgs) {
 
     if (d.id) lines.push(`Event ID: ${d.id}`);
     if (d.title) lines.push(`Title: ${d.title}`);
-    if (d.start)
-      lines.push(`Start: ${formatTimestampForAgent(new Date(d.start))}`);
-    if (d.end) lines.push(`End: ${formatTimestampForAgent(new Date(d.end))}`);
+    // The stored times as the read tools show them: an all-day DATE from its
+    // own day digits, never its epoch (UTC midnight, the day before west of UTC).
+    const shown = shownEventTimesIso(d);
+    const allDay = d.isAllDay === true;
+    if (shown.start_iso)
+      lines.push(`Start: ${formatCardTime(shown.start_iso, { allDay })}`);
+    if (shown.end_iso)
+      lines.push(`End: ${formatCardTime(shown.end_iso, { allDay, endAfter: shown.start_iso })}`);
     if (typeof d.isAllDay !== "undefined")
       lines.push(`All-day: ${d.isAllDay ? "yes" : "no"}`);
     if (d.location) lines.push(`Location: ${d.location}`);
@@ -76,31 +79,45 @@ function formatChangesForDisplay(editArgs, currentDetails) {
     const lines = [];
     const a = editArgs || {};
     const d = currentDetails || {};
+    // A field the edit only restates is no change: one comparison, shared
+    // with the edit tool, which drops it from a series edit before the write.
+    const restated = restatedFields(a, d);
 
     // Show what fields are being changed with bold markdown and clear arrows
-    if (a.title && a.title !== d.title) {
+    if (a.title && !restated.includes("title")) {
       lines.push(`**Title:**`);
       lines.push(`  ${d.title || "(empty)"} → **${a.title}**`);
     }
-    if (a.start_iso) {
-      const oldStart = d.start
-        ? formatTimestampForAgent(new Date(d.start))
+    // Old and new times are compared as the naive values the card prints,
+    // with their kinds: an all-day value by its day, a timed one by its digits
+    // (a given timezone is a change of frame, so the line is shown). A new
+    // value keeps the event's kind unless all_day is given.
+    const shown = shownEventTimesIso(d);
+    const oldAllDay = d.isAllDay === true;
+    const newAllDay = typeof a.all_day === "boolean" ? a.all_day : oldAllDay;
+    const sameTime = (given, stored) =>
+      Boolean(stored) &&
+      newAllDay === oldAllDay &&
+      (newAllDay ? given.slice(0, 10) === stored.slice(0, 10) : !a.timezone && given === stored);
+    if (a.start_iso && !sameTime(a.start_iso, shown.start_iso)) {
+      const oldStart = shown.start_iso
+        ? formatCardTime(shown.start_iso, { allDay: oldAllDay })
         : "(not set)";
-      const newStart = formatNaiveIsoInTimezone(a.start_iso, a.timezone);
-      if (oldStart !== newStart) {
-        lines.push(`**Start time:**`);
-        lines.push(`  ${oldStart} → **${newStart}**`);
-      }
+      const newStart = formatCardTime(a.start_iso, { allDay: newAllDay, timezone: a.timezone });
+      lines.push(newAllDay ? `**Start date:**` : `**Start time:**`);
+      lines.push(`  ${oldStart} → **${newStart}**`);
     }
-    if (a.end_iso) {
-      const oldEnd = d.end
-        ? formatTimestampForAgent(new Date(d.end))
+    if (a.end_iso && !sameTime(a.end_iso, shown.end_iso)) {
+      const oldEnd = shown.end_iso
+        ? formatCardTime(shown.end_iso, { allDay: oldAllDay, endAfter: shown.start_iso })
         : "(not set)";
-      const newEnd = formatNaiveIsoInTimezone(a.end_iso, a.timezone);
-      if (oldEnd !== newEnd) {
-        lines.push(`**End time:**`);
-        lines.push(`  ${oldEnd} → **${newEnd}**`);
-      }
+      const newEnd = formatCardTime(a.end_iso, {
+        allDay: newAllDay,
+        endAfter: a.start_iso || shown.start_iso,
+        timezone: a.timezone,
+      });
+      lines.push(newAllDay ? `**End date:**` : `**End time:**`);
+      lines.push(`  ${oldEnd} → **${newEnd}**`);
     }
     if (typeof a.all_day !== "undefined" && a.all_day !== d.isAllDay) {
       lines.push(`**All-day event:**`);
@@ -108,11 +125,11 @@ function formatChangesForDisplay(editArgs, currentDetails) {
         `  ${d.isAllDay ? "yes" : "no"} → **${a.all_day ? "yes" : "no"}**`
       );
     }
-    if (a.location && a.location !== d.location) {
+    if (a.location && !restated.includes("location")) {
       lines.push(`**Location:**`);
       lines.push(`  ${d.location || "(empty)"} → **${a.location}**`);
     }
-    if (a.description) {
+    if (a.description && !restated.includes("description")) {
       const oldDesc = d.description
         ? d.description.length > 50
           ? d.description.slice(0, 50) + "..."
@@ -122,12 +139,10 @@ function formatChangesForDisplay(editArgs, currentDetails) {
         a.description.length > 50
           ? a.description.slice(0, 50) + "..."
           : a.description;
-      if (a.description !== d.description) {
-        lines.push(`**Description:**`);
-        lines.push(`  ${oldDesc} → **${newDesc}**`);
-      }
+      lines.push(`**Description:**`);
+      lines.push(`  ${oldDesc} → **${newDesc}**`);
     }
-    if (typeof a.transparency === "string") {
+    if (typeof a.transparency === "string" && !restated.includes("transparency")) {
       const oldT =
         typeof d.transparency === "string"
           ? d.transparency === "free"
@@ -135,10 +150,8 @@ function formatChangesForDisplay(editArgs, currentDetails) {
             : "busy"
           : "(unchanged)";
       const newT = a.transparency === "free" ? "free" : "busy";
-      if (oldT !== newT) {
-        lines.push(`**Transparency:**`);
-        lines.push(`  ${oldT} → **${newT}**`);
-      }
+      lines.push(`**Transparency:**`);
+      lines.push(`  ${oldT} → **${newT}**`);
     }
     // The guest change, as the people added and removed. The calendar bridge
     // applies it to each item the edit covers, whose lists can differ, so no
@@ -173,11 +186,17 @@ function formatChangesForDisplay(editArgs, currentDetails) {
 
     // Recurring-event scope — surface this prominently so the user sees that
     // the edit will only apply to part of the series (or just one occurrence).
+    // An all-day occurrence is named by its date.
     const scope = typeof a.edit_scope === "string" ? a.edit_scope : null;
+    const occurrence = (naiveIso) => (oldAllDay ? formatCardTime(naiveIso, { allDay: true }) : naiveIso);
     if (scope === "this_only" && a.recurrence_id) {
-      lines.push(`**Scope:** Just this occurrence (${a.recurrence_id})`);
+      lines.push(`**Scope:** Just this occurrence (${occurrence(a.recurrence_id)})`);
     } else if (scope === "this_and_following" && a.recurrence_id) {
-      lines.push(`**Scope:** This occurrence and all future occurrences (starting ${a.recurrence_id})`);
+      // Named by the start the user sees; an occurrence moved off its usual
+      // time also shows that original time, where the following part starts
+      // unless the edit gives a new start.
+      const originally = d.recurrenceIdSlot ? `, originally ${occurrence(d.recurrenceIdSlot)}` : "";
+      lines.push(`**Scope:** This occurrence and all future occurrences (starting ${occurrence(a.recurrence_id)}${originally})`);
     } else if (scope === "all") {
       lines.push(`**Scope:** Entire recurring series`);
     }
@@ -339,16 +358,8 @@ export async function runStateEditCalendarEventExec() {
   const explicitScope = (typeof editArgs.edit_scope === "string") ? editArgs.edit_scope : null;
   const editScope = explicitScope
     || (editArgs.recurrence_id ? "this_only" : "all");
-  if (editScope !== "all" && !editArgs.recurrence_id) {
-    agentBubble.classList.remove("loading");
-    const failMsg = `edit_scope='${editScope}' requires recurrence_id (the start datetime of the target occurrence).`;
-    streamText(agentBubble, failMsg);
-    try { if (execPid) ctx.fsmSessions[execPid].failReason = failMsg; } catch (_) {}
-    ctx.state = "exec_fail";
-    const core = await import("./core.js");
-    await core.executeAgentAction();
-    return;
-  }
+  // A scope that needs recurrence_id without one is the bridge's refusal,
+  // made already by the tool's check before the card.
 
   let resultMsg = "";
   let editResult = null;

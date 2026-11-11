@@ -42,8 +42,7 @@ vi.mock('../chat/modules/context.js', () => ({
 
 vi.mock('../chat/modules/converse.js', () => ({ awaitUserInput: vi.fn() }));
 vi.mock('../chat/modules/helpers.js', () => ({
-  formatNaiveIsoInTimezone: vi.fn((iso) => iso),
-  formatTimestampForAgent: vi.fn((d) => String(d)),
+  formatCardTime: vi.fn((iso) => iso),
   streamText: vi.fn(),
   toNaiveIso: vi.fn((s) => s),
 }));
@@ -196,19 +195,23 @@ describe('runStateEditCalendarEventExec — edit_scope dispatch', () => {
     });
   }
 
-  it('fails fast when edit_scope requires recurrence_id but none is provided', async () => {
+  // The rule that a scope needs recurrence_id is the bridge's (the tool's
+  // check before the card makes it): the flow has no copy, and the bridge's
+  // refusal fails the edit.
+  it('a scope that needs recurrence_id without one goes to the bridge, whose refusal fails the edit', async () => {
     setEditArgs({
       event_id: 'evt-1',
       edit_scope: 'this_only',
       title: 'Update',
     });
+    modifyMock.mockResolvedValueOnce({ ok: false, error: "edit_scope='this_only' requires recurrence_id" });
 
     await runStateEditCalendarEventExec();
 
-    expect(modifyMock).not.toHaveBeenCalled();
+    expect(modifyMock).toHaveBeenCalledTimes(1);
     expect(splitMock).not.toHaveBeenCalled();
     expect(fsmCtx.state).toBe('exec_fail');
-    expect(fsmCtx.fsmSessions['pid-test'].failReason).toMatch(/recurrence_id/);
+    expect(fsmCtx.fsmSessions['pid-test'].failReason).toMatch(/requires recurrence_id/);
   });
 });
 
@@ -294,7 +297,7 @@ describe('bridge modifyCalendarEvent — edit_scope decides which item changes',
     .map((rid) => `${rid.toString()} ${item.recurrenceInfo.getExceptionFor(rid).title}`);
 
   for (const withCalendar of [true, false]) {
-    it(`edit_scope "all" edits the series whatever recurrence_id names, and adds or changes no occurrence${withCalendar ? '' : ' (no calendar_id: found by scanning the calendars)'}`, async () => {
+    it(`edit_scope "all" edits the series whatever recurrence_id names, and adds no occurrence${withCalendar ? '' : ' (no calendar_id: found by scanning the calendars)'}`, async () => {
       for (const rid of [RID, unstoredRid, notAnOccurrence]) {
         const master = series();
         const changedBefore = changedOf(master);
@@ -308,7 +311,9 @@ describe('bridge modifyCalendarEvent — edit_scope decides which item changes',
         expect(modifications[0].oldItem, rid).toBe(master);
         const saved = calendar.items[0];
         expect(saved.title, rid).toBe('Team sync');
-        expect(changedOf(saved), rid).toEqual(changedBefore);
+        // The same changed occurrence, none added: it takes the title the edit
+        // names, as every occurrence of the series does (#351).
+        expect(changedOf(saved), rid).toEqual([`${fakeDateTime(day, 17).toString()} Team sync`]);
         expect(changedOf(master), rid).toEqual(changedBefore);
       }
     });

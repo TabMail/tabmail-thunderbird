@@ -8,8 +8,14 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
-import { formatTimestampForAgent, streamText } from "../modules/helpers.js";
+import { formatCardTime, streamText } from "../modules/helpers.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
+import { recurrenceInWords } from "../modules/recurrence.js";
+import { shownEventTimesIso } from "../tools/calendar_event_read.js";
+
+// The delete removes the whole item, so a repeating event goes with every
+// occurrence (one occurrence is removed by the edit tool, exdates_add).
+const SERIES_DELETE_NOTE = "Repeating event: every occurrence will be deleted";
 
 function formatEventDetailsForDisplay(details) {
   try {
@@ -18,11 +24,24 @@ function formatEventDetailsForDisplay(details) {
     if (d.calendarName) lines.push(`Calendar: ${d.calendarName}`);
     if (d.id) lines.push(`Event ID: ${d.id}`);
     if (d.title) lines.push(`Title: ${d.title}`);
-    if (d.start)
-      lines.push(`Start: ${formatTimestampForAgent(new Date(d.start))}`);
-    if (d.end) lines.push(`End: ${formatTimestampForAgent(new Date(d.end))}`);
+    // The stored times as the read tools show them: an all-day DATE from its
+    // own day digits, never its epoch (UTC midnight, the day before west of UTC).
+    const shown = shownEventTimesIso(d);
+    const allDay = d.isAllDay === true;
+    if (shown.start_iso)
+      lines.push(`Start: ${formatCardTime(shown.start_iso, { allDay })}`);
+    if (shown.end_iso)
+      lines.push(`End: ${formatCardTime(shown.end_iso, { allDay, endAfter: shown.start_iso })}`);
     if (typeof d.isAllDay !== "undefined")
       lines.push(`All-day: ${d.isAllDay ? "yes" : "no"}`);
+    // Keyed on isRecurring, not recurrence: a series repeating by added dates
+    // alone has no rule fields and is still deleted whole. The rule is named
+    // only when it can be fully stated (recurrenceInWords).
+    if (d.isRecurring) {
+      lines.push(SERIES_DELETE_NOTE);
+      const words = recurrenceInWords(d.recurrence);
+      if (words) lines.push(`Repeats ${words}`);
+    }
     if (d.location) lines.push(`Location: ${d.location}`);
     if (d.organizer) lines.push(`Organizer: ${d.organizer}`);
     if (Number.isFinite(d.attendees)) lines.push(`Attendees: ${d.attendees}`);
