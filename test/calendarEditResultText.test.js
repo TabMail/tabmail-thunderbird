@@ -97,4 +97,29 @@ describe('what the assistant is told after the edit', () => {
       expect(loaded.modifications).toHaveLength(0);
     }
   });
+
+  it('one changed occurrence: the title reported is that occurrence\'s own, not the series\'', async () => {
+    const { at } = await import('./helpers/nativeCalendarDates.js');
+    const rid = at(LA, '2099-01-12', 10);
+    const end = at(LA, '2099-01-12', 11);
+    onCalendar([seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10', changed: [{ rid, start: rid, end, title: 'Cover shift' }] })], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_only', recurrence_id: iso('2099-01-12', 10), location: 'Ward B' });
+    expect(run.state).toBe('exec_success');
+    expect(run.result).toMatchObject({ ok: true, edit_scope: 'this_only', event_id: 'ser', recurrence_id: iso('2099-01-12', 10), event_title: 'Cover shift' });
+  });
+
+  it('a split moved to an earlier day: the event id is paired with the occurrence it names', async () => {
+    const loaded = onCalendar([series()], LA);
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso('2099-01-14', 10), start_iso: iso('2099-01-13', 9), end_iso: iso('2099-01-13', 10) });
+    expect(run.failReason, 'refused').toBeUndefined();
+    expect(run.state).toBe('exec_success');
+    const part = loaded.calendar.items.find((it) => it.id !== 'ser');
+    // The slice the user named is still told by the occurrence they named.
+    expect(run.result.result).toBe(FOLLOWING(iso('2099-01-14', 10)));
+    // The pair (event_id, recurrence_id) names the new part's first occurrence.
+    expect(run.result.event_id).toBe(part.id);
+    expect(run.result.recurrence_id).toBe(iso('2099-01-13', 9));
+    const read = await flow.readOccurrence(run.result.recurrence_id);
+    expect(read.start_iso).toBe(iso('2099-01-13', 9));
+  });
 });

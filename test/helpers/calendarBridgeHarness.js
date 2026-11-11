@@ -681,15 +681,18 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         // keyed by the RECURRENCE-ID, replacing the exception with that key or
         // ADDING one.
         const info = oldItem.parentItem.recurrenceInfo;
+        // CalMemoryCalendar.modifyItem then resolves with the PARENT series,
+        // not the occurrence (aNewItem = aNewItem.parentItem), so the item it
+        // returns has the series' title, not the occurrence's.
         if (typeof info.modifyException === 'function') {
           info.modifyException(newItem);
-          return newItem;
+          return oldItem.parentItem;
         }
         const list = info.occurrences;
         const key = newItem.recurrenceId.toString();
         const idx = list.findIndex((o) => o.recurrenceId.toString() === key);
         if (idx < 0) list.push(newItem); else list[idx] = newItem;
-        return newItem;
+        return oldItem.parentItem;
       }
       // A master/single item is replaced by identity, exactly one row.
       const idx = items.indexOf(oldItem);

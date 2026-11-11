@@ -385,7 +385,11 @@ export async function runStateEditCalendarEventExec() {
       calendar_id: res.calendar_id,
       event_title: res.title,
       edit_scope: editScope,
-      recurrence_id: editArgs.recurrence_id || null,
+      // The occurrence the user named, for the result text, and the one the
+      // bridge reports event_id names (a split's new part starts its own
+      // series, at the new start when the edit moved it).
+      named_recurrence_id: editArgs.recurrence_id || null,
+      recurrence_id: res.recurrence_id || null,
       invitations: res.invitations,
     };
     try {

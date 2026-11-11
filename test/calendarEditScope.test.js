@@ -240,7 +240,9 @@ describe('runStateEditCalendarEventExec — resolved edit_scope echoed into edit
     await runStateEditCalendarEventExec();
     const r = fsmCtx.fsmSessions['pid-test'].editResult;
     expect(r.edit_scope).toBe('this_and_following');
-    expect(r.recurrence_id).toBe(RID);
+    // The occurrence the user named; recurrence_id is what the bridge reports
+    // event_id names (the new part's first occurrence), which this mock omits.
+    expect(r.named_recurrence_id).toBe(RID);
   });
 
   it('INFERRED scope (recurrence_id present, no edit_scope) is resolved to "this_only" and echoed', async () => {

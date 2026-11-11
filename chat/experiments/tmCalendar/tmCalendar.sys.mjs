@@ -2841,13 +2841,17 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
             
-            // Return the item's own event_id
+            // Return the item's own event_id. An occurrence edit resolves with
+            // the PARENT series (CalMemoryCalendar.modifyItem), so the title is
+            // the occurrence's as written (the clone), not the series'; and the
+            // occurrence it names is the one the edit named.
             const returnedId = String((modified?.id) || (base?.id) || "");
             return { 
               ok: true, 
               calendar_id: cal?.id || null,
               event_id: returnedId, 
-              title: modified?.title || null,
+              recurrence_id: isOccurrence ? recurIdStr : null,
+              title: (isOccurrence ? clone.title : modified?.title) || null,
               invitations: invitationResult
             };
           } catch (e) {
@@ -3253,6 +3257,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               ok: true,
               calendar_id: cal?.id || null,
               event_id: created?.id || null,
+              // The new part's first occurrence, as the read tools print it:
+              // the occurrence event_id now names (a moved start is not the
+              // recurrence_id the edit named, which was of the old series).
+              recurrence_id: created?.startDate ? shownNaiveIso(created.startDate) : null,
               old_event_id: eventId,
               title: created?.title || null,
               invitations: invitationResult,

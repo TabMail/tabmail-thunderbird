@@ -456,7 +456,7 @@ export async function completeExecution(currentState, prevState) {
     // accurately tell the user what slice of the series changed — especially
     // the inferred case (recurrence_id without edit_scope → "this_only").
     const scope = sess.editResult.edit_scope || "all";
-    const rid = sess.editResult.recurrence_id;
+    const rid = sess.editResult.named_recurrence_id;
     let result;
     if (scope === "this_only") {
       result = `Calendar event modified successfully — edit_scope: this_only (only the occurrence on ${rid}; other occurrences untouched).`;
@@ -472,7 +472,7 @@ export async function completeExecution(currentState, prevState) {
       event_title: sess.editResult.event_title,
       calendar_id: sess.editResult.calendar_id,
       edit_scope: scope,
-      recurrence_id: rid,
+      recurrence_id: sess.editResult.recurrence_id,
       invitations: sess.editResult.invitations,
     };
   }
