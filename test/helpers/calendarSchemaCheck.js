@@ -42,9 +42,26 @@ export function checkAgainst(spec, value, path) {
   }
 }
 
-// The bridge, with each call checked against its declared parameters first.
-// A call that does not fit pushes its message to `errors` and throws, as
-// Thunderbird refuses it.
+// The functions whose answers are checked by name (checkNames): the edit's,
+// whose check before the card the edit tool reads.
+const RETURNS_CHECKED = new Set(['modifyCalendarEvent', 'splitRecurringEvent']);
+
+// Every name of a returned object (and of each declared object in it) is one
+// the schema declares, so a caller reads only what the experiment promises.
+export function checkNames(spec, value, path) {
+  if (!spec || spec.type !== 'object' || !spec.properties || !value || typeof value !== 'object' || Array.isArray(value)) return;
+  if (spec.additionalProperties) return;
+  for (const key of Object.keys(value)) {
+    if (value[key] === undefined) continue;
+    if (!(key in spec.properties)) throw new Error(`${path}.${key}: not declared`);
+    checkNames(spec.properties[key], value[key], `${path}.${key}`);
+  }
+}
+
+// The bridge, with each call checked against its declared parameters first,
+// and its answer's names against its declared returns. A call or answer that
+// does not fit pushes its message to `errors` and throws, as Thunderbird
+// refuses it.
 export function checked(api, errors) {
   const out = {};
   for (const fn of SCHEMA_FUNCTIONS) {
@@ -59,7 +76,17 @@ export function checked(api, errors) {
         errors.push(String(e.message));
         throw e;
       }
-      return api[fn.name](...args);
+      const answer = api[fn.name](...args);
+      if (!fn.returns || !RETURNS_CHECKED.has(fn.name)) return answer;
+      return Promise.resolve(answer).then((res) => {
+        try {
+          checkNames(fn.returns, res, `${fn.name} returns`);
+        } catch (e) {
+          errors.push(String(e.message));
+          throw e;
+        }
+        return res;
+      });
     };
   }
   return out;
