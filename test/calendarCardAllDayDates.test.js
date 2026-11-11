@@ -12,7 +12,7 @@
 // Thunderbird's own dates (test/fixtures/mozilla), the real tools and the real
 // card states, once with the user west of UTC and once east of it.
 
-process.env.TZ = 'America/Vancouver';
+process.env.TZ = 'America/Los_Angeles';
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -91,8 +91,8 @@ function vtimezone(tzid, daylight, standard) {
 // The user's zone, in Thunderbird and in the process (the card's own clock).
 const ZONES = [
   {
-    name: 'west of UTC', tz: 'America/Vancouver',
-    zone: vtimezone('America/Vancouver',
+    name: 'west of UTC', tz: 'America/Los_Angeles',
+    zone: vtimezone('America/Los_Angeles',
       ['DTSTART:20070311T020000', 'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU', 'TZOFFSETFROM:-0800', 'TZOFFSETTO:-0700'],
       ['DTSTART:20071104T020000', 'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU', 'TZOFFSETFROM:-0700', 'TZOFFSETTO:-0800']),
   },
@@ -338,9 +338,13 @@ for (const { name, tz, zone } of ZONES) {
         const next = sweepDay(n + 1);
         const iso = `${digitsOf(d)}T00:00:00`;
         const nextIso = `${digitsOf(next)}T00:00:00`;
+        const prevIso = `${digitsOf(sweepDay(n - 1))}T00:00:00`;
         expect(formatCardTime(iso, { allDay: true }), iso).toBe(printed(d));
         // A one-day event's exclusive end is the next day; its last day is this one.
         expect(formatCardTime(nextIso, { allDay: true, endAfter: iso }), nextIso).toBe(printed(d));
+        // A two-day event whose last day is this one: its start is the day before,
+        // so a last day computed too early is not raised to the answer by the floor.
+        expect(formatCardTime(nextIso, { allDay: true, endAfter: prevIso }), nextIso).toBe(printed(d));
         // A stored end equal to the start is never printed before the start.
         expect(formatCardTime(iso, { allDay: true, endAfter: iso }), iso).toBe(printed(d));
         if (next.getDate() === 1) seen.monthEnds += 1;
