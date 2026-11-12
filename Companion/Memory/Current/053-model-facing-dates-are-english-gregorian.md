@@ -42,8 +42,23 @@ sees for a timed occurrence, so a reply or an event it creates or moves could ca
 - Dates only the user reads (settings and history pages, the message-list thread bubble, the chat's
   @-mention list, the drawn archive/delete selection row) stay in the user's locale.
 - The day header matches the iOS twin exactly: `formatDayHeader("2099-12-30", tz)` is
-  "Wednesday, December 30, 2099" for any default locale (`modelFacingDatesGregorian.test.js`, zones
-  west of UTC+12; the header at UTC+12 and east is a separate issue).
+  "Wednesday, December 30, 2099" for any default locale (`modelFacingDatesGregorian.test.js`), in
+  every zone, both sides of the date line (#406, below).
+- **A date-only value is formatted as a date, never as an instant in a zone (#406, 2026-11-11).** A
+  calendar day (`YYYY-MM-DD`: a day key, an all-day date) has no zone and no instant. Building an
+  instant from it (`Date.UTC(y, m - 1, d, 12)`, "noon to dodge DST") and formatting that in the
+  user's zone names the next day at UTC+12 and later (noon UTC is already tomorrow in Auckland,
+  Fiji, Tonga, Kiritimati, Kamchatka), and midnight-UTC instants name the previous day west of UTC.
+  The `calendar_search` day header did exactly this, so a Thursday's events were listed under
+  "Friday" for a New Zealand user. `formatGregorianDay(dayKey, options)` (`gregorianDate.js`)
+  prints such a value: UTC midnight of the digits, formatted with `timeZone: "UTC"` (a caller's
+  `timeZone` is overridden), so neither the user's zone nor the process zone can move it. Use it
+  for every date-only value the assistant reads; the `timezone` the header reports is unchanged.
+  The old `CHAT_SETTINGS.middayHourForDateHeader` is gone. Pinned by
+  `test/calendarDayHeaderDateLine.test.js` (exact "Thursday, November 12, 2026" for the key
+  2026-11-12 in zones from Pago Pago to Kiritimati, a one-year sweep against a digit oracle, and
+  `run()` with an explicit zone east of UTC+12) and `test/gregorianDay.test.js` (the helper under
+  several process zones, options zones and default locales).
 - Digit-built formatters (`formatTimestampForAgent`, `formatCardTime`, `toIsoNoMs`, `toNaiveIso`)
   use `Date` getters, which are always Gregorian; they need no locale. Explicit `"en-US"` or `"en-CA"`
   `Intl` calls that only extract parts (`formatToParts`, a zone offset, a `YYYY-MM-DD` key) are

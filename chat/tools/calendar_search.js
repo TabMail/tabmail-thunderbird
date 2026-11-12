@@ -4,7 +4,7 @@
 
 // calendar_search.js – returns a compact, calendar-like summary grouped by calendar and date
 
-import { formatGregorianDate } from "../../agent/modules/gregorianDate.js";
+import { formatGregorianDay } from "../../agent/modules/gregorianDate.js";
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { toIsoNoMs } from "../modules/helpers.js";
@@ -484,11 +484,11 @@ async function buildCalendarSummary(args) {
   return { days: flattened, order };
 }
 
+// The day key is already the user's local calendar day, so the header is that
+// date as is, never an instant formatted in `tz` (#406: noon UTC of the key is
+// the next day at UTC+12 and later). `tz` is only reported.
 function formatDayHeader(dayKey, tz) {
-  const [y, m, d] = dayKey.split("-").map(x => Number(x));
-  const noonHour = Number(CHAT_SETTINGS.middayHourForDateHeader) || 12;
-  const dt = new Date(Date.UTC(y, m - 1, d, noonHour, 0, 0));
-  const pretty = formatGregorianDate(dt, { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: tz });
+  const pretty = formatGregorianDay(dayKey, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   return { timezone: tz, prettyDate: pretty, calendars: {} };
 }
 

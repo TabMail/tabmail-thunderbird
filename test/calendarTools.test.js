@@ -91,7 +91,6 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     calendarPageSizeDefault: 100,
     calendarPageSizeMax: 100,
     msPerDay: 86400000,
-    middayHourForDateHeader: 12,
     calendarQueryLogPreviewChars: 120,
     calendarQueryLogTermsPreviewCount: 5,
     searchDefaultDaysBack: 365,
