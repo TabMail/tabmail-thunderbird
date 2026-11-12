@@ -932,8 +932,13 @@ describe('split: the two parts make the series\' occurrences', () => {
         const master = timedSeries(makeStart);
         expect(occurrenceKeys(master).filter((k) => k.startsWith('changed '))).toHaveLength(2);
         const before = occurrenceKeys(timedSeries(makeStart, resets));
+        // The edit gives the series' first occurrence's new times, as the read
+        // tools show the series at it (#386, #404): the series' start is no
+        // occurrence (the rule names other weekdays), so it is the rule's
+        // first date, and the series moves by the same hour from its start.
+        const [first] = master.recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
         const { api, calendar } = loadKnowingEast(master);
-        const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...newTime(start) });
+        const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...newTime(first) });
         expect(res, res.error).toMatchObject({ ok: true });
         const saved = calendar.items[0];
         expect(saved[field].timezone).toBe(start.timezone);
@@ -978,7 +983,9 @@ describe('split: the two parts make the series\' occurrences', () => {
 
   it('a new rule for the following part replaces a COUNT rule with no occurrence before the split', async () => {
     // 2099-10-01 is a Thursday: the rule's first occurrence is Monday 10-05.
-    const master = series('FREQ=WEEKLY;BYDAY=MO;COUNT=3', { extraItems: [recurrenceItem('RDATE', '20991003T170000')] });
+    // The added 10-02 keeps an occurrence on the earlier part: a split at the
+    // series' first occurrence is refused (#386, below).
+    const master = series('FREQ=WEEKLY;BYDAY=MO;COUNT=3', { extraItems: [recurrenceItem('RDATE', '20991002T170000'), recurrenceItem('RDATE', '20991003T170000')] });
     const { res, fresh } = await split(master, '2099-10-03T17:00:00', { recurrence: { freq: 'WEEKLY', byDay: ['SA'] } });
     expect(res).toMatchObject({ ok: true });
     expect(ruleValues(fresh)).toEqual(['FREQ=WEEKLY;BYDAY=SA']);
@@ -1313,6 +1320,9 @@ describe('split: the two parts make the series\' occurrences', () => {
     ['a time two occurrences start at', () => series('FREQ=DAILY', { exceptions: [fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 17), endDate: fakeDateTime('2099-10-15', 18), recurrenceId: fakeDateTime('2099-10-14', 17) })] }), '2099-10-15T17:00:00', /more than one occurrence/],
     ['an occurrence of one rule but not of the other', () => series('FREQ=WEEKLY;BYDAY=TH', { extraItems: [recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=15')] }), '2099-10-22T17:00:00', /not an occurrence of this series' rule FREQ=MONTHLY;BYMONTHDAY=15/],
     ['the first occurrence', () => series('FREQ=DAILY'), '2099-10-01T17:00:00', /edit the whole series/],
+    // The series' start is no occurrence (a Thursday, the rule names Mondays),
+    // so the added date is its first: the earlier part would be empty (#386).
+    ['the first occurrence after a start that is none', () => series('FREQ=WEEKLY;BYDAY=MO;COUNT=3', { extraItems: [recurrenceItem('RDATE', '20991003T170000')] }), '2099-10-03T17:00:00', /edit the whole series/],
     ['a time before the series', () => series('FREQ=DAILY'), '2099-09-20T17:00:00', /not the start of an occurrence of this series/],
     ['a series that cancels occurrences by a rule', () => series('FREQ=DAILY', { extraItems: [exrule] }), '2099-10-15T17:00:00', /EXRULE/],
     // ical.js reads the leading digits of a count; the split reads only digits.
@@ -1323,7 +1333,7 @@ describe('split: the two parts make the series\' occurrences', () => {
       ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RDATE', '20991015T170000'), recurrenceItem('RDATE', '20991020T170000')]);
       ev.recurrenceInfo.item = ev;
       return ev;
-    }, '2099-10-15T17:00:00', /no parseable RRULE/],
+    }, '2099-10-20T17:00:00', /no parseable RRULE/],
   ]) {
     it(`a split at ${name} is refused and writes nothing`, async () => {
       const master = make();
@@ -1781,7 +1791,8 @@ describe('split: the earlier part, value by value, and the refusals', () => {
       `recurrence_id ${day(14)}T18:00:00 is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`],
     ['a series that cancels occurrences by a rule', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=DAILY'], { extraItems: [exrule] }), `${day(14)}T17:00:00`,
       'this series cancels occurrences by a rule (EXRULE), which a split cannot keep; change it in the calendar app'],
-    ['a series repeated only by added dates', () => master(timedAt(0, 17), timedAt(0, 18), [], { extraItems: [recurrenceDate('RDATE', timedAt(14, 17)), recurrenceDate('RDATE', timedAt(20, 17))] }), `${day(14)}T17:00:00`,
+    // At the second added date: the first is the series' first occurrence (#386).
+    ['a series repeated only by added dates', () => master(timedAt(0, 17), timedAt(0, 18), [], { extraItems: [recurrenceDate('RDATE', timedAt(14, 17)), recurrenceDate('RDATE', timedAt(20, 17))] }), `${day(20)}T17:00:00`,
       'master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)'],
     ['an occurrence of one rule but not of the other', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=WEEKLY;BYDAY=MO', `FREQ=MONTHLY;BYMONTHDAY=${Number(day(0).slice(8))}`]), `${day(7)}T17:00:00`,
       `recurrence_id ${day(7)}T17:00:00 is not an occurrence of this series' rule FREQ=MONTHLY;BYMONTHDAY=${Number(day(0).slice(8))}, so the part from there on cannot keep its dates; split at an occurrence every rule makes, or give the following part its own recurrence`],

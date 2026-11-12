@@ -590,11 +590,13 @@ function firstOccurrenceOf(series) {
 }
 
 // Whether `rid`, a RECURRENCE-ID of `master`'s series, is its first occurrence:
-// the series' own start, read in the series' zone (a RECURRENCE-ID can be stored
-// in another, e.g. UTC). A whole-series time change names this one (#287).
+// the one Thunderbird expands first (firstOccurrenceOf), the one the read tools
+// show for the series. It is the series' own start unless that occurrence is
+// excluded or moved (#386). A whole-series time change names this one (#287),
+// and a split here would leave no occurrence before it.
 function isFirstOccurrence(master, rid) {
-  const at = rid.isDate ? rid.clone() : rid.getInTimezone(master.startDate.timezone);
-  return at.compare(master.startDate) <= 0;
+  const first = firstOccurrenceOf(master);
+  return !!first && first.recurrenceId.compare(rid) === 0;
 }
 
 // The fields an edit can name other than its times, as stored on `item` (an
@@ -1818,13 +1820,19 @@ function seriesLength(item) {
 // starts (`item`, an all-day one already through asAllDayItem): the edit's
 // times read against the occurrence it names (`namedRid`, or the first one),
 // as Thunderbird builds it. Returns `{ error }`, or `{ start, length, ref,
-// refIsChanged }`: the new start in the item's frame (or null), the wall-clock
-// length (or null when no time is left), the occurrence read against, and
-// whether it was changed on its own. Throws the refusals of reading a time
-// (intoFrameOf), as toCalIDateTime throws an unknown zone.
+// refIsChanged, named }`: the item's new start in its frame (or null), the
+// wall-clock length (or null when no time is left), the occurrence read
+// against, whether it was changed on its own, and the named occurrence's slot
+// once written (its new start, or its slot when no start is left). Throws the
+// refusals of reading a time (intoFrameOf), as toCalIDateTime throws an
+// unknown zone.
 function resolveEditTimes(item, patch, tz, namedRid) {
   const info = item.recurrenceInfo;
-  const slot = item.createProxy(item.startDate);
+  // The named occurrence's slot in the item's frame. It is the item's start
+  // unless the occurrences before it are excluded (#386): the series then
+  // moves by the named occurrence's change, from its slot.
+  const slotStart = !namedRid ? item.startDate : namedRid.isDate ? namedRid.clone() : intoFrameOf(item.startDate, namedRid);
+  const slot = item.createProxy(slotStart);
   let ref = namedRid ? info.getOccurrenceFor(namedRid) : slot;
   let refIsChanged = !!(namedRid && info.getExceptionFor(namedRid));
   // An edit named at an occurrence changed on its own is read against the
@@ -1864,7 +1872,21 @@ function resolveEditTimes(item, patch, tz, namedRid) {
   if (startIsDate === endIsDate) length = end ? clockSeconds(end, start || ref.startDate) : seriesLength(item);
   const error = editTimesErrorOf({ itemIsDate: !!item.startDate.isDate, startIsDate, endIsDate, order: Math.sign(length) }, { ...left, all_day: patch.all_day });
   if (error) return { error };
-  return { start, length, ref, refIsChanged };
+  return { start: start && seriesStartFor(item, slotStart, start), length, ref, refIsChanged, named: start || slotStart };
+}
+
+// The start of `item`'s series that puts the occurrence at `slotStart` (a slot
+// in the item's frame) at `start`: `start` moved back by the clock from the
+// item's start to that slot, in whole days by the date digits when `start` is
+// a date. `start` itself when the slot is the item's start.
+function seriesStartFor(item, slotStart, start) {
+  const gap = start.isDate
+    ? (Date.UTC(slotStart.year, slotStart.month, slotStart.day) - Date.UTC(item.startDate.year, item.startDate.month, item.startDate.day)) / 1000
+    : clockSeconds(slotStart, item.startDate);
+  if (!gap) return start;
+  const out = start.clone();
+  out.addDuration(durationOf(-gap));
+  return out;
 }
 
 // Writes a series' (or a split part's) times: `start` when given, and the end
@@ -1936,12 +1958,13 @@ function shownEditTimes(from, to) {
 // The card's times for a series or split part `item` once its times are
 // written: from the occurrence the edit named (`resolved.ref`) to that
 // occurrence as written. An end alone at an occurrence changed on its own
-// resized that one; otherwise the occurrence is the item's first (a new start
-// has reset every changed occurrence).
+// resized that one; otherwise the occurrence is the named one at its slot as
+// written (a new start has reset every changed occurrence). Its slot is the
+// item's start unless the occurrences before it are excluded (#386).
 function seriesEditTimes(item, resolved) {
   const to = !resolved.start && resolved.refIsChanged
     ? item.recurrenceInfo.getExceptionFor(resolved.ref.recurrenceId)
-    : item.createProxy(item.startDate);
+    : item.createProxy(resolved.named);
   return shownEditTimes(resolved.ref, to);
 }
 
@@ -2288,14 +2311,16 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // The event as Thunderbird shows it: with a recurrence_id that names
             // an occurrence, that occurrence (its own times and kind when it was
             // changed on its own, #369); a series without one, its first
-            // occurrence as Thunderbird builds it (its start plus the series'
-            // length by the clock), which is what Thunderbird shows for every
-            // occurrence even when the stored end of a first one that spans a
-            // clock change differs.
+            // occurrence as Thunderbird expands it (firstOccurrenceOf: not
+            // DTSTART when the occurrence there is excluded or moved, #386,
+            // #404; a plain one is its start plus the series' length by the
+            // clock, which is what Thunderbird shows for every occurrence even
+            // when the stored end of a first one that spans a clock change
+            // differs). A series with no occurrence left shows its stored start.
             const series = targetEvent.parentItem || targetEvent;
             const named = recurrence_id && series.recurrenceInfo ? occurrenceNamedBy(series, recurrence_id) : null;
             const shown = named?.occurrence
-              || (targetEvent.recurrenceInfo ? targetEvent.createProxy(targetEvent.startDate) : targetEvent);
+              || (targetEvent.recurrenceInfo ? firstOccurrenceOf(targetEvent) || targetEvent.createProxy(targetEvent.startDate) : targetEvent);
             const details = {
               id: eid,
               ...editableFieldsOf(targetEvent),
@@ -2765,6 +2790,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // it and the following ones (the edit tool routes it there first).
             const movesSeries = scope === "series" && !!base.recurrenceInfo && !!(patch.start_iso || patch.end_iso)
               && !(patch.recurrence && typeof patch.recurrence === "object" && !patch.recurrence.freq);
+            // With no recurrence_id the edit names the first occurrence the
+            // read tools show for the series (firstOccurrenceOf, #404).
             let namedRid = null;
             if (movesSeries && recurIdStr) {
               const named = occurrenceNamedBy(base, recurIdStr);
@@ -2773,6 +2800,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 return { ok: false, error: `recurrence_id ${recurIdStr} is a later occurrence: a time change from it on is edit_scope 'this_and_following' with that recurrence_id; a change of every occurrence names the first one` };
               }
               namedRid = named.occurrence.recurrenceId;
+            } else if (movesSeries) {
+              namedRid = firstOccurrenceOf(base)?.recurrenceId || null;
             }
             const clone = base.clone();
             tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
