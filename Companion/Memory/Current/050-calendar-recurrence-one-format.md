@@ -333,6 +333,34 @@ same design (tabmail-ios #421).
     `resetsChangedOccurrences`; the card's time lines come from `times` and it adds "Occurrences you changed
     individually will be reset, and deleted ones will come back." The keep-my-edits text below, and
     `applyEditToNamedOccurrence`, are superseded (deleted).
+  - **The first occurrence is the one Thunderbird expands first (#386, #404, 2026-11-11).** ONE primitive,
+    `firstOccurrenceOf` (earliest start Thunderbird expands: an excluded date is none, a changed occurrence
+    at its own time), used in three places: `getCalendarEventDetails` with no `recurrence_id` shows the series
+    at it (so `calendar_event_read`, both cards and the no-`recurrence_id` routing in `routeSeriesTimeChange`
+    read it; a series with no occurrence left shows its stored start); `isFirstOccurrence` is "rid is its
+    RECURRENCE-ID" (`recurrenceIdIsFirst`, so the edit's `all` routing and the delete's "this and following from the first = all" routing; the `all` refusal in `modifyCalendarEvent`; the split refusal; the delete's `this_and_following` refusal);
+    and an `all` time change with no `recurrence_id` is read against it (`namedRid` in `modifyCalendarEvent`).
+    Before, all three used DTSTART: with the first date excluded, the read printed a date with no
+    occurrence, the documented path (name the start_iso the read shows) was refused by `occurrenceNamedBy`,
+    an edit naming the first visible occurrence was routed to a split that left an earlier part with no
+    occurrence (later `all` edits never reached it), and an edit with no `recurrence_id` on the first
+    visible date was asked "just that date, or every later one?". The series moves by the named
+    occurrence's change from its slot (coordinator ruling, option A): `resolveEditTimes` reads the slot in
+    the item's frame (`intoFrameOf`) and `seriesStartFor` moves the new start back by the clock gap from
+    DTSTART to that slot (whole days by the date digits for an all-day start), so UNTIL, COUNT and RDATEs keep
+    their dates; as every new start does (ADR-031), every excluded date comes back, the first one included.
+    Writing the named occurrence's new start straight into DTSTART moved UNTIL/RDATE by the whole gap and
+    kept COUNT counting the excluded date: one extra occurrence at the end. The card's `to` is the named
+    occurrence at its slot as written (`resolved.named`). A split names its part's own start, so its gap is
+    0. The same holds when DTSTART is no occurrence at all (a rule naming other weekdays: Thunderbird does not
+    expand a non-matching DTSTART), so the read no longer prints a time nothing starts at. A first occurrence moved on its own is now shown at its own times; an end alone with no
+    `recurrence_id` is still a new length for the whole series (`writeSeriesTimes` + `applyNewLength`),
+    measured from the start the read shows. Accepted limit: a first occurrence made all-day (or timed) on its own
+    in a series of the other kind refuses an end alone with no `recurrence_id` (`NAMED_OTHER_KIND_ERROR`, nothing
+    written; before, the length was measured from DTSTART's slot). Known corner: a first occurrence moved ahead of an earlier slot
+    is "first" by start, so a split at it is refused though an earlier part would keep one occurrence (a
+    refusal, nothing written). Pinned by `test/calendarSeriesFirstExcluded.test.js` and two rows of
+    `test/calendarRecurrenceFormat.test.js` (a split at the first occurrence after a start that is none).
   - **Named from the first occurrence** (a `recurrence_id` whose occurrence's RECURRENCE-ID is the series' start,
     `isFirstOccurrence`, even if it was moved on its own; or no `recurrence_id` and the new start, or for an end
     alone the new end, on the series' own date as the read tools show it, `shownEventTimesIso` in

@@ -21,7 +21,7 @@ const source = () => readFileSync(BRIDGE, 'utf8');
 const OWNED = [
   'clockSeconds', 'afterElapsed', 'atInstantInFrameOf', 'intoFrameOf', 'restates', 'timesLeft', 'seriesLength',
   'resolveEditTimes', 'writeSeriesTimes', 'applyNewLength', 'seriesEditTimes', 'shownNaiveIso', 'shownEditTimes',
-  'toCalIDateTimeInFrameOf',
+  'toCalIDateTimeInFrameOf', 'seriesStartFor',
 ];
 
 function walk(node, fn) {
@@ -77,7 +77,7 @@ describe('the times of an edit are read one way', () => {
     const where = (test) => owned().filter(([, u]) => test(u)).map(([name]) => name).sort();
     expect(where((u) => u.names.has('nativeTime'))).toEqual(['shownNaiveIso']);
     expect(where((u) => u.methods.has('subtractDate'))).toEqual(['afterElapsed', 'atInstantInFrameOf', 'restates', 'seriesLength']);
-    expect(where((u) => u.methods.has('addDuration'))).toEqual(['afterElapsed', 'applyNewLength', 'atInstantInFrameOf']);
+    expect(where((u) => u.methods.has('addDuration'))).toEqual(['afterElapsed', 'applyNewLength', 'atInstantInFrameOf', 'seriesStartFor']);
   });
 
   it('the file has no sameInstantIn, plusLength, inFrameOf, SKIPPED_HOUR_SECONDS or applyEditToNamedOccurrence', () => {
