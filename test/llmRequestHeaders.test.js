@@ -79,4 +79,20 @@ describe("completions request headers", () => {
     }
     vi.unstubAllGlobals();
   });
+
+  // The add-on's series edits (a new start resets the series, an end alone
+  // changes only the length, an edit of every occurrence named at its first
+  // one) are described by the backend's calendar edit text from protocol
+  // 1.11.4. Below it, the model is told an occurrence it names is ignored on
+  // "all". At least, not exactly: a later raise must not have to edit this.
+  it("asks for the calendar edit text that describes its series edits (protocol 1.11.4 or later)", () => {
+    const parts = (version) => version.split(".").map(Number);
+    const [major, minor, patch] = parts(SETTINGS.protocolVersion);
+    const [minMajor, minMinor, minPatch] = parts("1.11.4");
+    const atLeast =
+      major !== minMajor ? major > minMajor
+        : minor !== minMinor ? minor > minMinor
+          : patch >= minPatch;
+    expect(atLeast, `protocol ${SETTINGS.protocolVersion}`).toBe(true);
+  });
 });

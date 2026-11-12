@@ -406,6 +406,11 @@ same design (tabmail-ios #421).
   notes; the refusal when the event cannot be read; `this_only` setting an occurrence back to the series'
   place; a control for `this_only`).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
+- **The model is told about these series edits from protocol 1.11.4** (2026-11-11, #382). The backend serves
+  the calendar edit text and agent prompt that describe them (an occurrence named by its start as
+  `calendar_event_read` shows it, an edit of every occurrence named at its first one, a new start resetting the
+  series, an end alone changing only the length) from protocol 1.11.4; below it the model is told an occurrence
+  named on "all" is ignored. `SETTINGS.protocolVersion` is 1.11.4; TB-212 keeps it at 1.11.4 or later.
 
 ## How it is pinned
 
