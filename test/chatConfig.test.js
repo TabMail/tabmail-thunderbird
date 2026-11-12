@@ -108,9 +108,6 @@ describe('CHAT_SETTINGS', () => {
     it('should have positive calendarEntryMatchToleranceMs', () => {
       expect(CHAT_SETTINGS.calendarEntryMatchToleranceMs).toBeGreaterThan(0);
     });
-    it('should have middayHourForDateHeader === 12', () => {
-      expect(CHAT_SETTINGS.middayHourForDateHeader).toBe(12);
-    });
     it('should have positive createEventDefaultDurationMinutes', () => {
       expect(CHAT_SETTINGS.createEventDefaultDurationMinutes).toBeGreaterThan(0);
     });

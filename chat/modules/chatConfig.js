@@ -62,8 +62,6 @@ export const CHAT_SETTINGS = {
   msPerDay: 86400000,
   // Tolerance when matching an event by start time (ms)
   calendarEntryMatchToleranceMs: 60000,
-  // Midday hour used for computing stable date headers (avoid DST edge cases)
-  middayHourForDateHeader: 12,
   // Logging preview lengths for calendar search (avoid hardcoded values)
   calendarQueryLogPreviewChars: 120,
   calendarQueryLogTermsPreviewCount: 5,

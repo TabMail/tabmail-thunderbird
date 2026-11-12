@@ -17,7 +17,6 @@ vi.mock('../agent/modules/utils.js', () => ({
 
 vi.mock('../chat/modules/chatConfig.js', () => ({
   CHAT_SETTINGS: {
-    middayHourForDateHeader: 12,
     msPerDay: 86400000,
   },
 }));

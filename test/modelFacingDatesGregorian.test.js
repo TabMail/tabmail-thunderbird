@@ -28,7 +28,6 @@ vi.mock('../agent/modules/config.js', () => ({
 
 vi.mock('../chat/modules/chatConfig.js', () => ({
   CHAT_SETTINGS: {
-    middayHourForDateHeader: 12,
     msPerDay: 86400000,
   },
 }));
@@ -192,13 +191,13 @@ describe.each(LOCALES)('with the default locale %s', (locale) => {
 });
 
 // The same day header as the iOS twin prints (FixedDateFormat "EEEE, MMMM d, yyyy"), whatever the
-// default locale. The zones are west of UTC+12; zones at or east of it are a separate issue.
+// default locale, on both sides of the date line.
 describe.each(['en-US', 'th', 'fa'])('calendar_search day header matches iOS with the default locale %s', (locale) => {
   let restore;
   beforeEach(() => { restore = stubDefaultLocale(locale); });
   afterEach(() => restore());
 
-  it.each(['America/Los_Angeles', 'UTC'])('2099-12-30 in %s is "Wednesday, December 30, 2099"', (tz) => {
+  it.each(['Pacific/Pago_Pago', 'America/Los_Angeles', 'UTC', 'Pacific/Auckland', 'Pacific/Kiritimati'])('2099-12-30 in %s is "Wednesday, December 30, 2099"', (tz) => {
     expect(calendarSearch._testExports.formatDayHeader('2099-12-30', tz).prettyDate).toBe('Wednesday, December 30, 2099');
   });
 });
