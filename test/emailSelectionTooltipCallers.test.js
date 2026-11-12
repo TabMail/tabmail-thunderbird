@@ -49,7 +49,7 @@ beforeEach(() => {
   h.summary.mockImplementation(async header => ({ blurb: header.blurb, todos: header.todos }));
   h.inbox.mockImplementation(async () => JSON.stringify(h.headers.map(header => ({
     uniqueId: 'u' + header.id, internalId: header.id, subject: header.subject, from: header.author,
-    date: header.date, action: ctx.reviewAction, blurb: header.blurb, todos: header.todos,
+    date: header.date, dateMs: header.date.getTime(), action: ctx.reviewAction, blurb: header.blurb, todos: header.todos,
   }))));
   Object.assign(ctx, { activePid: 'review', fsmSessions: { review: {} }, selectedEmailList: [], reviewAction: '' });
   window.selectedEmailList = ctx.selectedEmailList;

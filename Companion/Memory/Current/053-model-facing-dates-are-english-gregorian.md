@@ -18,13 +18,32 @@ sees for a timed occurrence, so a reply or an event it creates or moves could ca
 - `formatGregorianDate(date, options)` (`agent/modules/gregorianDate.js`, no imports, safe to load
   anywhere) prints every date the assistant reads or the add-on writes: `Intl.DateTimeFormat("en-US",
   { ...options, calendar: "gregory", numberingSystem: "latn" })`. Its callers: the `calendar_search`
-  day header, `memory_search` and `memory_read` result dates, the knowledge base refine's session
-  dates (`knowledgebase.js`) and recent-chat context (`chatHistoryQueue.js`), the reminder greeting
-  and due labels (`reminderBuilder.js`, `proactiveCheckin.js`), the scheduled-task "It is now ..." line,
-  the summary's `email_day_of_week`, and the debug test nudge's time. Output in an English UI is
-  unchanged.
+  day header, `memory_search` and `memory_read` result dates, the reminder greeting and due labels
+  (`reminderBuilder.js`, `proactiveCheckin.js`), the scheduled-task "It is now ..." line, the
+  summary's `email_day_of_week`, and the debug test nudge's time. Also the knowledge base refine's
+  session dates (`knowledgebase.js` `_kbUpdateImpl`) and recent-chat context (`chatHistoryQueue.js`
+  `getRecentChatHistoryForPrompt`), which are currently unreachable or test-only: `kbUpdate` is only
+  called with a `conversationHistory` its one sender never sends, and `getRecentChatHistoryForPrompt`
+  has no caller outside the tests; they were moved because the fence covers them. Output in an English
+  UI is unchanged for valid dates.
+- The helper throws `RangeError` on an Invalid Date (`Intl.DateTimeFormat#format`), where
+  `toLocaleDateString` returned "Invalid Date". A caller that can receive a model-written date checks
+  it first: `_formatDueLabel` returns "" for an unparseable due date such as `not-a-date`, as its twin
+  `formatDueDate` in `reminderBuilder.js` does, so the new-reminder nudge still goes out
+  (`test/proactiveNewReminderInvalidDueDate.test.js`).
+- Gregorian/ISO is the one normal form wherever a date is stored, sent or parsed; the user's calendar
+  only changes what is drawn (owner, 2026-11-12). So a date is never kept as a locale string and parsed
+  back: the event-link tooltip (`markdown.js`) keeps the event's `start`/`end` as `tmCalendar` returns
+  them (epoch ms) and formats them only in `showTooltip`, with fixed English names
+  (`test/eventLinkTooltipDate.test.js`); the archive/delete selection rows carry `dateMs` (the header's
+  time; `buildInboxContext` entries carry it too), `renderEmailSelectionList` sorts by it and formats
+  it only where it draws a row (`test/emailSelectionListDateOrder.test.js`). Before, en-GB read
+  12 November back as 11 December, and a Thai string kept the Buddhist year.
 - Dates only the user reads (settings and history pages, the message-list thread bubble, the chat's
-  event-link tooltip and @-mention list, the archive/delete selection rows) stay in the user's locale.
+  @-mention list, the drawn archive/delete selection row) stay in the user's locale.
+- The day header matches the iOS twin exactly: `formatDayHeader("2099-12-30", tz)` is
+  "Wednesday, December 30, 2099" for any default locale (`modelFacingDatesGregorian.test.js`, zones
+  west of UTC+12; the header at UTC+12 and east is a separate issue).
 - Digit-built formatters (`formatTimestampForAgent`, `formatCardTime`, `toIsoNoMs`, `toNaiveIso`)
   use `Date` getters, which are always Gregorian; they need no locale. Explicit `"en-US"` or `"en-CA"`
   `Intl` calls that only extract parts (`formatToParts`, a zone offset, a `YYYY-MM-DD` key) are

@@ -318,6 +318,12 @@ function _formatDueLabel(dueDate, dueTime, timezone) {
 
   const timeSuffix = dueTime ? ` at ${dueTime}` : "";
   const dueTs = dueMidnight.getTime();
+  // An unparseable due date (e.g. "not-a-date", kept as written by the summary) gets no label,
+  // as formatDueDate in reminderBuilder.js does; formatting it would throw.
+  if (Number.isNaN(dueTs)) {
+    log(`[ProActReach] Unparseable due date "${dueDate}", no due label`, "warn");
+    return "";
+  }
   const todayTs = todayMidnight.getTime();
   const tomorrowTs = tomorrowMidnight.getTime();
 

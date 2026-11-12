@@ -1060,12 +1060,10 @@ export async function renderEmailSelectionList(container, emailArray, options = 
   const { delay = 35, initialChecked = true, singleSelect = false, preSelectedHeaderId = null, displayOnly = false } = options;
   if (!container) throw new Error("container is required");
 
-  // Ensure reverse-chronological order (most recent first) when a valid date is present.
-  emailArray = [...emailArray].sort((a, b) => {
-    const da = a && a.date ? new Date(a.date) : 0;
-    const db = b && b.date ? new Date(b.date) : 0;
-    return db - da;
-  });
+  // Reverse-chronological order (most recent first) by each row's own time, `dateMs`
+  // (epoch ms). Rows without one go last. The time is formatted only where a row is drawn.
+  const rowTime = (item) => (Number.isFinite(item?.dateMs) && item.dateMs > 0 ? item.dateMs : 0);
+  emailArray = [...emailArray].sort((a, b) => rowTime(b) - rowTime(a));
 
   // Render list inside a tool-styled agent bubble for consistent indentation and cleanup
   const bubble = document.createElement("div");
@@ -1209,7 +1207,8 @@ export async function renderEmailSelectionList(container, emailArray, options = 
 
     const dateSpan = document.createElement("span");
     dateSpan.className = "date-col";
-    dateSpan.textContent = item.date || "";
+    // Shown to the user only, in their own locale.
+    dateSpan.textContent = rowTime(item) ? new Date(rowTime(item)).toLocaleString() : "";
 
     if (!displayOnly && checkbox) row.appendChild(checkbox);
     row.appendChild(subjectSpan);

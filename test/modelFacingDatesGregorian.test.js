@@ -83,7 +83,7 @@ globalThis.browser = {
 const calendarSearch = await import('../chat/tools/calendar_search.js');
 const { kbUpdate } = await import('../agent/modules/knowledgebase.js');
 const { sendTestProactiveNudge } = await import('../agent/modules/proactiveCheckin.js');
-const { formatGregorianDate } = await import('../agent/modules/gregorianDate.js').catch(() => ({}));
+const { formatGregorianDate } = await import('../agent/modules/gregorianDate.js');
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -188,5 +188,17 @@ describe.each(LOCALES)('with the default locale %s', (locale) => {
       .toBe(englishDay(dayKey));
     expect(formatGregorianDate(noonUtc, { year: 'numeric', month: 'numeric', day: 'numeric', timeZone: 'UTC' }))
       .toBe(`${m}/${d}/${y}`);
+  });
+});
+
+// The same day header as the iOS twin prints (FixedDateFormat "EEEE, MMMM d, yyyy"), whatever the
+// default locale. The zones are west of UTC+12; zones at or east of it are a separate issue.
+describe.each(['en-US', 'th', 'fa'])('calendar_search day header matches iOS with the default locale %s', (locale) => {
+  let restore;
+  beforeEach(() => { restore = stubDefaultLocale(locale); });
+  afterEach(() => restore());
+
+  it.each(['America/Los_Angeles', 'UTC'])('2099-12-30 in %s is "Wednesday, December 30, 2099"', (tz) => {
+    expect(calendarSearch._testExports.formatDayHeader('2099-12-30', tz).prettyDate).toBe('Wednesday, December 30, 2099');
   });
 });

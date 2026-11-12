@@ -37,11 +37,8 @@ const ALLOWED = [
   'prompts/sync-history.js formatRelativeTime toLocaleDateString', // sync history entry, older than a week
   'config/modules/welcomeWizard.js updateWelcomeStatusDisplay toLocaleString', // "Completed on …"
   // Chat window: what the user reads, never sent to the assistant.
-  'chat/modules/markdown.js renderMarkdown toLocaleString', // event link tooltip start (HTML attribute only)
-  'chat/modules/markdown.js renderMarkdown toLocaleString', // event link tooltip end
   'chat/modules/entityResolver.js resolveEventDetails toLocaleDateString', // @-mention list description
-  'chat/fsm/emailArchive.js runStateArchiveListEmails toLocaleString', // archive selection list row
-  'chat/fsm/emailDelete.js runStateDeleteListEmails toLocaleString', // delete selection list row
+  'chat/modules/helpers.js _createRow toLocaleString', // archive/delete selection row, drawn from its dateMs
   // Message list thread bubble.
   'theme/modules/threadBubble.js formatDate toLocaleTimeString',
   'theme/modules/threadBubble.js formatDate toLocaleDateString',
