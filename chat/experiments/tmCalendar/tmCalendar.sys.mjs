@@ -1429,6 +1429,99 @@ function attendeeAddress(id) {
   return addressAsWritten(id).toLowerCase();
 }
 
+// What the reply says when an event with guests is saved on a calendar with
+// no email address of its own: no organizer is set, so its server does not
+// notify them. Never claims anyone was emailed.
+const NO_CALENDAR_ADDRESS_NOTICE = "This calendar has no email address of its own, so the event was saved without an organizer and its server is not told to notify the guests.";
+// What the reply says when an event with guests is saved to a calendar kept
+// only on this computer (Thunderbird's local calendar, CalStorageCalendar,
+// type "storage"): there is no server, and the add-on sends nothing.
+const LOCAL_CALENDAR_NOTICE = "This calendar is kept only on this computer, so no one is emailed about it.";
+
+// A calendar kept only on this computer: Thunderbird's local calendar
+// ("storage") that TbSync did not create. TbSync syncs Exchange (EAS-4-TbSync
+// up to 4.x) into "storage" calendars, and its core marks every calendar it
+// creates with the "tbSyncProvider" property (an "orphaned" one included).
+function isLocalOnlyCalendar(calendar) {
+  if (String(calendar?.type || "") !== "storage") return false;
+  let tbSync = "";
+  try { tbSync = String(calendar.getProperty("tbSyncProvider") || ""); } catch {}
+  return !tbSync;
+}
+
+// The reply's guest notice for a write, from the organizer results of the
+// items it wrote (null for an item without guests): a local calendar says no
+// one is emailed; otherwise a calendar with no address says so. Plain CalDAV,
+// Google and Outlook calendars with an address say nothing.
+function guestNoticeOf(calendar, results) {
+  const withGuests = results.filter((r) => r !== null && r !== undefined);
+  if (withGuests.length === 0) return {};
+  if (isLocalOnlyCalendar(calendar)) return { guest_notice: LOCAL_CALENDAR_NOTICE };
+  if (withGuests.includes("none")) return { guest_notice: NO_CALENDAR_ADDRESS_NOTICE };
+  return {};
+}
+
+// An event the assistant saves with guests and no organizer is organized by
+// the calendar's own address: calendar.getProperty("organizerId"), the
+// property Thunderbird's event dialog uses (CalDAV: the server's
+// calendar-user-address-set; otherwise the calendar's email identity). A
+// scheduling server notifies guests only of an event whose ORGANIZER is its
+// user. An existing organizer is never changed (the user may be a guest of
+// someone else's meeting), an event without guests gets none, and nothing is
+// ever taken from the model. A series counts as having guests when it or any
+// changed occurrence has some, and every changed occurrence without an
+// organizer takes the series' (RFC 6638 3.2.4.2: every component of one
+// resource carries the same ORGANIZER). Returns "set" when it set one, "kept"
+// when one was there, "none" when the event has guests but the calendar has no
+// address (saved without an organizer), and null when it has no guests.
+function exceptionsOf(item) {
+  const info = item?.recurrenceInfo;
+  return info ? [...(info.getExceptionIds({}) || [])].map((rid) => info.getExceptionFor(rid)) : [];
+}
+function hasGuests(item) {
+  return item.getAttendees().length > 0 || exceptionsOf(item).some((ex) => ex.getAttendees().length > 0);
+}
+// A new organizer naming the same person: the address, the name and the
+// organizer flag only, never a server's own parameters (SCHEDULE-STATUS, ...).
+function organizerLike(organizer) {
+  const org = globalThis.Cc["@mozilla.org/calendar/attendee;1"].createInstance(globalThis.Ci.calIAttendee);
+  org.id = organizer.id;
+  if (organizer.commonName) org.commonName = organizer.commonName;
+  org.isOrganizer = true;
+  return org;
+}
+// Gives a series an organizer where it has none, and each changed occurrence
+// without one the series' person (organizerLike); an organizer one has is
+// never changed. Says whether anything changed.
+function giveSeriesOrganizer(series, organizer) {
+  let changed = false;
+  if (!series.organizer) { series.organizer = organizerLike(organizer); changed = true; }
+  const info = series.recurrenceInfo;
+  for (const ex of exceptionsOf(series)) {
+    if (ex.organizer) continue;
+    const copy = ex.clone();
+    copy.organizer = organizerLike(series.organizer);
+    info.modifyException(copy, true);
+    changed = true;
+  }
+  return changed;
+}
+function setOwnOrganizerIfGuests(item, calendar) {
+  if (!item || !hasGuests(item)) return null;
+  if (item.organizer) { giveSeriesOrganizer(item, item.organizer); return "kept"; }
+  let id = "";
+  let cn = "";
+  try { id = String(calendar?.getProperty?.("organizerId") || "").trim(); } catch {}
+  if (!addressAsWritten(id)) return "none";
+  try { cn = String(calendar?.getProperty?.("organizerCN") || "").trim(); } catch {}
+  const org = globalThis.Cc["@mozilla.org/calendar/attendee;1"].createInstance(globalThis.Ci.calIAttendee);
+  org.id = /^mailto:/i.test(id) ? id : `mailto:${id}`;
+  if (cn) org.commonName = cn;
+  org.isOrganizer = true;
+  giveSeriesOrganizer(item, org);
+  return "set";
+}
+
 // An edit's guest change, or null when it gives none.
 function guestChangeOf(patch) {
   const add = Array.isArray(patch.add_attendees) ? patch.add_attendees : [];
@@ -2486,6 +2579,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // A check before the confirmation card stops here, before any
             // write: every refusal is above.
             if (d.check_only) return { ok: true, scope };
+            // The series written in place of the stored one names the
+            // calendar's own address as organizer when it has guests and none.
+            // A whole-event delete writes nothing, so it is left as stored.
+            const organizerResult = replacement ? setOwnOrganizerIfGuests(replacement, targetCalendar) : null;
 
             try {
               // Send cancellation invitations before deleting (if requested)
@@ -2521,7 +2618,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 ok: true,
                 id: returnedId,
                 scope,
-                invitations: invitationResult
+                invitations: invitationResult,
+                ...guestNoticeOf(targetCalendar, [organizerResult])
               };
             } catch (e) {
               console.error("[tmCalendar] deleteCalendarEvent failed:", e);
@@ -2603,18 +2701,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            // Set organizer BEFORE adding to calendar (to avoid immutability issues)
-            if (details.send_invitations && details.organizer_email) {
-              try {
-                const org = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-                org.id = details.organizer_email.startsWith("mailto:") ? details.organizer_email : `mailto:${details.organizer_email}`;
-                org.commonName = details.organizer_email;
-                org.isOrganizer = true;
-                ev.organizer = org;
-              } catch (e) {
-                console.warn("[tmCalendar] createCalendarEvent: failed to set organizer:", e);
-              }
-            }
+            // The organizer, BEFORE adding to the calendar (to avoid
+            // immutability issues): the calendar's own address when the event
+            // has guests, never one the model gave (setOwnOrganizerIfGuests).
+            const organizerResult = setOwnOrganizerIfGuests(ev, cal);
 
             // Recurrence
             if (details.recurrence && typeof details.recurrence === "object") {
@@ -2661,7 +2751,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               calendar_id: cal?.id || null,
               event_id: created?.id || null, 
               title: created?.title || null,
-              invitations: invitationResult
+              invitations: invitationResult,
+              ...guestNoticeOf(cal, [organizerResult])
             };
           } catch (e) {
             console.error("[tmCalendar] createCalendarEvent failed:", e);
@@ -2880,6 +2971,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (details.send_invitations && clone.getAttendees().length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee" };
             }
+            // The organizer, once the guests are known: the calendar's own
+            // address when the edited item has guests and no organizer (the
+            // series for an `all` edit, the occurrence for a this_only one).
+            // One occurrence takes its series' organizer when it has none of
+            // its own; its series gets the same one below (RFC 6638: one
+            // ORGANIZER for every component of the resource).
+            // Only a real occurrence has a series: a one-off event is its own
+            // parentItem (CalItemBase).
+            const seriesOfOccurrence = scope !== "series" && base.recurrenceId && base.parentItem && base.parentItem !== base
+              ? base.parentItem : null;
+            if (seriesOfOccurrence?.organizer && !clone.organizer) clone.organizer = organizerLike(seriesOfOccurrence.organizer);
+            const organizerResult = setOwnOrganizerIfGuests(clone, base.calendar);
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2986,7 +3089,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               await parent.calendar.modifyItem(parent, parentOld);
             }
 
-            // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
+            // The organizer was set above (setOwnOrganizerIfGuests), only when
+            // the item has guests and none; an existing one is never changed.
 
             // Log complete state before save
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: attempting calendar modification...");
@@ -2997,7 +3101,26 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               "X-MOZ-HTML=", clone.getProperty?.("X-MOZ-HTML") || "");
             
             // Always modify using the same calendar as BASE
-            const modified = await base.calendar.modifyItem(clone, base);
+            // The series of an edited occurrence carries the occurrence's
+            // organizer too, as does each of its changed occurrences, where
+            // they have none (never changing one they have): then the series
+            // is written once, with the occurrence as its changed occurrence,
+            // so every component of the resource names the same organizer.
+            const seriesWithOrganizer = (() => {
+              // Never an organizer on a series without guests (none on it,
+              // on any changed occurrence, or on the edited occurrence).
+              if (!seriesOfOccurrence || !clone.organizer) return null;
+              if (!hasGuests(seriesOfOccurrence) && clone.getAttendees().length === 0) return null;
+              const copy = seriesOfOccurrence.clone();
+              return giveSeriesOrganizer(copy, clone.organizer) ? copy : null;
+            })();
+            let modified;
+            if (seriesWithOrganizer) {
+              seriesWithOrganizer.recurrenceInfo.modifyException(clone, false);
+              modified = await base.calendar.modifyItem(seriesWithOrganizer, seriesOfOccurrence);
+            } else {
+              modified = await base.calendar.modifyItem(clone, base);
+            }
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modifyItem completed");
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
             
@@ -3077,7 +3200,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               event_id: returnedId, 
               recurrence_id: isOccurrence ? shownNaiveIso(clone.startDate) : null,
               title: (isOccurrence ? clone.title : modified?.title) || null,
-              invitations: invitationResult
+              invitations: invitationResult,
+              ...guestNoticeOf(base.calendar, [organizerResult])
             };
           } catch (e) {
             console.error("[tmCalendar] modifyCalendarEvent failed:", e);
@@ -3344,6 +3468,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               || !sameTime(newEv.endDate, slotEnd)
               || (newRule && ruleValuesOfItem(newEv).sort().join("\n") !== carriedRules)
               || (typeof patch.location === "string" && patch.location !== String(master.getProperty("LOCATION") || ""));
+            // Both parts name the calendar's own address as organizer when they
+            // have guests and none, before the answers below are asked again,
+            // so the organizer is never reset to NEEDS-ACTION.
+            const organizerResult = setOwnOrganizerIfGuests(newEv, cal);
+            const earlierOrganizerResult = setOwnOrganizerIfGuests(cappedClone, cal);
             const organizer = attendeeAddress(newEv.organizer?.id);
             const askAgain = (item) => {
               for (const att of item.getAttendees()) {
@@ -3441,6 +3570,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               old_event_id: eventId,
               title: created?.title || null,
               invitations: invitationResult,
+              ...guestNoticeOf(cal, [organizerResult, earlierOrganizerResult]),
               split_at: splitIso,
             };
           } catch (e) {

@@ -278,6 +278,7 @@ export async function completeExecution(currentState, prevState) {
       result: DELETED_RESULT[sess.deleteResult.scope] || "Calendar event deleted successfully.",
       // event_id: sess.deleteResult.event_id,
       // invitations: sess.deleteResult.invitations,
+      ...(sess.deleteResult.guest_notice ? { guest_notice: sess.deleteResult.guest_notice } : {}),
     };
   }
   

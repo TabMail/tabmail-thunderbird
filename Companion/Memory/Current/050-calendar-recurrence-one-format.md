@@ -258,6 +258,9 @@ same design (tabmail-ios #421).
     not passed to the split, as an edit of a whole series never sets one. Superseded: the split used to write it as
     the organizer, which dropped the organizer's parameters (`SENT-BY`, `SCHEDULE-*`) and, on a meeting someone else
     organizes, named the user as its organizer.
+    **Superseded 2026-11-12 by [054](054-calendar-own-organizer-when-guests.md) (#423):** `organizer_email` is never
+    used; both parts of a split with guests and no organizer take the calendar's own address (`organizerId`); an
+    existing organizer is still kept with every parameter.
   - **Attendee answers on the following part: one rule shared with iOS (Thunderbird parity).** Kept, unless the split
     reschedules the following occurrences: start, end or duration, all-day vs timed, a zone change (even at the same
     instant: the later occurrences then follow the new zone's daylight saving time, and Thunderbird's
@@ -556,7 +559,7 @@ same design (tabmail-ios #421).
   normalizer, into `exdates_add` for each start kind.
 - `test/calendarSplitKeepsProperties.test.js` pins the following part as a copy of the series (#291): every property
   and parameter, reminder, category, attachment, the organizer and each attendee entry; the edit's fields change only
-  what they name; the series' organizer stays whatever `organizer_email` the edit tool fills in (through `modifyCalendarEvent`, also at a changed occurrence with only excluded dates); a changed attendee list; and
+  what they name; the series' organizer stays whatever `organizer_email` the edit tool fills in (through `modifyCalendarEvent`, also at a changed occurrence with only excluded dates); a changed attendee list; and (superseded 2026-11-12 by 054, #423: `organizer_email` is never used; a series with guests and no organizer gets the calendar's own address, pinned in `test/calendarOwnOrganizer.test.js`)
   the attendee-answer rule, kept for each non-rescheduling field and a restated value (all-day and floating series
   included, and a start restated in the user's zone, which is written in the series' own zone or kept floating, so no
   later occurrence moves, checked with `seriesOccurrences`), asked again of all but the organizer for each

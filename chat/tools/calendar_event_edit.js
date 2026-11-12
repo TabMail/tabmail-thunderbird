@@ -479,6 +479,7 @@ export async function completeExecution(currentState, prevState) {
       edit_scope: scope,
       recurrence_id: sess.editResult.recurrence_id,
       invitations: sess.editResult.invitations,
+      ...(sess.editResult.guest_notice ? { guest_notice: sess.editResult.guest_notice } : {}),
     };
   }
   

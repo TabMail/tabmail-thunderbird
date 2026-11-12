@@ -320,6 +320,7 @@ export async function completeExecution(currentState, prevState) {
       event_title: sess.createResult.event_title,
       calendar_id: sess.createResult.calendar_id,
       invitations: sess.createResult.invitations,
+      ...(sess.createResult.guest_notice ? { guest_notice: sess.createResult.guest_notice } : {}),
     };
   }
   
