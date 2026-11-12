@@ -6,8 +6,9 @@
 // start or end, the user west of UTC (America/Los_Angeles). An all_day other than the
 // stored kind changes the kind or is refused before the card; it never
 // reports success with the event unchanged, and a split never leaves two
-// series of the same content. An all_day equal to the stored kind is "Nothing
-// changed". Cases: test/helpers/allDayAloneCases.js.
+// series of the same content. A change to timed with a start only is made
+// one hour long or refused before the card, never kept 24 hours. An all_day
+// equal to the stored kind is "Nothing changed". Cases: test/helpers/allDayAloneCases.js.
 
 process.env.TZ = 'America/Los_Angeles';
 

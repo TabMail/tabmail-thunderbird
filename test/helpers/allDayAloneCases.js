@@ -15,6 +15,11 @@
 // with the event unchanged, and a split never leaves two series of the same
 // content. The assertion is that disjunction, so it holds whether the fix
 // refuses the edit or derives the new dates from the stored ones.
+//
+// One rule for every scope: a change to timed that gives a start and no end is
+// the same defect. It is refused before the card, or the end is the start plus
+// one hour (Google Calendar's default length); never a timed event that keeps
+// the all-day length (24 hours).
 
 import { describe, it, expect } from 'vitest';
 import { onCalendar, seriesOf, edit, iso, occurrencesOf, clockDiff } from './seriesEditFlow.js';
@@ -27,6 +32,10 @@ const FIRST_DAY = '2099-01-10';
 const NAMED_DAY = '2099-01-13';
 const RULE = 'FREQ=DAILY;COUNT=10';
 const WINDOW = ['2099-01-01', '2099-02-01'];
+// The length of a timed event made from an all-day one with a start only, as
+// Google Calendar gives a new event: one hour.
+const ONE_HOUR = 3600;
+const ALL_DAY_LENGTH = 86400;
 
 /** The four stored events, in `tzid`: a one-off and a series, timed and all-day. */
 function fixtures(tzid) {
@@ -54,11 +63,11 @@ function table(items) {
   for (const it of items) {
     if (it.recurrenceInfo) {
       for (const o of occurrencesOf(it, ...WINDOW)) {
-        rows.push({ day: o.start.slice(0, 10), isDate: o.isDate, endIsDate: !!o.occ.endDate.isDate, length: clockDiff(o.end, o.start) });
+        rows.push({ day: o.start.slice(0, 10), clock: o.start.slice(11), isDate: o.isDate, endIsDate: !!o.occ.endDate.isDate, length: clockDiff(o.end, o.start) });
       }
     } else {
       const s = digits(it.startDate), e = digits(it.endDate);
-      rows.push({ day: s.slice(0, 10), isDate: !!it.startDate.isDate, endIsDate: !!it.endDate.isDate, length: clockDiff(e, s) });
+      rows.push({ day: s.slice(0, 10), clock: s.slice(11), isDate: !!it.startDate.isDate, endIsDate: !!it.endDate.isDate, length: clockDiff(e, s) });
     }
   }
   return rows.sort((a, b) => a.day.localeCompare(b.day) || Number(a.isDate) - Number(b.isDate));
@@ -66,9 +75,11 @@ function table(items) {
 
 /**
  * Runs `args` on `items` and checks the invariant. `covers(day)` says which
- * occurrences the edit covers; `toAllDay` the kind it asks for.
+ * occurrences the edit covers; `toAllDay` the kind it asks for; `startClock`,
+ * for a change to timed given a start only, the clock time ("HH:MM:SS") each
+ * covered occurrence then starts at, lasting one hour.
  */
-async function kindChangedOrRefused(userTzid, items, args, { toAllDay, covers }) {
+async function kindChangedOrRefused(userTzid, items, args, { toAllDay, covers, startClock = null }) {
   const loaded = onCalendar(items, userTzid);
   const ids = loaded.calendar.items.map((it) => it.id);
   const before = table(loaded.calendar.items);
@@ -104,22 +115,12 @@ async function kindChangedOrRefused(userTzid, items, args, { toAllDay, covers })
     expect(r.isDate, `${r.day}: reported success, so the stored kind must be ${want ? 'all-day' : 'timed'} (or the edit refused before the card)`).toBe(want);
     expect(r.endIsDate, `${r.day}: start and end of one kind`).toBe(r.isDate);
     expect(r.length, `${r.day}: ends after it starts`).toBeGreaterThan(0);
+    if (startClock && covers(r.day)) {
+      expect(r.length, `${r.day}: a change to timed with a start only never keeps the all-day length`).not.toBe(ALL_DAY_LENGTH);
+      expect(r.clock, `${r.day}: starts at the start given`).toBe(startClock);
+      expect(r.length, `${r.day}: a start only, no end: the end is the start plus one hour (or the edit refused before the card)`).toBe(ONE_HOUR);
+    }
   }
-}
-
-/** The settled cases: refused before the card, nothing written. */
-async function refusedBeforeCard(userTzid, items, args) {
-  const loaded = onCalendar(items, userTzid);
-  const ids = loaded.calendar.items.map((it) => it.id);
-  const before = table(loaded.calendar.items);
-  const run = await edit(args);
-  expect(run.card).toBeNull();
-  expect(run.state).toBe('exec_fail');
-  expect(run.failReason).toBeTruthy();
-  expect(run.result).toMatchObject({ ok: false });
-  expect(loaded.modifications).toHaveLength(0);
-  expect(loaded.calendar.items.map((it) => it.id)).toEqual(ids);
-  expect(table(loaded.calendar.items)).toEqual(before);
 }
 
 /** "Nothing changed": no card, no write, no split. */
@@ -170,25 +171,21 @@ export function defineAllDayAloneSuite(userTzid) {
     });
   });
 
-  describe(`${userTzid}: all_day: false with a start only`, () => {
-    it('an all-day one-off is stored timed, start as given and an end after it', async () => {
-      const loaded = onCalendar([f.allDayOne()], userTzid);
-      const run = await edit({ event_id: 'one', all_day: false, start_iso: iso(FIRST_DAY, 9) });
-      expect(run.failReason).toBeUndefined();
-      expect(run.card).toBeTruthy();
-      expect(run.state).toBe('exec_success');
-      const [stored] = loaded.calendar.items;
-      expect(!!stored.startDate.isDate).toBe(false);
-      expect(!!stored.endDate.isDate).toBe(false);
-      expect(digits(stored.startDate)).toBe(iso(FIRST_DAY, 9));
-      expect(stored.startDate.timezone.tzid).toBe(userTzid);
-      expect(clockDiff(digits(stored.endDate), digits(stored.startDate))).toBeGreaterThan(0);
+  describe(`${userTzid}: all_day: false with a start only, on an all-day event, is made timed for one hour or refused before the card`, () => {
+    // kindChangedOrRefused adds all_day: false.
+    const at9 = (day) => ({ start_iso: iso(day, 9) });
+    const asked = { toAllDay: false, startClock: '09:00:00' };
+    it('one-off', async () => {
+      await kindChangedOrRefused(userTzid, [f.allDayOne()], { event_id: 'one', ...at9(FIRST_DAY) }, { ...asked, covers: all });
     });
-    it('an all-day series is refused before the card, nothing written: edit_scope all', async () => {
-      await refusedBeforeCard(userTzid, [f.allDaySeries()], { event_id: 'ser', edit_scope: 'all', all_day: false, start_iso: iso(FIRST_DAY, 9) });
+    it('series, edit_scope all', async () => {
+      await kindChangedOrRefused(userTzid, [f.allDaySeries()], { event_id: 'ser', edit_scope: 'all', ...at9(FIRST_DAY) }, { ...asked, covers: all });
     });
-    it('an all-day series is refused before the card, nothing written: edit_scope this_and_following', async () => {
-      await refusedBeforeCard(userTzid, [f.allDaySeries()], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: allDayRid, all_day: false, start_iso: iso(NAMED_DAY, 9) });
+    it('series, one occurrence, edit_scope this_only', async () => {
+      await kindChangedOrRefused(userTzid, [f.allDaySeries()], { event_id: 'ser', edit_scope: 'this_only', recurrence_id: allDayRid, ...at9(NAMED_DAY) }, { ...asked, covers: named });
+    });
+    it('series, from an occurrence on, edit_scope this_and_following', async () => {
+      await kindChangedOrRefused(userTzid, [f.allDaySeries()], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: allDayRid, ...at9(NAMED_DAY) }, { ...asked, covers: fromNamed });
     });
   });
 
