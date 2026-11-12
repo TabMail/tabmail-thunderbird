@@ -1639,3 +1639,166 @@ describe('recurrenceInWords: a stored rule in the card\'s words', () => {
     expect(recurrenceInWords(undefined)).toBe('');
   });
 });
+
+// The earlier part a split writes, pinned value by value, and every refusal
+// the split makes with nothing written, so a change in how the earlier part is
+// built (where its rules are capped, which dates and changed occurrences it
+// keeps) shows here. Each row states the earlier part it expects: every
+// recurrence item (property and value, and a date's zone), the changed
+// occurrences' RECURRENCE-IDs, and the start and end. Dates are relative to
+// today; the series start on a Monday at least two weeks ahead.
+describe('split: the earlier part, value by value, and the refusals', () => {
+  const localDayOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const S = (() => {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() + 14);
+    while (d.getDay() !== 1) d.setDate(d.getDate() + 1);
+    return localDayOf(d);
+  })();
+  const day = (n) => {
+    const [y, m, d] = S.split('-').map(Number);
+    return localDayOf(new Date(y, m - 1, d + n, 12));
+  };
+  const compact = (iso) => iso.replace(/-/g, '');
+  // The instant just before `hour`:00 on day `n` in a zone `offsetMinutes`
+  // east of UTC (the user's zone when null), as a UTC UNTIL value.
+  const capBefore = (n, hour, offsetMinutes = null) => {
+    const [y, m, d] = day(n).split('-').map(Number);
+    const ms = offsetMinutes === null
+      ? new Date(y, m - 1, d, hour).getTime()
+      : Date.UTC(y, m - 1, d, hour) - offsetMinutes * 60000;
+    const u = new Date(ms - 1000);
+    return `${u.getUTCFullYear()}${pad2(u.getUTCMonth() + 1)}${pad2(u.getUTCDate())}T${pad2(u.getUTCHours())}${pad2(u.getUTCMinutes())}${pad2(u.getUTCSeconds())}Z`;
+  };
+  const describeDate = (dt) => `${dt.toString()} ${dt.timezone.tzid}`;
+  const earlierPartOf = (item) => ({
+    items: item.recurrenceInfo.getRecurrenceItems().map((r) => (r.date
+      ? `${r.icalProperty.propertyName} ${describeDate(r.date)}`
+      : `${r.icalProperty.propertyName} ${r.icalProperty.value}`)),
+    exceptions: item.recurrenceInfo.getExceptionIds().map(describeDate),
+    start: describeDate(item.startDate),
+    end: describeDate(item.endDate),
+  });
+  const timedAt = (n, hour, zone) => fakeDateTime(day(n), hour, 0, zone);
+  const changedTimed = (n, zone) => fakeEvent({ id: 'ser', title: 'Moved', startDate: timedAt(n, 19, zone), endDate: timedAt(n, 20, zone), recurrenceId: timedAt(n, 17, zone) });
+  const changedDay = (n, zone) => fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDate(day(n + 1), zone), endDate: fakeDate(day(n + 2), zone), recurrenceId: fakeDate(day(n), zone) });
+  function master(start, end, rules, { extraItems = [], exceptions = [] } = {}) {
+    const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate: end });
+    ev.recurrenceInfo = fakeRecurrenceInfo([...rules.map((r) => recurrenceItem('RRULE', r)), ...extraItems], { exceptions });
+    ev.recurrenceInfo.item = ev;
+    return ev;
+  }
+  // A timed series in `zone` (the user's when undefined) at 17:00 from day 0,
+  // with an excluded date, an added date and a changed occurrence on each side
+  // of day 14.
+  const timedSeries = (rules, zone) => master(timedAt(0, 17, zone), timedAt(0, 18, zone), rules, {
+    extraItems: [
+      recurrenceDate('EXDATE', timedAt(2, 17, zone)), recurrenceDate('EXDATE', timedAt(16, 17, zone)),
+      recurrenceDate('RDATE', timedAt(3, 19, zone)), recurrenceDate('RDATE', timedAt(17, 19, zone)),
+    ],
+    exceptions: [changedTimed(4, zone), changedTimed(18, zone)],
+  });
+  // The same for an all-day series whose dates carry `zone` (none: plain dates).
+  const allDaySeries = (rules, zone) => master(fakeDate(day(0), zone), fakeDate(day(1), zone), rules, {
+    extraItems: [
+      recurrenceDate('EXDATE', fakeDate(day(2), zone)), recurrenceDate('EXDATE', fakeDate(day(16), zone)),
+      recurrenceDate('RDATE', fakeDate(day(3), zone)), recurrenceDate('RDATE', fakeDate(day(17), zone)),
+    ],
+    exceptions: [changedDay(4, zone), changedDay(18, zone)],
+  });
+  // A timed occurrence's start as the read tools show it, in the user's zone.
+  const shownAt = (dt) => {
+    const d = dt.getInTimezone(LOCAL_ZONE);
+    return `${d.year}-${pad2(d.month + 1)}-${pad2(d.day)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
+  };
+  async function splitAt(item, recurrenceId, patch = { title: 'Renamed' }) {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [item] });
+    const res = await loaded.api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: recurrenceId, patch });
+    return { ...loaded, res, earlier: loaded.calendar.items.find((it) => it.id === 'ser') };
+  }
+  const local = 'floating-local';
+  const timedEarlier = (rule, zone = local) => ({
+    items: [`RRULE ${rule}`, `EXDATE ${compact(day(2))}T170000 ${zone}`, `RDATE ${compact(day(3))}T190000 ${zone}`],
+    exceptions: [`${compact(day(4))}T170000 ${zone}`],
+    start: `${compact(day(0))}T170000 ${zone}`,
+    end: `${compact(day(0))}T180000 ${zone}`,
+  });
+  // An all-day earlier part: every date written plain (no zone).
+  const allDayEarlier = (rule) => ({
+    items: [`RRULE ${rule}`, `EXDATE ${compact(day(2))} floating`, `RDATE ${compact(day(3))} floating`],
+    exceptions: [`${compact(day(4))} floating`],
+    start: `${compact(day(0))} floating`,
+    end: `${compact(day(1))} floating`,
+  });
+  const weekly = 'FREQ=WEEKLY;BYDAY=MO,WE,TH,FR';
+  const rows = [
+    ['timed in the user\'s zone, unbounded', () => timedSeries(['FREQ=DAILY']), `${day(14)}T17:00:00`,
+      timedEarlier(`FREQ=DAILY;UNTIL=${capBefore(14, 17)}`)],
+    ['timed in the user\'s zone, a COUNT rule', () => timedSeries(['FREQ=DAILY;COUNT=40']), `${day(14)}T17:00:00`,
+      timedEarlier(`FREQ=DAILY;UNTIL=${capBefore(14, 17)}`)],
+    ['timed in the user\'s zone, an UNTIL rule', () => timedSeries([`FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${capBefore(60, 18)}`]), `${day(14)}T17:00:00`,
+      timedEarlier(`FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${capBefore(14, 17)}`)],
+    ['timed in a zone east of UTC', () => timedSeries(['FREQ=DAILY'], EAST), shownAt(timedAt(14, 17, EAST)),
+      timedEarlier(`FREQ=DAILY;UNTIL=${capBefore(14, 17, 9 * 60)}`, EAST.tzid)],
+    ['all-day, plain dates', () => allDaySeries([weekly], FLOATING_ZONE), `${day(14)}T00:00:00`,
+      allDayEarlier(`${weekly};UNTIL=${compact(day(13))}`)],
+    ['all-day, dates in the user\'s zone (west of UTC)', () => allDaySeries([weekly], LOCAL_ZONE), `${day(14)}T00:00:00`,
+      allDayEarlier(`${weekly};UNTIL=${compact(day(13))}`)],
+    ['all-day, dates in a zone east of UTC', () => allDaySeries([weekly], EAST), `${day(14)}T00:00:00`,
+      allDayEarlier(`${weekly};UNTIL=${compact(day(13))}`)],
+    ['two rules', () => timedSeries(['FREQ=WEEKLY;BYDAY=MO', 'FREQ=WEEKLY;INTERVAL=2;BYDAY=MO']), `${day(14)}T17:00:00`,
+      { ...timedEarlier(`FREQ=WEEKLY;BYDAY=MO;UNTIL=${capBefore(14, 17)}`), items: [
+        `RRULE FREQ=WEEKLY;BYDAY=MO;UNTIL=${capBefore(14, 17)}`, `RRULE FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;UNTIL=${capBefore(14, 17)}`,
+        `EXDATE ${compact(day(2))}T170000 ${local}`, `RDATE ${compact(day(3))}T190000 ${local}`,
+      ] }],
+    ['a COUNT rule that ended before an added date', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=DAILY;COUNT=5'], { extraItems: [recurrenceDate('RDATE', timedAt(14, 17))] }), `${day(14)}T17:00:00`,
+      { items: ['RRULE FREQ=DAILY;COUNT=5'], exceptions: [], start: `${compact(day(0))}T170000 ${local}`, end: `${compact(day(0))}T180000 ${local}` }],
+    ['an UNTIL rule that ended before an added date', () => master(timedAt(0, 17), timedAt(0, 18), [`FREQ=DAILY;UNTIL=${capBefore(5, 18)}`], { extraItems: [recurrenceDate('RDATE', timedAt(14, 17))] }), `${day(14)}T17:00:00`,
+      { items: [`RRULE FREQ=DAILY;UNTIL=${capBefore(5, 18)}`], exceptions: [], start: `${compact(day(0))}T170000 ${local}`, end: `${compact(day(0))}T180000 ${local}` }],
+  ];
+  for (const [name, make, recurrenceId, expected] of rows) {
+    it(`a series ${name}: the earlier part`, async () => {
+      const { res, earlier, calendar } = await splitAt(make(), recurrenceId);
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(calendar.items.length).toBe(2);
+      expect(earlierPartOf(earlier)).toEqual(expected);
+    });
+  }
+
+  it('an excluded date the edit names before the split goes to the earlier part', async () => {
+    const { res, earlier } = await splitAt(timedSeries(['FREQ=DAILY']), `${day(14)}T17:00:00`, { title: 'Renamed', exdates_add: [`${day(7)}T17:00:00`] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const expected = timedEarlier(`FREQ=DAILY;UNTIL=${capBefore(14, 17)}`);
+    expect(earlierPartOf(earlier)).toEqual({ ...expected, items: [...expected.items, `EXDATE ${compact(day(7))}T170000 ${local}`] });
+  });
+
+  const exrule = { icalProperty: { propertyName: 'EXRULE', value: 'FREQ=WEEKLY;BYDAY=SA' } };
+  const refusals = [
+    ['the first occurrence', () => timedSeries(['FREQ=DAILY']), `${day(0)}T17:00:00`,
+      'recurrence_id is the series\' first occurrence: to change every occurrence, edit the whole series (edit_scope \'all\')'],
+    ['a time that is not an occurrence', () => timedSeries(['FREQ=DAILY']), `${day(14)}T18:00:00`,
+      `recurrence_id ${day(14)}T18:00:00 is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`],
+    ['a series that cancels occurrences by a rule', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=DAILY'], { extraItems: [exrule] }), `${day(14)}T17:00:00`,
+      'this series cancels occurrences by a rule (EXRULE), which a split cannot keep; change it in the calendar app'],
+    ['a series repeated only by added dates', () => master(timedAt(0, 17), timedAt(0, 18), [], { extraItems: [recurrenceDate('RDATE', timedAt(14, 17)), recurrenceDate('RDATE', timedAt(20, 17))] }), `${day(14)}T17:00:00`,
+      'master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)'],
+    ['an occurrence of one rule but not of the other', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=WEEKLY;BYDAY=MO', `FREQ=MONTHLY;BYMONTHDAY=${Number(day(0).slice(8))}`]), `${day(7)}T17:00:00`,
+      `recurrence_id ${day(7)}T17:00:00 is not an occurrence of this series' rule FREQ=MONTHLY;BYMONTHDAY=${Number(day(0).slice(8))}, so the part from there on cannot keep its dates; split at an occurrence every rule makes, or give the following part its own recurrence`],
+    ['a series whose count cannot be read', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=DAILY;COUNT=30x']), `${day(14)}T17:00:00`,
+      'this series\' count cannot be read (COUNT=30x)'],
+    ['a series whose end cannot be read', () => master(timedAt(0, 17), timedAt(0, 18), ['FREQ=DAILY;UNTIL=1x']), `${day(14)}T17:00:00`,
+      'this series\' end cannot be read (UNTIL=1x)'],
+  ];
+  for (const [name, make, recurrenceId, error] of refusals) {
+    it(`a split at ${name} is refused with its own text, and writes nothing`, async () => {
+      const item = make();
+      const before = earlierPartOf(item);
+      const { res, calendar, modifications } = await splitAt(item, recurrenceId);
+      expect(res).toEqual({ ok: false, error });
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([item]);
+      expect(earlierPartOf(item)).toEqual(before);
+    });
+  }
+});

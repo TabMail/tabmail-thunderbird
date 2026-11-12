@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// An edit as the user sees it, on Thunderbird's own dates: the real edit tool
-// (its check before the card), the real card states (the card text, then the
-// confirmed write) and the real bridge, then the read tools as the assistant
+// An edit or a delete as the user sees it, on Thunderbird's own dates: the
+// real tool (its check before the card), the real card states (the card text,
+// then the confirmed write) and the real bridge, then the read tools as the assistant
 // reads the result. The test file mocks the chat modules first (vi.mock), as
 // calendarCardAllDayDates.test.js does, and sets process.env.TZ to the user's
 // zone; the modules are imported here when first used, so they are the mocked
@@ -99,6 +99,60 @@ export async function edit(args, { confirm = true } = {}) {
       if (confirm && out.card) {
         sess.fsmPrevState = 'calendar_event_edit_exec';
         await fsm.runStateEditCalendarEventExec();
+      }
+    }
+    out.state = ctx.state;
+    out.failReason = sess.failReason;
+    out.result = await tool.completeExecution(ctx.state, sess.fsmPrevState);
+  } finally {
+    ctx.activePid = was;
+  }
+  return out;
+}
+
+let deleteMods = null;
+async function deleteModules() {
+  deleteMods ??= {
+    tool: await import('../../chat/tools/calendar_event_delete.js'),
+    fsm: await import('../../chat/fsm/calendarDelete.js'),
+    relay: await import('../../chatlink/modules/fsm.js'),
+  };
+  return deleteMods;
+}
+
+/**
+ * Runs a delete through the tool and, when the tool shows the card, the card
+ * state and (unless `confirm` is false) the confirmed write, as edit() does.
+ * Returns the session, the final state, the failure the assistant is told,
+ * the card (the bubble's text), what the ChatLink relay sent, the bubble after
+ * the write, and the tool's result (completeExecution).
+ */
+export async function remove(args, { confirm = true } = {}) {
+  const { helpers, context } = await modules();
+  const { tool, fsm, relay } = await deleteModules();
+  const { ctx } = context;
+  const pid = `pid-series-${nextPid += 1}`;
+  ctx.fsmSessions[pid] = {};
+  ctx.state = null;
+  helpers.streamText.mockClear();
+  relay.relayFsmConfirmation.mockClear();
+  await tool.run({ calendar_id: 'cal1', ...args }, { callId: pid });
+  for (let i = 0; i < 2000 && !ctx.state; i++) await new Promise((r) => setTimeout(r, 1));
+  const sess = ctx.fsmSessions[pid];
+  const out = { sess, card: null, relayed: null, done: null };
+  const was = ctx.activePid;
+  ctx.activePid = pid;
+  try {
+    if (ctx.state === 'calendar_event_delete_list') {
+      helpers.streamText.mockClear();
+      await fsm.runStateDeleteCalendarEventList();
+      out.card = helpers.streamText.mock.calls.map((c) => String(c[1])).find((t) => t.startsWith('I found this calendar event')) || null;
+      out.relayed = relay.relayFsmConfirmation.mock.calls[0]?.[0] ?? null;
+      if (confirm && out.card) {
+        sess.fsmPrevState = 'calendar_event_delete_exec';
+        helpers.streamText.mockClear();
+        await fsm.runStateDeleteCalendarEventExec();
+        out.done = helpers.streamText.mock.calls.map((c) => String(c[1])).at(-1) ?? null;
       }
     }
     out.state = ctx.state;

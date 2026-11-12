@@ -13,11 +13,12 @@ same design (tabmail-ios #421).
   raw `recurrenceRRule` field is gone.
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
   in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing. The delete card
-  (`calendarDelete.js`, #355) adds `Repeating event: every occurrence will be deleted` for any repeating event (keyed on
-  `isRecurring`, so a series by added dates alone gets it too: the delete removes the whole item) and
+  (`calendarDelete.js`, #355) adds `Repeating event: every occurrence will be deleted` for a repeating event deleted
+  whole, `delete_scope` 'all' (keyed on `isRecurring`, so a series by added dates alone gets it too) and
   `Repeats <words>` from `recurrenceInWords`, the iOS card's wording (`every 2 weeks on Monday, Wednesday (10 times)`,
   count over until, `(1 time)`). A rule with `other` parts or no `freq` gets no Repeats line: a part left out would
-  name a different rule (iOS words the known parts instead). One occurrence is removed with the edit tool's `exdates_add`.
+  name a different rule (iOS words the known parts instead). Superseded (#373): one occurrence was removed only with
+  the edit tool's `exdates_add`, and the delete always removed the whole item; see "Deleting by scope".
 - **Only the stated fields are shown.** Thunderbird never stores `INTERVAL=1` or `WKST=MO` (ical.js `Recur.toString`
   omits both), so neither is ever shown.
 - **The rule is read from `recurrenceInfo` only** (`ruleValuesOfItem` / `rruleOfItem`, used by both read tools and
@@ -433,6 +434,47 @@ same design (tabmail-ios #421).
   series, an end alone changing only the length) from protocol 1.11.4; below it the model is told an occurrence
   named on "all" is ignored. `SETTINGS.protocolVersion` is 1.11.4; TB-212 keeps it at 1.11.4 or later.
 
+## Deleting by scope (#373)
+
+- `calendar_event_delete` takes `delete_scope` ('this_only', 'this_and_following', 'all') and `recurrence_id` for a
+  repeating event, as the edit takes `edit_scope`. **No default scope:** a repeating event with none is refused before
+  the card with the question "Just this one, this and following, or all of them?"; an unknown value is refused by
+  name (the edit's `normalizeArgs` drops one silently); an occurrence scope without `recurrence_id`, and a
+  `recurrence_id` the tool cannot read, are refused. An event that does not repeat is deleted as before, whatever
+  the scope says.
+- **One builder for the split and the delete:** `earlierPartBefore(master, rid)` in the bridge is the split's earlier
+  part (every rule capped before the slot by `splitRule`, added and excluded dates and changed occurrences from the
+  slot on dropped, all-day dates written plain by `asAllDayItem`). `splitRecurringEvent` writes it and adds the
+  following part; the delete's 'this_and_following' writes it in place of the series (`modifyItem`), so the named
+  occurrence and every later one go and nothing is added or lengthened. The EXRULE and unreadable COUNT/UNTIL
+  refusals come with it; the split's no-rule and alignment refusals stay in the split (they concern the following
+  part), so a series of added dates alone can be cut.
+- **The cut is at the slot** (the RECURRENCE-ID): an occurrence moved on its own is named where it is now
+  (`occurrenceNamedBy`) and the series is cut at its original time; a later-slot occurrence moved before the cut's
+  day goes, an earlier-slot one moved past it stays (Google and iOS cut the same way). The card then also says
+  "(from <start>, originally <slot>)", from `getCalendarEventDetails`' `recurrenceIdSlot`.
+- **First occurrence = all:** 'this_and_following' at the first occurrence (`recurrenceIdIsFirst`) is routed to 'all'
+  by the tool before the card, so the card says every occurrence goes and the item is deleted. The bridge refuses it
+  if it ever arrives.
+- 'this_only' excludes the occurrence on a clone of the series (`asAllDayItem`, `addExdateToItem`), as the series
+  edit's excluded dates do; the stored item is never changed in place.
+- **Check before the card:** the tool reads the details with the `recurrence_id` (the card's Start is the named
+  occurrence), routes the scope, then calls `deleteCalendarEvent` with `check_only: true`, which runs every refusal
+  and returns before the invitation step and the write. The check and the confirmed write pass the same arguments
+  (`deleteCallArgs`: event id, routed scope, recurrence_id; no calendar, so the first calendar holding the id, as
+  the card's read). The card, the bubble after the write and the tool result each name the scope. The bubble names
+  no date ("This and every later occurrence deleted; earlier ones stay"): the cut is at the slot, which for an
+  occurrence moved on its own is not where it is now, and the card already states both. A check that throws or
+  answers nothing fails the call (`exec_fail`) before the card; it never leaves the converse waiting. The bridge's
+  old `confirm` argument and its window.confirm branch are gone (the only caller always confirmed via the card).
+- A this-and-following split or delete named at a time after a COUNT series' last occurrence names no occurrence,
+  so it is refused and the series is unchanged: neither can lengthen a series (#272).
+- The cap's value type (#392) lives in the shared builder, so a floating timed series' cut gets a floating UNTIL
+  (no Z) on the delete as on the split. Thunderbird drops the named occurrence with either form (it reads both at
+  offset 0); a Z cap misled apps that read floating times on the viewer's clock, which east of UTC kept it.
+  Superseded: "not handled here, a separate fix in the cap", whose premise (Thunderbird keeps it west of UTC) was
+  wrong.
+
 ## How it is pinned
 
 - `test/calendarRecurrenceFormat.test.js` runs under TZ=America/Vancouver, with the real bridge in `node:vm` via `test/helpers/calendarBridgeHarness.js`. The harness's `fakeRecurrenceInfo` and `recurrenceItem` model RRULE/RDATE/EXDATE items by `icalProperty.propertyName` (RDATE/EXDATE with their `date`), changed occurrences (`exceptions`), and a LIVE `getRecurrenceItems` list; `fixedZone` and `FLOATING_ZONE` model a zone other than the user's and floating time; the calendar has `addItem` and creatable events, so the real create and split run.
@@ -469,6 +511,19 @@ same design (tabmail-ios #421).
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card
   with every field.
+- Deleting by scope (#373): `test/calendarSeriesDeleteScopeWest.test.js`/`East` (cases in
+  `test/helpers/seriesDeleteCases.js`, the flow helper `remove()` in `seriesEditFlow.js`), the user west and east
+  of UTC with series in both zones, every date relative to today: exactly the scope goes (occurrences by slot before
+  and after), nothing added or lengthened, earlier occurrences keep every value, card = write (Start = the read
+  tool's start, the scope line, the relay, the result), every refusal before the card, routing (first = all for
+  this and following, while this only at the first occurrence removes just it; an event that does not repeat), a
+  check that throws or answers nothing (`exec_fail`, nothing written), moved occurrences (the bubble names no
+  date), all-day in plain and zoned dates, the last occurrence, COUNT series, a split and a delete after a COUNT
+  series' end (refused, unchanged; #272), a floating timed series' cut (no Z on the UNTIL, the named occurrence
+  gone; #392), the next clock change. Stored series are made read-only (`readOnlySeries` in the harness: the recurrence
+  info's mutators throw, a clone is mutable), so a write to the stored item instead of a copy fails. The split's
+  earlier part is pinned value by value in `test/calendarRecurrenceFormat.test.js` ("split: the earlier part, value
+  by value, and the refusals").
 - The delete card's lines (#355): `test/calendarSeriesDeleteCard.test.js`, through the real bridge and delete states
   (series by id and by an occurrence row, added dates alone, `other` rules, UNTIL agreeing with `calendar_event_read`,
   one-off control), and the `recurrenceInWords` table in `test/calendarRecurrenceFormat.test.js` (every position
