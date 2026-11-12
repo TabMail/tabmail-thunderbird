@@ -22,6 +22,9 @@ vi.mock('../agent/modules/utils.js', async importOriginal => ({
   getUniqueMessageKey: vi.fn(async () => 'account1:/INBOX:a@example.com'),
 }));
 
+const ftsRequest = vi.hoisted(() => vi.fn(async () => 1));
+vi.mock('../fts/ftsRequest.js', () => ({ ftsRequest }));
+
 const { safeGetFull } = await import('../agent/modules/utils.js');
 const { run } = await import('../chat/tools/email_read.js');
 
@@ -38,7 +41,7 @@ const header = {
   ccList: [],
   subject: 'Team offsite',
   headerMessageId: 'a@example.com',
-  folder: { id: 'account1://INBOX', path: '/INBOX' },
+  folder: { id: 'account1://INBOX', accountId: 'account1', path: '/INBOX' },
 };
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -111,3 +114,75 @@ for (const zone of ZONES) {
     });
   });
 }
+
+// A body the search index serves has no MIME parts. The index keeps the raw invite parts
+// (encodeStoredIcs) and email_read formats them as it reads, with the same parser. An old value
+// (the formatted text earlier versions stored, a day early west of UTC) is never shown: it is
+// re-derived from the message itself (safeGetFull skipIndex) and the raw parts written back.
+const OLD_FORMATTED = 'ICS Attachments (parsed):\nEvent 1: Team offsite\nWhen: Wednesday 2099/11/11 16:00:00 PT';
+const indexed = (parsedIcsAttachments) => ({ __tmSynthetic: true, contentType: 'text/plain', body: 'See you there.', parts: [], parsedIcsAttachments });
+const icsPartsOf = (mail) => mail.parts[0].parts.filter((p) => p.contentType === 'text/calendar')
+  .map((p) => ({ filename: p.name, contentType: p.contentType, partName: p.partName, text: p.body }));
+
+describe.each(['America/Los_Angeles', 'Pacific/Auckland'])('email_read on a body the index served, in %s', (zone) => {
+  const start = dayParts(2099, 11, 12);
+  const mail = inviteMail(start, dayParts(2099, 11, 12, 1));
+  let calls;
+  beforeEach(() => {
+    process.env.TZ = zone;
+    vi.clearAllMocks();
+    globalThis.browser = {
+      messages: { get: vi.fn(async () => header), listAttachments: vi.fn(), query: vi.fn() },
+      tmHdr: { getRepliedBulk: vi.fn(async (ids) => ids.map(() => false)), getHasAttachmentBulk: vi.fn() },
+    };
+    calls = () => safeGetFull.mock.calls.filter((c) => c[2]?.skipIndex).length;
+  });
+
+  it('heals an old formatted row: shows the right day and writes the raw invite back', async () => {
+    const { encodeStoredIcs } = await import('../chat/modules/icsParser.js');
+    safeGetFull.mockImplementation(async (_id, _h, opts) => (opts?.skipIndex ? mail : indexed(OLD_FORMATTED)));
+    const out = await run({ unique_id: 'u1' });
+    expect(out).not.toContain('16:00:00 PT');
+    expect(out.split('\n')).toContain(`When: all day, ${shown(start)}`);
+    expect(calls()).toBe(1);
+    expect(ftsRequest).toHaveBeenCalledTimes(1);
+    const [cmd, fields] = ftsRequest.mock.calls[0];
+    expect(cmd).toBe('rewriteStoredIcs');
+    expect(fields).toEqual({
+      msgId: 'account1:/INBOX:a@example.com',
+      folderId: 'tm-folder:v1:["account1","/INBOX"]',
+      parsedIcsAttachments: encodeStoredIcs(icsPartsOf(mail)),
+    });
+  });
+
+  it('formats a stored raw invite as it reads, with no download and no write', async () => {
+    const { encodeStoredIcs } = await import('../chat/modules/icsParser.js');
+    safeGetFull.mockImplementation(async () => indexed(encodeStoredIcs(icsPartsOf(mail))));
+    const out = await run({ unique_id: 'u1' });
+    expect(out.split('\n')).toContain(`When: all day, ${shown(start)}`);
+    expect(out).not.toContain('tabmailStoredIcs');
+    expect(calls()).toBe(0);
+    expect(ftsRequest).not.toHaveBeenCalled();
+  });
+
+  it('gives the body without the invite, and no error, when an old row cannot be re-derived (offline)', async () => {
+    safeGetFull.mockImplementation(async (_id, _h, opts) => {
+      if (opts?.skipIndex) throw new Error('offline');
+      return indexed(OLD_FORMATTED);
+    });
+    const out = await run({ unique_id: 'u1' });
+    expect(typeof out).toBe('string');
+    expect(out).toContain('See you there.');
+    expect(out).not.toContain('ICS Attachments');
+    expect(out).not.toContain('When:');
+    expect(ftsRequest).not.toHaveBeenCalled();
+  });
+
+  it('re-derives only a non-empty value that is not a stored invite: an empty one means no invite', async () => {
+    safeGetFull.mockImplementation(async () => indexed(''));
+    const out = await run({ unique_id: 'u1' });
+    expect(out).not.toContain('ICS Attachments');
+    expect(calls()).toBe(0);
+    expect(ftsRequest).not.toHaveBeenCalled();
+  });
+});

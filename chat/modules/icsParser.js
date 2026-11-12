@@ -525,6 +525,49 @@ export function formatIcsAttachmentsAsString(icsAttachments) {
 }
 
 
+// The search index keeps a message's calendar invites as they came, never as formatted text:
+// formatting happens when email_read reads them, so a parser fix reaches every indexed message.
+// The stored value is "" for a message with no calendar part, else one JSON object
+// {"tabmailStoredIcs":1,"parts":[{filename,contentType,partName,text}, ...]}: every part in
+// message order, each part's raw ICS text at full length (root rule 11), with the part details
+// formatIcsAttachmentsAsString prints. JSON keeps the parts apart with no separator that an
+// invite's own text could contain. Anything else (the formatted text earlier versions
+// stored) is not a stored invite: storedIcsParts returns null and email_read re-derives it.
+const STORED_ICS_VERSION = 1;
+
+/**
+ * @param {Array<{filename?: string, contentType?: string, partName?: string, text?: string}>} icsAttachments
+ * @returns {string} the index value for these parts ("" when there are none)
+ */
+export function encodeStoredIcs(icsAttachments) {
+  const list = Array.isArray(icsAttachments) ? icsAttachments : [];
+  if (list.length === 0) return "";
+  return JSON.stringify({
+    tabmailStoredIcs: STORED_ICS_VERSION,
+    parts: list.map((a) => ({
+      filename: a.filename || "",
+      contentType: a.contentType || "",
+      partName: a.partName || "",
+      text: a.text || "",
+    })),
+  });
+}
+
+/**
+ * @param {string} value - a stored index value
+ * @returns {Array<object>|null} the stored parts ([] for ""), or null when the value is not a
+ *   stored invite (old formatted text): the caller re-derives the parts from the message.
+ */
+export function storedIcsParts(value) {
+  const s = String(value || "");
+  if (!s) return [];
+  try {
+    const obj = JSON.parse(s);
+    if (obj && obj.tabmailStoredIcs === STORED_ICS_VERSION && Array.isArray(obj.parts)) return obj.parts;
+  } catch (_) {}
+  return null;
+}
+
 // Recursively scans message parts for ICS attachments and returns their text content
 export async function extractIcsFromParts(root, messageId) {
   const results = [];

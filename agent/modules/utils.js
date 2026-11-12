@@ -177,7 +177,15 @@ function startGetFullCacheCleanup() {
   }, minutes * 60_000);
 }
 
-export async function safeGetFull(id, preHeader = null) {
+/**
+ * @param {number} id - WebExtension message id
+ * @param {object|null} preHeader - the message's header when the caller has it
+ * @param {{ skipIndex?: boolean }} [options] - `skipIndex`: return the message itself (its MIME
+ *   parts), never the search index's plain-text copy, cached or not. For a caller that needs a
+ *   part the index does not keep (email_read re-deriving a calendar invite the index holds in an
+ *   old form). It downloads the message when Thunderbird has no local copy, and throws offline.
+ */
+export async function safeGetFull(id, preHeader = null, { skipIndex = false } = {}) {
   // Start cleanup timer on first cache usage
   startGetFullCacheCleanup();
 
@@ -185,7 +193,7 @@ export async function safeGetFull(id, preHeader = null) {
   let uniqueKey = weIdToUniqueKey.get(id);
   if (uniqueKey) {
     const fastCached = getFullCache.get(uniqueKey);
-    if (fastCached) {
+    if (fastCached && !(skipIndex && fastCached.data?.__tmSynthetic)) {
       fastCached.timestamp = Date.now();
       return fastCached.data;
     }
@@ -225,7 +233,7 @@ export async function safeGetFull(id, preHeader = null) {
 
   // Check data cache (covers case where key was just computed but data was already cached under it)
   const cachedEntry = getFullCache.get(uniqueKey);
-  if (cachedEntry) {
+  if (cachedEntry && !(skipIndex && cachedEntry.data?.__tmSynthetic)) {
     cachedEntry.timestamp = Date.now();
     return cachedEntry.data;
   }
@@ -238,7 +246,7 @@ export async function safeGetFull(id, preHeader = null) {
     const headerMessageIdRaw = header?.headerMessageId || "";
     const msgId = String(headerMessageIdRaw || "").replace(/[<>]/g, "");
     const ftsKey = uniqueKey || msgId;
-    if (ftsKey) {
+    if (ftsKey && !skipIndex) {
       // safeGetFull also runs in the chat window (email_read) and compose; ftsRequest reaches the
       // helper only through the background, which owns it.
       const ftsRes = await ftsRequest("getMessageByMsgId", { msgId: ftsKey }, ({ ftsSearch }) => ftsSearch.getMessageByMsgId(ftsKey));
@@ -268,8 +276,8 @@ export async function safeGetFull(id, preHeader = null) {
             ...(msgId ? { "message-id": [`<${msgId}>`] } : {}),
           },
           parts: [],
-          // The calendar invites the indexer parsed from the downloaded message; there are no
-          // parts here to scan for them.
+          // The calendar invites the indexer kept from the downloaded message (raw, see
+          // encodeStoredIcs in chat/modules/icsParser.js); there are no parts here to scan.
           parsedIcsAttachments: ftsRes.parsedIcsAttachments || "",
         };
 

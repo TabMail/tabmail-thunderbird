@@ -19,7 +19,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 vi.mock('../agent/modules/inboxContext.js', () => ({ getInboxForAccount: vi.fn(async () => null) }));
 vi.mock('../agent/modules/onMoved.js', () => ({ sanitizeMessageTags: vi.fn(async () => ({ stripped: false })) }));
-vi.mock('../chat/modules/icsParser.js', () => ({ extractIcsFromParts: vi.fn(async () => []), formatIcsAttachmentsAsString: vi.fn(() => '') }));
+// The real ICS parser: the index keeps the raw invite parts it extracts (encodeStoredIcs).
 vi.mock('../fts/bodyExtract.js', () => ({ extractPlainText: vi.fn(async () => 'extracted body') }));
 // The real engine ftsSearch wrappers over a fake native layer (the same fake index).
 const native = vi.hoisted(() => ({ impl: null }));
@@ -30,6 +30,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
 }));
 
 const { safeGetFull } = await import('../agent/modules/utils.js');
+const { encodeStoredIcs, storedIcsParts } = await import('../chat/modules/icsParser.js');
 const { buildBatchHeader, indexMessages } = await import('../fts/indexer.js');
 const coordinator = await import('../fts/operationCoordinator.js');
 const engine = await import('../fts/engine.js');
@@ -176,13 +177,50 @@ describe('new rows take the attachment status of the downloaded message', () => 
     expect(index.get(key(3)).hasAttachments).toBe(false);
   });
 
-  it('keeps the calendar invites the index stored when the body came from the index', async () => {
+  it('stores the raw invite parts of a downloaded message, at full length', async () => {
+    const ics = ['BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'DTSTART;VALUE=DATE:20991112', `DESCRIPTION:${'x'.repeat(5000)}`, 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    const withInvite = { contentType: 'message/rfc822', parts: [{ contentType: 'multipart/mixed', partName: '1', parts: [
+      { contentType: 'text/plain', partName: '1.1', body: 'hi' },
+      { contentType: 'text/calendar', name: 'invite.ics', partName: '1.2', body: ics },
+      { contentType: 'text/calendar', name: 'second.ics', partName: '1.3', body: ics.replace('20991112', '20991113') },
+    ] }] };
+    safeGetFull.mockImplementation(async (id) => (id === 1 ? withInvite : MIXED_NO_FILE));
+    await indexMessages(ftsSearch);
+    expect(storedIcsParts(index.get(key(1)).parsedIcsAttachments)).toEqual([
+      { filename: 'invite.ics', contentType: 'text/calendar', partName: '1.2', text: ics },
+      { filename: 'second.ics', contentType: 'text/calendar', partName: '1.3', text: ics.replace('20991112', '20991113') },
+    ]);
+    expect(index.get(key(2)).parsedIcsAttachments).toBe('');
+  });
+
+  it('keeps a stored invite (or none) when the body came from the index, with no download', async () => {
+    const stored = encodeStoredIcs([{ filename: 'a.ics', contentType: 'text/calendar', partName: '1.2', text: 'BEGIN:VCALENDAR' }]);
     safeGetFull.mockImplementation(async (id) => ({
-      __tmSynthetic: true, body: 'b', parts: [], ...(id === 1 ? { parsedIcsAttachments: 'ics from the index' } : {}),
+      __tmSynthetic: true, body: 'b', parts: [], ...(id === 1 ? { parsedIcsAttachments: stored } : {}),
     }));
     await indexMessages(ftsSearch);
-    expect(index.get(key(1)).parsedIcsAttachments).toBe('ics from the index');
+    expect(index.get(key(1)).parsedIcsAttachments).toBe(stored);
     expect(index.get(key(2)).parsedIcsAttachments).toBe('');
+    expect(safeGetFull.mock.calls.some((c) => c[2]?.skipIndex)).toBe(false);
+  });
+
+  it('re-derives an old formatted invite from the message itself and stores the raw parts', async () => {
+    const ics = 'BEGIN:VCALENDAR\r\nEND:VCALENDAR';
+    const tree = { contentType: 'message/rfc822', parts: [{ contentType: 'text/calendar', name: 'i.ics', partName: '1', body: ics }] };
+    safeGetFull.mockImplementation(async (id, _m, opts) => (opts?.skipIndex ? tree
+      : { __tmSynthetic: true, body: 'b', parts: [], ...(id === 1 ? { parsedIcsAttachments: 'ICS Attachments (parsed):\nold text' } : {}) }));
+    await indexMessages(ftsSearch);
+    expect(storedIcsParts(index.get(key(1)).parsedIcsAttachments)).toEqual([{ filename: 'i.ics', contentType: 'text/calendar', partName: '1', text: ics }]);
+    expect(safeGetFull.mock.calls.filter((c) => c[2]?.skipIndex).map((c) => c[0])).toEqual([1]);
+  });
+
+  it('keeps an old formatted invite as it was when the message cannot be read', async () => {
+    safeGetFull.mockImplementation(async (id, _m, opts) => {
+      if (opts?.skipIndex) throw new Error('offline');
+      return { __tmSynthetic: true, body: 'b', parts: [], ...(id === 1 ? { parsedIcsAttachments: 'ICS Attachments (parsed):\nold text' } : {}) };
+    });
+    await indexMessages(ftsSearch);
+    expect(index.get(key(1)).parsedIcsAttachments).toBe('ICS Attachments (parsed):\nold text');
   });
 
   it.each([
@@ -355,5 +393,24 @@ describe('full smart reindex attachment flag repair', () => {
       { withFolderIds: false });
     expect(native.impl.removeBatch.mock.invocationCallOrder[0]).toBeLessThan(native.impl.indexBatch.mock.invocationCallOrder[0]);
     expect(storage[REPAIRED_KEY]).toEqual(['account1']);
+  });
+});
+
+describe('rewriteStoredIcs (email_read healing an old formatted invite)', () => {
+  it('writes the new invite value over the stored row and keeps every other column', async () => {
+    const { rewriteStoredIcs } = await import('../fts/indexer.js');
+    const before = { ...index.get(key(1)) };
+    const value = encodeStoredIcs([{ filename: 'i.ics', contentType: 'text/calendar', partName: '1', text: 'BEGIN:VCALENDAR' }]);
+    expect(await rewriteStoredIcs(ftsSearch, { msgId: key(1), folderId: folderIdOf(INBOX1), parsedIcsAttachments: value })).toBe(1);
+    const after = index.get(key(1));
+    expect(after.parsedIcsAttachments).toBe(value);
+    for (const col of ['subject', 'from_', 'to_', 'cc', 'bcc', 'body', 'dateMs', 'folderId']) expect(after[col]).toEqual(before[col]);
+    expect(after.hasAttachments).toBe(!!before.hasAttachments);
+  });
+
+  it('writes nothing for a message that is no longer indexed', async () => {
+    const { rewriteStoredIcs } = await import('../fts/indexer.js');
+    expect(await rewriteStoredIcs(ftsSearch, { msgId: 'account1:/INBOX:gone@example.com', folderId: folderIdOf(INBOX1), parsedIcsAttachments: '' })).toBe(0);
+    expect(ftsSearch.indexBatch).not.toHaveBeenCalled();
   });
 });

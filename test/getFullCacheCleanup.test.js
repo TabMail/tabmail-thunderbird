@@ -179,6 +179,19 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     expect(globalThis.browser.messages.getFull).not.toHaveBeenCalled();
   });
 
+  it('skipIndex returns the message itself, never the index copy, cached or not', async () => {
+    setupBrowser();
+    ftsGet.mockImplementation(async () => ({ body: 'Indexed body', parsedIcsAttachments: 'ICS Attachments (parsed):' }));
+    const { safeGetFull } = await import('../agent/modules/utils.js');
+    expect(await safeGetFull(603)).toMatchObject({ __tmSynthetic: true });
+    ftsGet.mockClear();
+    expect(await safeGetFull(603, null, { skipIndex: true })).toEqual({ body: 'Synthetic message 603, fetch 1' });
+    expect(ftsGet).not.toHaveBeenCalled();
+    // The message replaces the index copy in the cache.
+    expect(await safeGetFull(603)).toEqual({ body: 'Synthetic message 603, fetch 1' });
+    expect(globalThis.browser.messages.getFull).toHaveBeenCalledTimes(1);
+  });
+
   it('retains the schedule after a body-fetch failure while later bodies still expire', async () => {
     const h = setupBrowser();
     globalThis.browser.messages.getFull.mockRejectedValueOnce(new Error('Synthetic missing body'));
