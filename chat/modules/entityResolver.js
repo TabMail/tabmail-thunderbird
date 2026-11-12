@@ -69,7 +69,8 @@ export async function resolveContactDetails(contactId) {
 /**
  * Resolve calendar event details from an event ID
  * @param {string} eventId - The event ID (not compound)
- * @returns {Promise<{title: string, startDate: string, location: string, start: string, end: string, attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
+ * `start` and `end` are epoch milliseconds, passed through from tmCalendar ("" when the event has none).
+ * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
  */
 export async function resolveEventDetails(eventId) {
   try {

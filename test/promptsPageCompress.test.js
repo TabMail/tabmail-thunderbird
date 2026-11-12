@@ -58,7 +58,7 @@ function hex(value) {
 function device(id, index, relay) {
   return new BulletDevice(id, new DeviceStore(), relay, {
     name: (k) => `${hex(index)}${hex(k)}`,
-    files: ['agent/modules/patchApplier.js', 'agent/modules/knowledgebase.js'],
+    files: ['agent/modules/patchApplier.js', 'agent/modules/knowledgebase.js', 'agent/modules/gregorianDate.js'],
     stubs: writerStubs(),
   });
 }

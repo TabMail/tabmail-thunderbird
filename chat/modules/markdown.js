@@ -588,9 +588,10 @@ export async function renderMarkdown(mdText) {
             const eventDetails = await resolveEventDetails(eventId);
             if (eventDetails && eventDetails.ok) {
               displayText = eventDetails.title || "Untitled event";
-              // Use the same pattern as calendarDelete.js - pass directly to Date constructor
-              const startTime = eventDetails.start ? new Date(eventDetails.start).toLocaleString() : "Unknown start time";
-              const endTime = eventDetails.end ? new Date(eventDetails.end).toLocaleString() : "Unknown end time";
+              // Keep start and end as returned (epoch ms); showTooltip formats them only when it draws.
+              // A locale string here was parsed back with new Date() and named the wrong day.
+              const startTime = eventDetails.start || "Unknown start time";
+              const endTime = eventDetails.end || "Unknown end time";
               
               tooltipData = {
                 title: displayText,

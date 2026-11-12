@@ -55,20 +55,15 @@ export async function runStateDeleteListEmails() {
             log(`[TMDBG DeleteList] Failed to fetch summary for override id=${id}: ${e}`, "warn");
           }
           
-          const dateStr = (() => {
-            try {
-              return new Date(header.date).toLocaleString();
-            } catch (_) {
-              return "";
-            }
-          })();
+          // The header's own time; the list formats it only where it draws the row.
+          const dateMs = header?.date ? new Date(header.date).getTime() : 0;
           
           tmp.push({
             uniqueId: uniqueId,
             internalId: id,
             subject: header?.subject || "(No subject)",
             from: header?.author || "",
-            date: dateStr,
+            dateMs,
             blurb: blurb,
             todos: todos,
             action: "delete",
@@ -128,7 +123,7 @@ export async function runStateDeleteListEmails() {
         messageId: itm.internalId,
         subject: itm.subject,
         from: itm.from,
-        date: itm.date || "",
+        dateMs: itm.dateMs,
         blurb: itm.blurb || "",
         todos: itm.todos || "",
       }));

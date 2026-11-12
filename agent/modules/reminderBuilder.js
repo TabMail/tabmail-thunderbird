@@ -21,6 +21,7 @@ import { parseTasksFromKB, getTaskHash } from "./kbTaskParser.js";
 import { getKBReminders, parseRemindersFromKB } from "./kbReminderGenerator.js";
 import { readView } from "./promptStore.js";
 import { gcStaleEntries, getDisabledHashes, getDisabledMap, hashReminder, migrateEntries } from "./reminderStateStore.js";
+import { formatGregorianDate } from "./gregorianDate.js";
 import { getSummaryWithHeaderId } from "./summaryGenerator.js";
 import { log, normalizeUnicode } from "./utils.js";
 
@@ -514,7 +515,7 @@ export function formatRemindersForDisplay(reminders) {
 
   const now = new Date();
   const dateOptions = { weekday: "long", month: "long", day: "numeric" };
-  const dateStr = now.toLocaleDateString("en-US", dateOptions);
+  const dateStr = formatGregorianDate(now, dateOptions);
 
   /**
    * Format a due date (and optional time) for display
@@ -580,7 +581,7 @@ export function formatRemindersForDisplay(reminders) {
         month: "short",
         day: "numeric",
       };
-      const formatted = dueDateMidnight.toLocaleDateString("en-US", options);
+      const formatted = formatGregorianDate(dueDateMidnight, options);
       return `Due ${formatted}${timeSuffix}`;
     } catch (e) {
       log(

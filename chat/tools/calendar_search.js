@@ -4,6 +4,7 @@
 
 // calendar_search.js – returns a compact, calendar-like summary grouped by calendar and date
 
+import { formatGregorianDate } from "../../agent/modules/gregorianDate.js";
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { toIsoNoMs } from "../modules/helpers.js";
@@ -487,7 +488,7 @@ function formatDayHeader(dayKey, tz) {
   const [y, m, d] = dayKey.split("-").map(x => Number(x));
   const noonHour = Number(CHAT_SETTINGS.middayHourForDateHeader) || 12;
   const dt = new Date(Date.UTC(y, m - 1, d, noonHour, 0, 0));
-  const pretty = dt.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: tz });
+  const pretty = formatGregorianDate(dt, { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: tz });
   return { timezone: tz, prettyDate: pretty, calendars: {} };
 }
 

@@ -30,7 +30,7 @@ async function writerDevice(kb) {
   const counts = { calls: 0, indexed: 0 };
   const reply = (fact, rule) => (kb ? { refined_kb: `- ${fact}` } : { assistant: JSON.stringify({ patch: `ADD\narchive\n${rule}` }) });
   const d = await new BulletDevice('A', new DeviceStore(), new BulletRelay(), {
-    files: ['agent/modules/knowledgebase.js', 'agent/modules/autoUpdateUserPrompt.js', 'agent/modules/patchApplier.js'],
+    files: ['agent/modules/knowledgebase.js', 'agent/modules/gregorianDate.js', 'agent/modules/autoUpdateUserPrompt.js', 'agent/modules/patchApplier.js'],
     stubs: {
       'agent/modules/llm.js': {
         sendChat: async () => {

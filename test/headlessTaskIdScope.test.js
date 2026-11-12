@@ -3,6 +3,7 @@ import { resolve, posix } from 'node:path';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 import { it, expect } from 'vitest';
+import { formatGregorianDate } from '../agent/modules/gregorianDate.js';
 
 const root = resolve(import.meta.dirname, '..');
 function declaration(file, name) {
@@ -16,7 +17,7 @@ it('keeps a fresh background task separate from saved chat IDs and resolves its 
   const original = { entries: [[7, 'synthetic-existing-message']], nextNumericId: 8, freeIds: [], refCounts: [[7, 1]] };
   const stored = { chat_id_map: structuredClone(original) }, writes = [], timers = [], executed = [];
   const context = vm.createContext({
-    console, Date, Map, Set, JSON,
+    console, Date, Map, Set, JSON, formatGregorianDate,
     setTimeout(fn) { timers.push(fn); return timers.length; }, clearTimeout() {},
     log(message) { if (message.includes('failed')) console.log(message); }, TASK_EVAL_SYSTEM_PROMPT: 'synthetic-task-prompt',
     browser: { messages: { get: async () => ({ subject: 'Synthetic task result', author: 'Synthetic sender', recipients: [] }) }, storage: { local: {
