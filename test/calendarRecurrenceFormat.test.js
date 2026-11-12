@@ -750,11 +750,9 @@ describe('split: the two parts make the series\' occurrences', () => {
           expectPlainDates(fresh, `${rule}: the part from the split on`);
         }
         // The earlier part's end is written in its start's value type (RFC 5545
-        // 3.3.10). A floating start's is still a UTC value, filed as #270.
-        if (kind !== 'floating') {
-          const shape = start.isDate ? /^\d{8}$/ : /^\d{8}T\d{6}Z$/;
-          for (const value of ruleValues(capped).filter((v) => /UNTIL=/.test(v))) expect(untilOf(value), `${rule}: ${value}`).toMatch(shape);
-        }
+        // 3.3.10): a bare date, a floating date-time (no Z), or UTC.
+        const shape = start.isDate ? /^\d{8}$/ : kind === 'floating' ? /^\d{8}T\d{6}$/ : /^\d{8}T\d{6}Z$/;
+        for (const value of ruleValues(capped).filter((v) => /UNTIL=/.test(v))) expect(untilOf(value), `${rule}: ${value}`).toMatch(shape);
         for (const part of [capped, fresh]) {
           for (const rid of part.recurrenceInfo.getExceptionIds()) {
             const ex = part.recurrenceInfo.getExceptionFor(rid);

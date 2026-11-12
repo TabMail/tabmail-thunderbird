@@ -123,7 +123,10 @@ same design (tabmail-ios #421).
   - **Each rule (`splitRule`):** a rule whose UNTIL is before the split stays on the earlier part unchanged and is
     not carried on; a COUNT rule whose count is used up before the split likewise. Otherwise the earlier part's copy
     is capped (UNTIL/COUNT dropped, `UNTIL` = split minus one second, or the day before for an all-day series, from
-    the DATE's own digits, `dayDigitsFrom`/`dayDateFrom`: a DATE's epoch time depends on its zone, 034) and
+    the DATE's own digits, `dayDigitsFrom`/`dayDateFrom`: a DATE's epoch time depends on its zone, 034; in the
+    start's value type, RFC 5545 3.3.10: UTC `…Z` for a zoned start, a floating `…THHMMSS` with no Z for a floating
+    one, #392. Thunderbird showed the same occurrences with the old UTC cap, since it reads a floating value at
+    offset 0, but apps that read floating times in the viewer's zone did not) and
     the following part's copy keeps UNTIL, with COUNT reduced to the occurrences still to come (`getOccurrences`
     from the start up to the split). A rule is expanded from its event's start, so a carried rule must make an
     occurrence at the split (`aligned`, checked with `getOccurrences` over [split, just after]); otherwise the split
@@ -443,6 +446,12 @@ same design (tabmail-ios #421).
   RDATEs less EXDATEs, changed occurrences at their own time) as CalRecurrenceInfo does.
 - Split tests assert OCCURRENCES: for each start kind and for an unbounded, a COUNT and an UNTIL rule with EXDATEs,
   RDATEs and changed occurrences on both sides of the split, the two parts' occurrences together equal the series'.
+  The same loop pins the earlier part's UNTIL in its start's value type for every kind, floating included (no Z).
+- `test/calendarSplitFloatingWest.test.js` and `test/calendarSplitFloatingEast.test.js` (cases in
+  `test/helpers/floatingSplitCases.js`, Los Angeles and Sydney, on Thunderbird's own dates) split floating timed
+  series (daily at 00:00 to 23:30, and six-hourly): the named occurrence and every later one are the following
+  part's only, every earlier one stays in the earlier part, and the earlier part's UNTIL is floating and before
+  the named occurrence (#392).
 - `seriesOccurrences` drops a changed occurrence whose RECURRENCE-ID an EXDATE names, as `calculateDates` does;
   excluded-date tests assert the occurrence is gone, so an EXDATE at a moved occurrence's start (not its id) fails.
   `test/calendarOccurrenceRoundTrip.test.js` feeds a changed occurrence's printed start, through the edit tool's
