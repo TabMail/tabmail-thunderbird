@@ -11,8 +11,9 @@
 //
 // Invariant, for an edit giving "" for a field F (location or description):
 // - every occurrence the edit covers reads F as empty, and the stored item
-//   holds no F property (for the notes, no HTML copy either: Thunderbird shows
-//   X-ALT-DESC over DESCRIPTION);
+//   holds no F property (for the notes, no HTML copy either: Thunderbird reads
+//   HTML notes only from the description's ALTREP, but other calendar clients
+//   may show X-ALT-DESC);
 // - every other field, and every occurrence the edit does not cover, reads as
 //   before;
 // - the card the user confirms shows a line for F with its old value;
@@ -191,7 +192,7 @@ describe('a one-off event: "" removes the location or the notes', () => {
     expect(card).toMatch(/\*\*Description:\*\*\n\s+Bring the forms → \*\*\(cleared\)\*\*/);
   });
 
-  it('description "" on notes with HTML copies: no copy is left for Thunderbird to show', async () => {
+  it('description "" on notes with HTML copies: no HTML copy is left', async () => {
     const { after, stored, reported } = await confirmEdit(oneOff(HTML), { description: '' });
     expectReportedDone(reported);
     expect(after.get(oneOffKey).description).toBe('');
@@ -258,7 +259,7 @@ describe('a repeating event: "" removes the field from every occurrence the edit
 // Guards for the one comparison (restatedFields): "" over a field that is
 // already empty only restates it, so the card shows no line for it and the
 // write changes nothing for it.
-describe('"" over a location that is already empty is no change', () => {
+describe('"" over a location or notes that are already empty is no change', () => {
   it('"All events": no Location line, and an occurrence with its own place keeps it', async () => {
     const master = series({ properties: { LOCATION: null }, changed: [{ n: 2, properties: { LOCATION: 'Room B' } }] });
     const { card, before, after, reported } = await confirmEdit(master, { edit_scope: 'all', title: 'Standup (new)', location: '' });
@@ -268,6 +269,19 @@ describe('"" over a location that is already empty is no change', () => {
     expect(before.get(slotKey(2)).location).toBe('Room B');
     expect(card).toContain('**Title:**');
     expect(card).not.toContain('**Location:**');
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+    for (const [key, was] of before) expect(after.get(key), key).toEqual({ ...was, title: 'Standup (new)' });
+  });
+
+  it('"All events", notes: no Description line, and an occurrence with its own notes keeps them', async () => {
+    const master = series({ properties: { DESCRIPTION: null }, changed: [{ n: 3, properties: { DESCRIPTION: 'Demo prep' } }] });
+    const { card, before, after, reported } = await confirmEdit(master, { edit_scope: 'all', title: 'Standup (new)', description: '' });
+    expectReportedDone(reported);
+    // Not vacuous: the series has no notes, one occurrence has its own.
+    expect(before.get(slotKey(1)).description).toBe('');
+    expect(before.get(slotKey(3)).description).toBe('Demo prep');
+    expect(card).toContain('**Title:**');
+    expect(card).not.toContain('**Description:**');
     expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
     for (const [key, was] of before) expect(after.get(key), key).toEqual({ ...was, title: 'Standup (new)' });
   });

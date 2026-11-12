@@ -403,7 +403,13 @@ same design (tabmail-ios #421).
     card's word ("Room A → **(cleared)**"). Superseded: `normalizeArgs` tested truthiness, so `""` was dropped
     before the check, the card showed no line (or "no changes detected"), nothing was written, and the edit was
     still reported as made. The title has the same truthiness test and is a separate question (#384).
-    Pinned by `test/calendarEditClearsField.test.js`.
+    Pinned by `test/calendarEditClearsField.test.js` (incl. the guards: `""` over an empty place or empty notes on
+    an `all` edit is restated, so an occurrence with its own keeps it).
+  - **Thunderbird 159 reads HTML notes only from DESCRIPTION's ALTREP, never from X-ALT-DESC** (checked by
+    scanning its `omni.ja`: no "X-ALT-DESC" anywhere). The bridge still deletes X-ALT-DESC, X-MOZ-HTML and
+    X-MOZ-ALT-DESC when notes are cleared or replaced without HTML, because other CalDAV clients may show them.
+    Notes held only as X-ALT-DESC read as empty through `getCalendarEventDetails` (it reads DESCRIPTION), so a
+    `""` over them is restated and the copy stays (rare; such notes come from an external client).
   - Superseded: on an `all` edit a changed occurrence kept its own title, place, notes and busy/free, so an
   occurrence renamed or moved once never took a later rename of the series (only a first occurrence named on a
   time change took the edit's fields); a split's carried changed occurrences kept theirs too, except the one it

@@ -39,7 +39,8 @@ function normalizeArgs(args = {}) {
     }
   }
   
-  // Only include properties that have meaningful values
+  // Keep only the fields the edit gives a usable value for (a location or notes
+  // given as a string count, "" included; see below)
   if (typeof a.title === "string" && a.title) out.title = a.title;
   // Normalize ISO strings to naive format (remove timezone offsets); a time
   // given with a timezone keeps its digits, that zone's wall clock.
