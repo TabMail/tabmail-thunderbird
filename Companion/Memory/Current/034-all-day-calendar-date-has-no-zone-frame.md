@@ -157,3 +157,12 @@ zone reports midnight in it, and `compare` is CalDateTime's: date-only when eith
 the other side read in this side's zone; by digits when either side is floating). Reinstating the compare filter fails the tight-window and `start_iso`
 lookup tests. A consumer test with a hand-written `startDay` proves nothing about whether the bridge
 emits one; keep the producer-backed tests when touching the bridge.
+
+**A series' rule is expanded as Thunderbird expands it (#390, 2026-11-11).** The harness's rule
+compared its occurrences with the range by `CalDateTime.compare` (a DATE by date only) and from the
+range's own start, so a `start_iso` lookup of a plain occurrence of a floating all-day series west of
+UTC answered "No entries matched." Thunderbird 159, measured headless, finds it:
+`CalRecurrenceRule.getOccurrences` compares by instant (`isDate = false`, ical.js `Time.compare`) and
+`calculateDates` searches from the range's start moved back by the series' length. The harness now does
+both; method and detail in
+[052-measure-calendar-behaviour-in-real-thunderbird-headless.md](052-measure-calendar-behaviour-in-real-thunderbird-headless.md).

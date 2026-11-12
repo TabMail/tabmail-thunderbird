@@ -44,7 +44,7 @@ vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ t
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}) }));
 
 const flow = await import('./helpers/seriesEditFlow.js');
-const { onCalendar, seriesOf, edit, iso } = flow;
+const { onCalendar, seriesOf, edit, iso, dayPlus } = flow;
 
 const LA = 'America/Los_Angeles';
 const series = () => seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, rule: 'FREQ=DAILY;COUNT=10' });
@@ -209,6 +209,31 @@ describe('what the assistant is told after the edit', () => {
       return ev;
     }
 
+    // Thunderbird 159, measured west of UTC (America/Los_Angeles) on a memory
+    // and a storage calendar holding this series, with 2099-01-19 moved to
+    // 2099-01-20: calendar_event_read's start_iso lookup through the bridge
+    // found each plain occurrence, the moved one and the first by its date.
+    it('every occurrence, plain or moved, is found by the start_iso the read prints, as in Thunderbird', async () => {
+      const { fakeEvent } = await import('./helpers/calendarBridgeHarness.js');
+      const { dateOn } = await import('./helpers/nativeCalendarDates.js');
+      const ser = await allDaySeries();
+      const moved = fakeEvent({ id: 'ser', title: 'Holiday moved', startDate: dateOn('2099-01-20'), endDate: dateOn('2099-01-21'), recurrenceId: dateOn('2099-01-19') });
+      ser.recurrenceInfo.modifyException(moved);
+      onCalendar([ser], LA);
+      const expanded = flow.occurrencesOf(ser, '2099-01-01', '2099-03-01').map((o) => [o.start, o.occ.title]);
+      expect(expanded).toEqual([
+        ['2099-01-12T00:00:00', 'Holiday'], ['2099-01-20T00:00:00', 'Holiday moved'], ['2099-01-26T00:00:00', 'Holiday'],
+        ['2099-02-02T00:00:00', 'Holiday'], ['2099-02-09T00:00:00', 'Holiday'], ['2099-02-16T00:00:00', 'Holiday'],
+      ]);
+      for (const [start, title] of expanded) {
+        const read = await flow.readOccurrence(start);
+        expect(read.text, start).not.toBe('No entries matched.');
+        const day = start.slice(0, 10);
+        expect([read.start_iso, read.end_iso, read.all_day, flow.field(read.text, 'title'), flow.field(read.text, 'recurrence_id')], start)
+          .toEqual([start, `${dayPlus(day, 1)}T00:00:00`, 'yes', title, start]);
+      }
+    });
+
     it('round trip: one all-day occurrence moved a day', async () => {
       onCalendar([await allDaySeries()], LA);
       const run = await edit({ event_id: 'ser', edit_scope: 'this_only', recurrence_id: '2099-01-19T00:00:00', start_iso: '2099-01-20', end_iso: '2099-01-21', all_day: true });
@@ -224,14 +249,7 @@ describe('what the assistant is told after the edit', () => {
       const part = loaded.calendar.items.find((it) => it.id !== 'ser');
       expect(run.result.event_id).toBe(part.id);
       expect(run.result.recurrence_id).toBe('2099-01-26T00:00:00');
-      // calendar_event_read finds no occurrence of a floating all-day series
-      // by start_iso in this zone (tabmail-thunderbird#390), so the id given back is
-      // checked against Thunderbird's own expansion of the new part.
-      const again = await edit({ event_id: part.id, edit_scope: 'this_only', recurrence_id: run.result.recurrence_id, title: 'Renamed' });
-      expect(again.failReason, 'the returned id names an occurrence').toBeUndefined();
-      expect(again.state).toBe('exec_success');
-      const [first] = flow.occurrencesOf(part, '2099-01-26', '2099-01-27');
-      expect([first.start, first.occ.title]).toEqual(['2099-01-26T00:00:00', 'Renamed']);
+      await roundTrip(part.id, run.result.recurrence_id, '2099-01-26T00:00:00');
     });
   });
 });
