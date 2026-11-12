@@ -147,9 +147,9 @@ describe('series time edits refused before the card', () => {
     await refused(occurrence, { event_id: 'ser', edit_scope: 'this_only', recurrence_id: iso('2099-10-02', 10), start_iso: iso('2099-10-04', 2, 30), timezone: SYDNEY }, text);
   });
 
-  it('a start alone switched to all-day keeps the mixed-kinds refusal', async () => {
+  it('a start alone switched to all-day is refused: a change of kind needs both times', async () => {
     const loaded = calendarOf([seriesOf({ tzid: LA, day: '2099-01-10', hour: 10 })]);
-    await refused(loaded, { event_id: 'ser', edit_scope: 'all', start_iso: '2099-01-10', all_day: true }, 'the edit would leave the start all-day and the end timed');
+    await refused(loaded, { event_id: 'ser', edit_scope: 'all', start_iso: '2099-01-10', all_day: true }, 'the edit makes this timed event all-day, which needs both start_iso and end_iso');
   });
 
   it('an all-day series given a time of day without all_day is refused before an end-before-start', async () => {

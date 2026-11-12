@@ -305,17 +305,17 @@ describe('new times that cannot be written are refused before the card, with not
     await expectRefused(oneOff, { start_iso: at(0, 19), end_iso: at(0, 18) }, /^the event would end before it starts\. Ask the user when it should start and end$/);
   });
 
-  it('all_day: false with an end alone on an all-day event', async () => {
-    await expectRefused(allDayEvent, { all_day: false, end_iso: at(0, 15) }, /^the edit would leave the start all-day and the end timed/);
+  it('all_day: false with an end alone on an all-day event: a change of kind needs both times', async () => {
+    await expectRefused(allDayEvent, { all_day: false, end_iso: at(0, 15) }, /^the edit makes this all-day event timed, which needs both start_iso and end_iso/);
   });
 
-  it('all_day: true with an end alone on a timed event', async () => {
-    await expectRefused(oneOff, { all_day: true, end_iso: `${day(2)}T00:00:00` }, /^the edit would leave the start timed and the end all-day/);
+  it('all_day: true with an end alone on a timed event: a change of kind needs both times', async () => {
+    await expectRefused(oneOff, { all_day: true, end_iso: `${day(2)}T00:00:00` }, /^the edit makes this timed event all-day, which needs both start_iso and end_iso/);
   });
 
-  it('a zero-length all-day event given a start alone with all_day: false', async () => {
+  it('a zero-length all-day event given a start alone with all_day: false: a change of kind needs both times', async () => {
     const zeroLength = () => fakeEvent({ id: 'evt', title: 'Holiday', startDate: fakeDate(day(0), LOCAL_ZONE), endDate: fakeDate(day(0), LOCAL_ZONE) });
-    await expectRefused(zeroLength, { all_day: false, start_iso: at(0, 10) }, /^the edit would leave the start timed and the end all-day/);
+    await expectRefused(zeroLength, { all_day: false, start_iso: at(0, 10) }, /^the edit makes this all-day event timed, which needs both start_iso and end_iso/);
   });
 
   it('an all-day end alone on the event\'s own first day', async () => {

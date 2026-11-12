@@ -188,9 +188,19 @@ same design (tabmail-ios #421).
     and an end of different kinds (a side the edit leaves out keeps its kind; #318) and a timed end before the start
     (an end at the start is written, a zero-length event as Google makes one; the refusal explains that an end alone keeps
     the start only when no start was given, and a split's names the slot its part starts at). The same check runs on the
-    occurrence the edit names (`applyEditToNamedOccurrence`). `all_day` alone
-    changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
-    all-day comes with them.
+    occurrence the edit names (`applyEditToNamedOccurrence`). **A change of kind needs both times (#288, #349,
+    2026-11-11):** an `all_day` other than the stored kind (the event's, the occurrence's on `this_only`, the
+    series' on `all` and on a split) without both `start_iso` and `end_iso` is refused before the card with nothing
+    written, on every scope, by `kindChangeTimesError` (checked first in `editTimesErrorOf`, and in
+    `resolveEditTimes` when no time is left); the message names both fields and says an all-day `end_iso` is the
+    day after the last day. The dates are not derived from the stored ones (a timed event made all-day can span
+    other days; one made timed needs the time of day and length the user wants). The `changes` answer of the check
+    no longer has an `all_day` term: a change of kind is in `times`. Superseded: `all_day` alone changed nothing
+    while the card showed "All-day: no → yes" and the edit reported success, and from an occurrence on it split the
+    series into two identical parts; a change to timed with a start only kept the all-day length as a 24-hour timed
+    event (one-off and `this_only`), and on a series it got the mixed-kinds refusal. Pinned by
+    `test/calendarAllDayAloneWest.test.js` and `test/calendarAllDayAloneEast.test.js` (cases in
+    `test/helpers/allDayAloneCases.js`).
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
     time change so they move with the part.
   - **A split at an occurrence that was changed on its own** (X), since 2026-11-11 (ADR-031): X is named by its own

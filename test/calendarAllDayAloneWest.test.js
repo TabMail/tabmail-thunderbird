@@ -2,13 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// calendarAllDayAloneWest.test.js: a calendar edit that gives all_day and no
-// start or end, the user west of UTC (America/Los_Angeles). An all_day other than the
-// stored kind changes the kind or is refused before the card; it never
-// reports success with the event unchanged, and a split never leaves two
-// series of the same content. A change to timed with a start only is made
-// one hour long or refused before the card, never kept 24 hours. An all_day
-// equal to the stored kind is "Nothing changed". Cases: test/helpers/allDayAloneCases.js.
+// calendarAllDayAloneWest.test.js: a calendar edit that asks for a kind (all_day) other
+// than the stored one without both start_iso and end_iso is refused before the
+// card with nothing written, on every scope, the user west of UTC (America/Los_Angeles).
+// An all_day equal to the stored kind is "Nothing changed". Cases:
+// test/helpers/allDayAloneCases.js.
 
 process.env.TZ = 'America/Los_Angeles';
 

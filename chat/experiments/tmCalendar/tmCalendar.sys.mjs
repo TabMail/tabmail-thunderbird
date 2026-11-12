@@ -1616,20 +1616,39 @@ function namesTimeOfDay(iso) {
 //   would be a zero-length event.
 // - A timed end before the start. An end at the start is written (a
 //   zero-length event, as Google Calendar makes one).
-function editTimesError(item, patch) {
+// - A change of kind (kindChangeTimesError) without both a start and an end,
+//   checked first and also for an edit that gives no time at all. `stored`
+//   is the item as stored (`item` already has the edit's times), whose kind
+//   the edit keeps or changes.
+function editTimesError(item, patch, stored) {
   const s = item.startDate, e = item.endDate;
-  if (!patch.start_iso && !patch.end_iso) return null;
   if (!s || !e) return null;
-  return editTimesErrorOf({ itemIsDate: !!s.isDate, startIsDate: !!s.isDate, endIsDate: !!e.isDate, order: e.compare(s) }, patch);
+  return editTimesErrorOf({ itemIsDate: !!stored.startDate?.isDate, startIsDate: !!s.isDate, endIsDate: !!e.isDate, order: e.compare(s) }, patch);
 }
 
-// editTimesError's four refusals, from the kinds and order of an edit's new
+// Why an edit that changes an item's kind is refused, or null: an all_day
+// other than the stored kind (`storedIsDate`) comes with both start_iso and
+// end_iso, or nothing is written. The dates are not derived from the stored
+// ones: a timed event made all-day can span other days, and one made timed
+// needs the time of day and the length the user wants, so the assistant asks.
+// Without this, all_day alone (or with one side) wrote nothing, or kept the
+// all-day length as a 24-hour timed event, while the card showed the change.
+function kindChangeTimesError(storedIsDate, patch) {
+  if (typeof patch.all_day !== "boolean" || patch.all_day === storedIsDate) return null;
+  if (patch.start_iso && patch.end_iso) return null;
+  const to = patch.all_day ? "all-day" : "timed";
+  return `the edit makes this ${storedIsDate ? "all-day" : "timed"} event ${to}, which needs both start_iso and end_iso: give both with all_day (for an all-day event, end_iso is the day after its last day). Ask the user for the ${patch.all_day ? "days" : "start time and how long it lasts"} if they did not say`;
+}
+
+// editTimesError's refusals, from the kinds and order of an edit's new
 // times: `itemIsDate` the item's kind (a time of day for an all-day item needs
 // all_day), `startIsDate` and `endIsDate` the new start's and end's, and
 // `order` the end against the start (negative, 0 or positive). The series
 // path (resolveEditTimes) gives the order of its wall-clock length, so it
 // refuses in the same order with the same texts and reads no date twice.
 function editTimesErrorOf({ itemIsDate, startIsDate, endIsDate, order }, patch) {
+  const kindError = kindChangeTimesError(itemIsDate, patch);
+  if (kindError) return kindError;
   if (!patch.start_iso && !patch.end_iso) return null;
   const timed = "become a timed event (all_day: false, with the start time and how long it lasts), then retry with their answer";
   if (itemIsDate && typeof patch.all_day !== "boolean" && (namesTimeOfDay(patch.start_iso) || namesTimeOfDay(patch.end_iso))) {
@@ -1817,7 +1836,13 @@ function resolveEditTimes(item, patch, tz, namedRid) {
     refIsChanged = false;
   }
   const left = timesLeft(ref, patch, tz);
-  if (!left.start_iso && !left.end_iso) return { start: null, length: null, ref, refIsChanged };
+  if (!left.start_iso && !left.end_iso) {
+    // No time left: a change of kind still needs both (a time that would
+    // change the kind never restates, so none was dropped).
+    const kindError = kindChangeTimesError(!!item.startDate.isDate, patch);
+    if (kindError) return { error: kindError };
+    return { start: null, length: null, ref, refIsChanged };
+  }
   if (!left.start_iso && refIsChanged && !!ref.startDate.isDate !== !!item.startDate.isDate) {
     return { error: NAMED_OTHER_KIND_ERROR };
   }
@@ -2800,7 +2825,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               if (durationResult.error) {
                 console.warn("[tmCalendar] modifyCalendarEvent: duration preservation failed:", durationResult.error);
               }
-              const editError = editTimesError(clone, kept);
+              const editError = editTimesError(clone, kept, base);
               if (editError) return { ok: false, error: editError };
               times = shownEditTimes(base, clone);
             }
@@ -2899,16 +2924,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // A check before the confirmation card stops here, at the first
             // write: every refusal is above, and everything above changed only
             // the unsaved clone. It says whether the edit changes anything
-            // (each term but all_day is the guard of the write it stands for,
-            // after the drops above; an omitted field arrives as null. The
-            // all_day term stands for the card's All-day line: all_day is
-            // written only with a time, so a flip with no time writes nothing),
-            // the times the card shows, and whether a new start resets changed
-            // occurrences.
+            // (each term is the guard of the write it stands for, after the
+            // drops above; an omitted field arrives as null. A change of kind
+            // is in `times`: it comes with both times or is refused above,
+            // kindChangeTimesError), the times the card shows, and whether a
+            // new start resets changed occurrences.
             const changes = !!times || typeof patch.title === "string" || typeof patch.location === "string"
               || typeof patch.transparency === "string" || typeof patch.description === "string" || !!patch.description_html
               || !!guestChange || exdates.rids.length > 0 || (!!patch.recurrence && typeof patch.recurrence === "object")
-              || (typeof patch.all_day === "boolean" && patch.all_day !== !!base.startDate.isDate)
               || details.send_invitations === true;
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
 
@@ -3312,17 +3335,15 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // A check before the confirmation card stops here, at the first
             // write: every refusal is above, and both parts are still unsaved
-            // copies. It says whether the split changes anything (each term but
-            // all_day is the guard of a write above; a split that changes
-            // nothing is not made. The all_day term stands for the card's
-            // All-day line: all_day is written only with a time, so a flip with
-            // no time still splits and writes no kind change), the times the
+            // copies. It says whether the split changes anything (each term
+            // is the guard of a write above; a split that changes nothing is
+            // not made. A change of kind is in `times`: it comes with both
+            // times or is refused above, kindChangeTimesError), the times the
             // card shows, and whether a new start resets the part's changed
             // occurrences.
             const changes = !!times || (typeof patch.title === "string" && !!patch.title) || newRule
               || exdates.rids.length > 0 || !!guestChange || typeof patch.location === "string"
               || typeof patch.description === "string" || typeof patch.transparency === "string"
-              || (typeof patch.all_day === "boolean" && patch.all_day !== isAllDayMaster)
               || patch.send_invitations === true;
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
 
