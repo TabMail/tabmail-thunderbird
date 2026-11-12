@@ -10,6 +10,9 @@
 // comes from the REAL bridge (tmCalendar.sys.mjs in node:vm, through
 // calendarBridgeHarness.js) and the REAL entityResolver and markdown modules,
 // so the test covers what the bridge returns, not a hand-written copy of it.
+// The chat's @-mention list shows the same event's date (entityResolver's
+// `startDate`, in the user's locale) and has the same cause, so it is pinned
+// here too, through the real mentionAutocomplete dropdown.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
@@ -22,14 +25,27 @@ vi.mock('../agent/modules/utils.js', () => ({
   resolveUniqueMessageKey: vi.fn(async () => null),
 }));
 
+// The @-mention list also offers templates; none are needed here.
+vi.mock('../agent/modules/templateManager.js', () => ({
+  getVisibleTemplates: vi.fn(async () => []),
+  getTemplate: vi.fn(async () => null),
+}));
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bridgeUrl = resolve(__dirname, '../chat/experiments/tmCalendar/tmCalendar.sys.mjs');
 
-globalThis.browser = { tmCalendar: { getCalendarEventDetails: vi.fn(async () => ({ ok: false })) } };
+globalThis.browser = {
+  tmCalendar: { getCalendarEventDetails: vi.fn(async () => ({ ok: false })) },
+  // mentionAutocomplete imports config.js, which listens for storage changes.
+  storage: { onChanged: { addListener: vi.fn() } },
+};
 
 const { loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent } = await import('./helpers/calendarBridgeHarness.js');
 const { renderMarkdown, attachSpecialLinkListeners } = await import('../chat/modules/markdown.js');
 const { getGenericTimezoneAbbr } = await import('../chat/modules/helpers.js');
+const { initMentionAutocomplete, cleanupMentionAutocomplete } = await import('../chat/modules/mentionAutocomplete.js');
+const { ctx } = await import('../chat/modules/context.js');
+const { stubDefaultLocale } = await import('./helpers/defaultLocale.js');
 
 // 2099-11-12 is a Thursday.
 const DAY = '2099-11-12';
@@ -53,6 +69,45 @@ async function tooltipFor(item) {
   link.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   const tooltip = document.querySelector('.tm-tooltip');
   return { link, when: tooltip.querySelectorAll('.tm-tooltip-field')[0].textContent };
+}
+
+/**
+ * Loads `item` into the bridge as an event the assistant linked earlier in the
+ * chat (an `entityMap` entry, as idTranslator stores one), types `typed` into
+ * the message box, and returns the @-mention dropdown's items as
+ * `{ label, description }`.
+ */
+async function mentionItemsFor(item, typed) {
+  const { api } = loadCalendarBridge(bridgeUrl, { items: [item] });
+  browser.tmCalendar.getCalendarEventDetails.mockImplementation((id) => api.getCalendarEventDetails(id, 'cal1'));
+  ctx.entityMap.clear();
+  ctx.entityMap.set('1:1', { type: 'event', compoundNumericId: '1:1', realEventId: item.id, realCalendarId: 'cal1' });
+  const input = document.createElement('div');
+  input.setAttribute('contenteditable', 'true');
+  document.body.appendChild(input);
+  initMentionAutocomplete(input);
+  try {
+    input.textContent = typed;
+    const range = document.createRange();
+    range.setStart(input.firstChild, typed.length);
+    range.collapse(true);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    const dropdown = document.getElementById('mention-autocomplete-dropdown');
+    await vi.waitFor(() => {
+      if (dropdown.style.display === 'none' || !dropdown.querySelector('.mention-autocomplete-item')) throw new Error('no dropdown yet');
+    });
+    return [...dropdown.querySelectorAll('.mention-autocomplete-item')].map((el) => ({
+      label: el.querySelector('.mention-item-label').textContent,
+      description: el.querySelector('.mention-item-description').textContent,
+    }));
+  } finally {
+    // Leave @ mode so the next call refreshes the list, then remove the dropdown.
+    input.textContent = '';
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    cleanupMentionAutocomplete();
+  }
 }
 
 // One document for the file: the click handler arms a global click listener on
@@ -110,5 +165,38 @@ describe.each(ZONES)('with the process zone %s', (zone) => {
     const { when } = await tooltipFor(fakeEvent({ id: 't', title: 'Sync', startDate: fakeDateTime(DAY, 10), endDate: fakeDateTime(DAY, 11) }));
     const tz = getGenericTimezoneAbbr(new Date(2099, 10, 12, 10));
     expect(when).toBe(`Thursday, Nov 12${tz ? `, ${tz}` : ''}\n10:00 AM -- 11:00 AM`);
+  });
+
+  describe('the @-mention list', () => {
+    let restoreLocale;
+    afterAll(() => restoreLocale?.());
+
+    it('an all-day event is listed under its own day (en-US)', async () => {
+      restoreLocale?.();
+      restoreLocale = stubDefaultLocale('en-US');
+      const items = await mentionItemsFor(fakeEvent({ id: 'ad', title: 'Holiday', startDate: fakeDate(DAY), endDate: fakeDate(NEXT_DAY) }), '@Holi');
+      expect(items).toEqual([{ label: 'Holiday', description: 'Event • 11/12/2099' }]);
+    });
+
+    it('typing an all-day event\'s own date finds it', async () => {
+      restoreLocale?.();
+      restoreLocale = stubDefaultLocale('en-US');
+      const items = await mentionItemsFor(fakeEvent({ id: 'ad', title: 'Holiday', startDate: fakeDate(DAY), endDate: fakeDate(NEXT_DAY) }), '@11/12/2099');
+      expect(items).toEqual([{ label: 'Holiday', description: 'Event • 11/12/2099' }]);
+    });
+
+    it('an all-day event\'s day stays in the user\'s locale (en-GB)', async () => {
+      restoreLocale?.();
+      restoreLocale = stubDefaultLocale('en-GB');
+      const items = await mentionItemsFor(fakeEvent({ id: 'ad', title: 'Holiday', startDate: fakeDate(DAY), endDate: fakeDate(NEXT_DAY) }), '@Holi');
+      expect(items).toEqual([{ label: 'Holiday', description: 'Event • 12/11/2099' }]);
+    });
+
+    it('a timed event keeps its local day (unchanged)', async () => {
+      restoreLocale?.();
+      restoreLocale = stubDefaultLocale('en-US');
+      const items = await mentionItemsFor(fakeEvent({ id: 't', title: 'Sync', startDate: fakeDateTime(DAY, 10), endDate: fakeDateTime(DAY, 11) }), '@Sync');
+      expect(items).toEqual([{ label: 'Sync', description: 'Event • 11/12/2099' }]);
+    });
   });
 });
