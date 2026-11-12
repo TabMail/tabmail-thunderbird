@@ -452,6 +452,22 @@ describe('the scheduling agent is chosen as the event dialog chooses it', () => 
 // the stored series.
 describe('an occurrence edit that excludes dates is one series write', () => {
   const OTHER = ['2099-10-05T17:00:00', '2099-10-09T17:00:00'];
+  // A requested start in the stored form: 2099-10-05T17:00:00 -> 20991005T170000.
+  const ics = (iso) => String(iso).replace(/[-:]/g, '');
+
+  it('one date excluded with an occurrence edit, on the frozen calendar: one write, the update, then the cancellation of that date', async () => {
+    const { api, calendar, modifications, notices } = loadCalendarBridge(bridgeUrl, { items: [series()], memoryCalendar: true });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: OCCURRENCE, title: 'Sync, once', exdates_add: [OTHER[0]] });
+    expect(res.ok).toBe(true);
+    expect(modifications).toHaveLength(1);
+    const stored = await calendar.getItem('ser');
+    expect(stored.recurrenceInfo.getRecurrenceItems().filter((r) => r.isNegative).map((r) => r.date.toString())).toEqual([ics(OTHER[0])]);
+    expect(notices.map((n) => n.method)).toEqual(['REQUEST', 'CANCEL']);
+    expect(ics(notices[0]?.item.recurrenceId?.toString())).toBe(ics(OCCURRENCE));
+    expect(notices[1]?.cancelled).toBe(ics(OTHER[0]));
+    expect(notices.every((n) => n.built === 1 && n.sent === true)).toBe(true);
+    expect(res.invitations).toEqual({ ok: true });
+  });
   const edit = (api) => api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: OCCURRENCE, title: 'Sync, once', exdates_add: OTHER });
 
   it('the stored series has the occurrence change and every excluded date, from one write', async () => {
@@ -463,11 +479,15 @@ describe('an occurrence edit that excludes dates is one series write', () => {
     const ids = stored.recurrenceInfo.getExceptionIds();
     expect(ids).toHaveLength(1);
     expect(stored.recurrenceInfo.getExceptionFor(ids[0]).title).toBe('Sync, once');
+    expect(ics(ids[0].toString())).toBe(ics(OCCURRENCE));
     const excluded = stored.recurrenceInfo.getRecurrenceItems().filter((r) => r.isNegative).map((r) => r.date.toString());
-    expect(excluded).toHaveLength(2);
-    // The occurrence's update, then one cancellation per excluded date.
+    expect(excluded.sort()).toEqual(OTHER.map(ics).sort());
+    // The occurrence's update (for that occurrence), then one cancellation
+    // per excluded date, exactly the dates asked for.
     expect(notices.map((n) => n.method)).toEqual(['REQUEST', 'CANCEL', 'CANCEL']);
-    expect(new Set(notices.slice(1).map((n) => n.cancelled)).size).toBe(2);
+    expect(ics(notices[0]?.item.recurrenceId?.toString())).toBe(ics(OCCURRENCE));
+    expect(notices[0]?.item.title).toBe('Sync, once');
+    expect(notices.slice(1).map((n) => n.cancelled).sort()).toEqual(OTHER.map(ics).sort());
     expect(notices.every((n) => n.built === 1 && n.sent === true)).toBe(true);
     expect(res.invitations).toEqual({ ok: true });
   });
