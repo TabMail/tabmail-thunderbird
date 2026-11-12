@@ -314,6 +314,54 @@ describe('Korean localized sender patterns', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Japanese Outlook header block (差出人 / 送信 / 宛先 / 件名)
+// ---------------------------------------------------------------------------
+describe('Japanese Outlook reply header', () => {
+  const reply = 'Thanks, that works for us.\n\nBest,\n Alex';
+  const sentLine = () => {
+    const d = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    return `送信: ${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日 9:30`;
+  };
+  const block = (colon) => [
+    `差出人${colon}Sender Name <sender@example.com>`,
+    sentLine().replace(':', colon),
+    `宛先${colon}Recipient One <one@example.com>; Recipient Two <two@example.com>`,
+    'Cc: Recipient Three <three@example.com>',
+    `件名${colon}Re: Example subject`,
+    '',
+    'Hi Alex,',
+    'Earlier message body.',
+  ].join('\n');
+
+  it('starts the quote at 差出人: with no dash separator (ASCII colon)', () => {
+    const text = `${reply}\n\n${block(': ')}`;
+    const { main, quote } = QD.splitPlainTextForQuote(text);
+    expect(main.trim()).toBe(reply);
+    expect(quote.trimStart().startsWith('差出人')).toBe(true);
+    expect(QD.findBoundaryInPlainText(text).type).toBe('localized-sender');
+  });
+
+  it('accepts the full-width colon with surrounding spaces', () => {
+    const text = `${reply}\n\n${block(' ： ')}`;
+    const { main, quote } = QD.splitPlainTextForQuote(text);
+    expect(main.trim()).toBe(reply);
+    expect(quote.trimStart().startsWith('差出人')).toBe(true);
+  });
+
+  it('starts the quote at a dash separator followed by the Japanese block', () => {
+    const text = `${reply}\n\n${'-'.repeat(72)}\n${block('：')}`;
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result.type).toBe('dash-separator');
+    expect(QD.splitPlainTextForQuote(text).main.trim()).toBe(reply);
+  });
+
+  it('a lone 件名: line in the body is not a boundary', () => {
+    const text = 'Please use this subject line.\n件名: Example subject\nThanks.';
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Korean attribution pattern
 // ---------------------------------------------------------------------------
 describe('Korean attribution pattern', () => {

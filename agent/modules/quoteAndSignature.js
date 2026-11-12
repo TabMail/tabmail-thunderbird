@@ -130,7 +130,7 @@
     {
       pattern: /^-{10,}\s*$/,
       type: "dash-separator",
-      comment: "Long dash line (72+ dashes) followed by From:/보낸 사람:/发件人: etc — Outlook/Korean/Chinese clients",
+      comment: "Long dash line (72+ dashes) followed by From:/보낸 사람:/发件人:/差出人: etc — Outlook/Korean/Chinese/Japanese clients",
       eatBlankLinesBefore: 1,
       lookahead: [
         /^\*?From\s*:\*?\s*/i,                    // English: From:
@@ -139,6 +139,8 @@
         /^\*?(받는\s*사람|제목)\s*:\*?\s*/i,       // Korean: 받는 사람: / 제목:
         /^\*?(发件人|日期)\s*:\*?\s*/,             // Chinese: 发件人: (From) / 日期: (Date)
         /^\*?(收件人|主题)\s*:\*?\s*/,             // Chinese: 收件人: (To) / 主题: (Subject)
+        /^\*?(差出人|送信日時|送信)\s*[:：]\*?\s*/,  // Japanese: 差出人: (From) / 送信: or 送信日時: (Sent); ASCII or full-width colon
+        /^\*?(宛先|件名)\s*[:：]\*?\s*/,           // Japanese: 宛先: (To) / 件名: (Subject)
       ],
     },
 
@@ -161,6 +163,12 @@
       pattern: /^\*?发件人\s*:\*?\s*/,
       type: "localized-sender",
       comment: "Chinese sender: 发件人: (standalone, no preceding dash line)",
+      eatBlankLinesBefore: 0,
+    },
+    {
+      pattern: /^\*?差出人\s*[:：]\*?\s*/,
+      type: "localized-sender",
+      comment: "Japanese Outlook sender: 差出人: (standalone, no preceding dash line; ASCII or full-width colon)",
       eatBlankLinesBefore: 0,
     },
     {
