@@ -26,6 +26,8 @@ import { log, saveChatLog } from "../../agent/modules/utils.js";
 
 import { createNewAgentBubble } from "../chat.js";
 
+const FSM_STATES_NOT_RECORDED_AS_PREV = ["plan_next_action", "exec_success", "exec_fail"];
+
 // -------------------------------------------------------------
 // executeAgentAction – public dispatcher
 // -------------------------------------------------------------
@@ -39,10 +41,13 @@ export async function executeAgentAction() {
     console.log(`[TMDBG Core] - State: ${ctx.state}`);
   }
 
-  // Update the previous state, except for plan_next_action,
-  // which is not a real state but a pseudo-state required to handle the user
-  // input and plan the next action.
-  if (!["plan_next_action"].includes(ctx.state)) {
+  // Update the previous state, except for:
+  // - plan_next_action, a pseudo-state that handles the user input and plans
+  //   the next action;
+  // - the terminal states exec_success / exec_fail, whose completion handler
+  //   (tool completeExecution) needs the state the workflow was in BEFORE it
+  //   terminated, e.g. "calendar_event_edit_exec", to report the tool's result.
+  if (!FSM_STATES_NOT_RECORDED_AS_PREV.includes(ctx.state)) {
     try {
       const pid = ctx.activePid || ctx.activeToolCallId || 0;
       if (pid && ctx.fsmSessions[pid]) {
@@ -223,8 +228,8 @@ export async function runStatePlanNextAction() {
     ctx.state = "exec_fail";
     try { ctx.fsmSessions[pid].failReason = "FSM planner returned no actionable state"; } catch (_) {}
   }
-  ctx.fsmSessions[pid].fsmPrevState = ctx.state;
-
+  // executeAgentAction records ctx.state as the previous state (unless it is
+  // terminal), so the planner does not record it here.
   executeAgentAction();
 }
 

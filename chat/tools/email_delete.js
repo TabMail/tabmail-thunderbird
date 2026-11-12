@@ -192,6 +192,7 @@ async function _runDeleteEmails(args = {}, options = {}) {
 // FSM tool completion handler – optional, report simple outcome
 export async function completeExecution(currentState, prevState) {
   const pid = ctx.activePid || ctx.activeToolCallId || 0;
+  const sess = pid && ctx.fsmSessions ? ctx.fsmSessions[pid] : null;
   const failReason =
     (pid &&
       ctx.fsmSessions &&
@@ -203,9 +204,13 @@ export async function completeExecution(currentState, prevState) {
     return `Failed: ${failReason}`;
   }
   // If previous state was email_delete_execute, consider success
-  if (prevState === "email_delete_execute") {
-    log(`[TMDBG Tools] email_delete.completeExecution: deleted via FSM`);
-    return "Selected emails deleted.";
+  if (prevState === "email_delete_execute" && sess?.deleteResult) {
+    const { requested, deleted, notMoved = [] } = sess.deleteResult;
+    log(`[TMDBG Tools] email_delete.completeExecution: deleted ${deleted} of ${requested} via FSM`);
+    if (deleted === requested) {
+      return deleted === 1 ? "Selected email deleted." : `All ${requested} selected emails deleted.`;
+    }
+    return `Deleted ${deleted} of ${requested} selected emails. Not deleted (unchanged): ${notMoved.join(", ")}.`;
   }
   log(`[TMDBG Tools] email_delete.completeExecution: completed`);
   return "Delete workflow completed.";

@@ -122,6 +122,18 @@ export async function runStateArchiveListEmails() {
     );
   }
 
+  // One entry per message: a repeated id (e.g. the same unique_id sent twice)
+  // would otherwise be moved once and then reported as not moved.
+  {
+    const seen = new Set();
+    archiveContextArray = archiveContextArray.filter((e) => {
+      const key = e.uniqueId || e.internalId;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   let assistantText = "";
   if (archiveContextArray.length > 1) {
     assistantText = `${archiveContextArray.length} messages to archive.\n`;
@@ -234,57 +246,63 @@ export async function runStateArchiveExecute() {
   let archivedCount = 0;
   const archiveCache = new Map();
 
+  const notMoved = [];
   for (const email of ctx.selectedEmailList) {
+    const countBefore = archivedCount;
     try {
-      // Resolve uniqueId to internal weID if needed
-      let msgId = email.messageId; // Backward compatibility
-      if (!msgId && email.uniqueId) {
-        const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
-        const resolved = await resolveUniqueMessageKey(email.uniqueId);
-        if (!resolved) {
-          log(
-            `[ArchiveExecute] Failed to resolve uniqueId '${email.uniqueId}' to one live message`,
-            "warn"
-          );
+      try {
+        // Resolve uniqueId to internal weID if needed
+        let msgId = email.messageId; // Backward compatibility
+        if (!msgId && email.uniqueId) {
+          const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+          const resolved = await resolveUniqueMessageKey(email.uniqueId);
+          if (!resolved) {
+            log(
+              `[ArchiveExecute] Failed to resolve uniqueId '${email.uniqueId}' to one live message`,
+              "warn"
+            );
+            continue;
+          }
+          msgId = resolved.weID;
+        }
+
+        const header = await browser.messages.get(msgId);
+        if (!header) {
+          log(`[ArchiveExecute] No header for msgId ${msgId}`, "warn");
           continue;
         }
-        msgId = resolved.weID;
-      }
 
-      const header = await browser.messages.get(msgId);
-      if (!header) {
-        log(`[ArchiveExecute] No header for msgId ${msgId}`, "warn");
-        continue;
-      }
+        const acctId = header.folder?.accountId;
+        let archiveFolder = archiveCache.get(acctId);
+        if (archiveFolder === undefined) {
+          archiveFolder = await getArchiveFolderForHeader(header);
+          archiveCache.set(acctId, archiveFolder || null);
+        }
 
-      const acctId = header.folder?.accountId;
-      let archiveFolder = archiveCache.get(acctId);
-      if (archiveFolder === undefined) {
-        archiveFolder = await getArchiveFolderForHeader(header);
-        archiveCache.set(acctId, archiveFolder || null);
-      }
-
-      if (archiveFolder) {
-        await browser.messages.move([msgId], archiveFolder.id, {
-          isUserAction: true,
-        });
+        if (archiveFolder) {
+          await browser.messages.move([msgId], archiveFolder.id, {
+            isUserAction: true,
+          });
+          log(
+            `[ArchiveExecute] Moved message ${msgId} to Archive ${archiveFolder.path}.`
+          );
+          archivedCount++;
+        } else {
+          log(
+            `[ArchiveExecute] Archive folder not found for account ${acctId}; skipping ${msgId}.`,
+            "warn"
+          );
+        }
+      } catch (err) {
         log(
-          `[ArchiveExecute] Moved message ${msgId} to Archive ${archiveFolder.path}.`
-        );
-        archivedCount++;
-      } else {
-        log(
-          `[ArchiveExecute] Archive folder not found for account ${acctId}; skipping ${msgId}.`,
-          "warn"
+          `[ArchiveExecute] Error processing email (uniqueId: ${
+            email.uniqueId || "unknown"
+          }, msgId: ${email.messageId || "unknown"}): ${err}`,
+          "error"
         );
       }
-    } catch (err) {
-      log(
-        `[ArchiveExecute] Error processing email (uniqueId: ${
-          email.uniqueId || "unknown"
-        }, msgId: ${email.messageId || "unknown"}): ${err}`,
-        "error"
-      );
+    } finally {
+      if (archivedCount === countBefore) notMoved.push(email.uniqueId || email.messageId || "unknown");
     }
   }
 
@@ -297,7 +315,22 @@ export async function runStateArchiveExecute() {
       : `Archived ${archivedCount} emails.`;
   streamText(agentBubble, resultText);
 
-  ctx.state = "exec_success";
+  // Record what actually moved so completeExecution reports it truthfully;
+  // a run where nothing moved is a failure, not a success.
+  const requestedCount = ctx.selectedEmailList.length;
+  const execPid = ctx.activePid || ctx.activeToolCallId || 0;
+  const execSess = execPid ? ctx.fsmSessions[execPid] : null;
+  if (execSess) execSess.archiveResult = { requested: requestedCount, archived: archivedCount, notMoved };
+  if (archivedCount === 0) {
+    if (execSess) {
+      execSess.failReason = requestedCount === 0
+        ? "No emails were selected."
+        : `None of the ${requestedCount} selected email(s) could be archived: ${notMoved.join(", ")}.`;
+    }
+    ctx.state = "exec_fail";
+  } else {
+    ctx.state = "exec_success";
+  }
   const core = await import("./core.js");
   await core.executeAgentAction();
 }
