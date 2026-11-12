@@ -21,13 +21,18 @@ vi.mock('../agent/modules/utils.js', async importOriginal => ({
   getUniqueMessageKey: vi.fn(async () => 'account1:/INBOX:a@example.com'),
 }));
 
-vi.mock('../chat/modules/icsParser.js', () => ({
-  extractIcsFromParts: vi.fn(async () => []),
-  formatIcsAttachmentsAsString: vi.fn(() => ''),
-}));
+vi.mock('../chat/modules/icsParser.js', async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    extractIcsFromParts: vi.fn(async () => []),
+    formatIcsAttachmentsAsString: vi.fn(() => ''),
+    encodeStoredIcs: real.encodeStoredIcs,
+    storedIcsParts: real.storedIcsParts,
+  };
+});
 
 const { log, safeGetFull } = await import('../agent/modules/utils.js');
-const { extractIcsFromParts, formatIcsAttachmentsAsString } = await import('../chat/modules/icsParser.js');
+const { encodeStoredIcs, extractIcsFromParts, formatIcsAttachmentsAsString } = await import('../chat/modules/icsParser.js');
 const { run } = await import('../chat/tools/email_read.js');
 
 // The shape Thunderbird 157's messages.get returns: there is no hasAttachments property.
@@ -189,10 +194,13 @@ describe('email_read replied status', () => {
 describe('email_read calendar invites', () => {
   const icsText = 'ICS Attachments (parsed):\nICS[1] filename=\'invite.ics\' contentType=\'text/calendar\' part=\'1.2\'';
 
-  it('prints the invites the index stored when the body comes from the index', async () => {
-    safeGetFull.mockResolvedValue({ __tmSynthetic: true, body: 'indexed body', parts: [], parsedIcsAttachments: icsText });
+  it('formats the invites the index stored when the body comes from the index', async () => {
+    const stored = [{ filename: 'invite.ics', contentType: 'text/calendar', partName: '1.2', text: 'BEGIN:VCALENDAR' }];
+    safeGetFull.mockResolvedValue({ __tmSynthetic: true, body: 'indexed body', parts: [], parsedIcsAttachments: encodeStoredIcs(stored) });
     getHasAttachmentBulk.mockResolvedValue([true]);
+    formatIcsAttachmentsAsString.mockReturnValueOnce(icsText);
     const lines = await readLines();
+    expect(formatIcsAttachmentsAsString).toHaveBeenCalledWith(stored);
     expect(lines.slice(-2)).toEqual(icsText.split('\n'));
     expect(lines.indexOf('ICS Attachments (parsed):')).toBeGreaterThan(lines.indexOf('body:'));
     expect(extractIcsFromParts).not.toHaveBeenCalled();

@@ -35,7 +35,7 @@ vi.mock('../agent/modules/utils.js', async importOriginal => ({
 vi.mock('../agent/modules/folderUtils.js', () => ({ getAllFoldersForAccount: vi.fn(async () => []) }));
 vi.mock('../agent/modules/inboxContext.js', () => ({ getInboxForAccount: vi.fn(async () => null) }));
 vi.mock('../agent/modules/onMoved.js', () => ({ sanitizeMessageTags: vi.fn(async () => ({ stripped: false })) }));
-vi.mock('../chat/modules/icsParser.js', () => ({ extractIcsFromParts: vi.fn(async () => []), formatIcsAttachmentsAsString: vi.fn(() => '') }));
+vi.mock('../chat/modules/icsParser.js', () => ({ extractIcsFromParts: vi.fn(async () => []), encodeStoredIcs: vi.fn(() => ''), storedIcsParts: vi.fn(() => []) }));
 
 const storageData = {};
 globalThis.browser = {

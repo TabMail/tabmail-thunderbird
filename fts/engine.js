@@ -170,6 +170,12 @@ function attachCommandInterface() {
             case "getAttachmentFlags":
               sendResponse(await ftsSearch.getAttachmentFlags(msg.msgIds || []));
               return;
+            case "rewriteStoredIcs": {
+              const { rewriteStoredIcs } = await import("./indexer.js");
+              const { msgId, folderId, weId, parsedIcsAttachments } = msg;
+              sendResponse(await rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments }));
+              return;
+            }
             case "getMessageByMsgId": {
               const { msgId } = msg;
               try {

@@ -15,7 +15,9 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 
 // Mock helpers.js — formatTimestampForAgent and toIsoNoMs
-vi.mock('../chat/modules/helpers.js', () => ({
+// allDayLastDay is the real one: the parser's all-day last day comes from it.
+vi.mock('../chat/modules/helpers.js', async (importOriginal) => ({
+  allDayLastDay: (await importOriginal()).allDayLastDay,
   formatTimestampForAgent: vi.fn((d) => {
     if (!(d instanceof Date) || isNaN(d.getTime())) return '';
     return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -130,12 +132,12 @@ describe('TB-101: Parse all-day event (DATE format)', () => {
     expect(events).toHaveLength(1);
     const ev = events[0];
     expect(ev.title).toBe('Company Holiday');
-    // All-day: DTSTART is midnight UTC on 2026-03-15
-    expect(ev.start.start_utc).toContain('2026-03-15');
-    // DTEND is midnight UTC on 2026-03-16 (exclusive end per iCal spec)
-    expect(ev.end.end_utc).toContain('2026-03-16');
-    // Duration = 1 day = 1440 minutes
-    expect(ev.duration_minutes).toBe(1440);
+    // All-day: kept as dates, never instants (#412). DTEND is exclusive, so the last day is the start.
+    expect(ev.all_day).toBe(true);
+    expect(ev.start).toEqual({ date: '2026-03-15' });
+    expect(ev.end).toEqual({ last_date: '2026-03-15' });
+    expect(ev.when).toBe('all day, Sunday 2026/03/15');
+    expect(ev.duration_minutes).toBeUndefined();
   });
 });
 
@@ -1430,19 +1432,39 @@ describe('Additional branch coverage', () => {
     expect(events[0].notes_brief).not.toContain('<b>');
   });
 
-  it('DTSTART all-day date with TZID (components path)', () => {
-    // VALUE=DATE gives components { y, m, d } and utcMs (from Date.UTC)
-    // This tests the date-only path which returns utcMs directly
+  it('DTSTART all-day date with TZID stays a date, never an instant in that zone', () => {
     const ics = wrapIcs(simpleVevent([
       'UID:allday-tz@example.com',
       'SUMMARY:All Day TZ',
-      'DTSTART;VALUE=DATE:20260315',
-      'DTEND;VALUE=DATE:20260316',
+      'DTSTART;VALUE=DATE;TZID=Pacific/Auckland:20260315',
+      'DTEND;VALUE=DATE;TZID=Pacific/Auckland:20260316',
     ]));
 
     const events = parseIcsToEvents(ics);
-    expect(events[0].start.start_utc).toContain('2026-03-15');
-    expect(events[0].end.end_utc).toContain('2026-03-16');
+    expect(events[0].all_day).toBe(true);
+    expect(events[0].start).toEqual({ date: '2026-03-15' });
+    expect(events[0].end).toEqual({ last_date: '2026-03-15' });
+    expect(events[0].parse_warnings.join(' ')).not.toMatch(/Failed to resolve/);
+  });
+
+  it('all-day DURATION of several days names the last day; a multi-day DTEND too', () => {
+    const byDuration = parseIcsToEvents(wrapIcs(simpleVevent([
+      'UID:allday-dur@example.com', 'SUMMARY:Trip', 'DTSTART;VALUE=DATE:20991230', 'DURATION:P3D',
+    ])))[0];
+    expect(byDuration.when).toBe('all day, Wednesday 2099/12/30 to Friday 2100/01/01');
+    const sameEnd = parseIcsToEvents(wrapIcs(simpleVevent([
+      'UID:allday-same@example.com', 'SUMMARY:Day', 'DTSTART;VALUE=DATE:20991230', 'DTEND;VALUE=DATE:20991230',
+    ])))[0];
+    expect(sameEnd.end).toEqual({ last_date: '2099-12-30' });
+  });
+
+  it('all-day DURATION:P1W lasts seven days: the last day is the start + 6', () => {
+    const ev = parseIcsToEvents(wrapIcs(simpleVevent([
+      'UID:allday-week@example.com', 'SUMMARY:Week', 'DTSTART;VALUE=DATE:20991230', 'DURATION:P1W',
+    ])))[0];
+    expect(ev.all_day).toBe(true);
+    expect(ev.start).toEqual({ date: '2099-12-30' });
+    expect(ev.end).toEqual({ last_date: '2100-01-05' });
   });
 
   it('attendees with non-array value defaults to empty array', () => {

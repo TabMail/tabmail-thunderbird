@@ -60,6 +60,8 @@ vi.mock('../chat/modules/helpers.js', () => ({
 vi.mock('../chat/modules/icsParser.js', () => ({
   extractIcsFromParts: vi.fn(async () => []),
   formatIcsAttachmentsAsString: vi.fn(() => ''),
+  encodeStoredIcs: vi.fn(() => ''),
+  storedIcsParts: vi.fn(() => []),
 }));
 
 vi.mock('../chat/fsm/core.js', () => ({

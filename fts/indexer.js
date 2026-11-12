@@ -15,7 +15,7 @@ import {
   log,
   safeGetFull,
 } from "../agent/modules/utils.js";
-import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
+import { encodeStoredIcs, extractIcsFromParts, storedIcsParts } from "../chat/modules/icsParser.js";
 import { getAttachmentRepairedAccounts, markAttachmentAccountsRepaired } from "./attachmentFlags.js";
 import { extractPlainText } from "./bodyExtract.js";
 import { makeFolderMembershipId } from "./folderMembershipIdentity.js";
@@ -189,6 +189,21 @@ export async function buildBatchHeader(messages) {
   return rows;
 }
 
+// The invite value to write again for a row whose body came from the index. A stored invite
+// (or "") is kept as it is; an old formatted one is re-derived from the message itself, and kept
+// as it was when the message cannot be read (offline): email_read treats it as absent and
+// re-derives it again later.
+async function storedIcsForRewrite(stored, message) {
+  if (storedIcsParts(stored) !== null) return stored || "";
+  try {
+    const full = await safeGetFull(message.id, message, { skipIndex: true });
+    return encodeStoredIcs(await extractIcsFromParts(full, message.id));
+  } catch (e) {
+    log(`[TMDBG FTS] Old stored invite for message ${message.id} not re-derived: ${e}`, "warn");
+    return stored;
+  }
+}
+
 // Populate body text for messages that need indexing (all messages in the batch)
 export async function populateBatchBody(rows) {
   const successfulRows = [];
@@ -203,7 +218,7 @@ export async function populateBatchBody(rows) {
       if (full?.__tmSynthetic) {
         // FTS already has this body as plain text — use directly, skip MIME extraction
         row.body = full.body || "";
-        row.parsedIcsAttachments = full.parsedIcsAttachments || "";
+        row.parsedIcsAttachments = await storedIcsForRewrite(full.parsedIcsAttachments, row._originalMessage);
       } else {
         const body = await extractPlainText(full, row._originalMessage.id);
         row.body = body || "";
@@ -218,8 +233,7 @@ export async function populateBatchBody(rows) {
 
         // Extract and parse ICS attachments for needed messages
         const icsAttachments = await extractIcsFromParts(full, row._originalMessage.id);
-        const parsedIcsAttachments = formatIcsAttachmentsAsString(icsAttachments);
-        row.parsedIcsAttachments = parsedIcsAttachments || "";
+        row.parsedIcsAttachments = encodeStoredIcs(icsAttachments);
       }
 
       // Clean up reference to original message
@@ -317,6 +331,12 @@ async function readdStaleAttachmentRows(ftsSearch, rows) {
     });
   }
   if (stale.length === 0) return 0;
+  return readdRows(ftsSearch, epoch, stale);
+}
+
+// Writes `rows` again over their stored copies: the native index never updates a row, so each
+// is removed and re-added, under the membership fence taken at `epoch` (before the reads).
+async function readdRows(ftsSearch, epoch, stale) {
   return withFtsMembershipFence(epoch, async (fenceToken) => {
     // The re-add is sent even when the remove call fails: a remove that timed out (the helper's
     // writer can be busy converting a shard) still runs later, and the helper runs writes in
@@ -335,6 +355,50 @@ async function readdStaleAttachmentRows(ftsSearch, rows) {
     }
     return stale.length;
   }, { mutation: true });
+}
+
+/**
+ * Rewrites one indexed message's stored invites (email_read, after re-deriving an old formatted
+ * value from the message). Every other stored column is written again as stored. The native index
+ * never updates a row, so the row is removed and re-added; when the re-add fails after the remove
+ * went through (the row is gone), the message (WebExtension id `weId`) is queued once through the
+ * incremental indexer's new-message path, so it is back in the index this session, indexed from
+ * the message itself. That is tried once; if it fails, the message stays out of the index until the
+ * startup fingerprint check queues it (ADR-032).
+ * @returns {Promise<number>} rows rewritten (0 when the message is no longer indexed)
+ */
+export async function rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments }) {
+  const epoch = getFtsMembershipEpoch();
+  const stored = await ftsSearch.getMessageByMsgId(msgId);
+  if (!stored) return 0;
+  try {
+    return await readdRows(ftsSearch, epoch, [{
+      msgId,
+      folderId,
+      subject: stored.subject,
+      from_: stored.from_,
+      to_: stored.to_,
+      cc: stored.cc,
+      bcc: stored.bcc,
+      body: stored.body,
+      attachmentNames: stored.attachmentNames,
+      dateMs: stored.dateMs,
+      hasAttachments: !!stored.hasAttachments,
+      parsedIcsAttachments: String(parsedIcsAttachments || ""),
+    }]);
+  } catch (e) {
+    if (!(await ftsSearch.getMessageByMsgId(msgId))) {
+      try {
+        const header = await browser.messages.get(weId);
+        const { onNewMailReceived } = await import("./incrementalIndexer.js");
+        onNewMailReceived(header.folder, [header]);
+        log(`[TMDBG FTS] rewriteStoredIcs: row removed but not re-added; requested re-index of ${msgId}`, "warn");
+      } catch (eQueue) {
+        log(`[TMDBG FTS] rewriteStoredIcs: could not request re-index of ${msgId}: ${eQueue}`, "warn");
+      }
+    }
+    throw e;
+  }
 }
 
 /**

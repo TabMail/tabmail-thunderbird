@@ -173,6 +173,10 @@
 
 - **[Full ADR](Companion/Decisions/Active/adr-031-series-time-edits-wall-clock-length.md)** — 2026-11-11 (#369, #365, #330, #368, #326, series halves of #352/#317): series and split time edits go through `resolveEditTimes` (named occurrence as Thunderbird builds it; the series' own start at a moved occurrence is no change; a change of the series' kind named at an occurrence already of that kind reads the slot, a change of the named occurrence's own kind reads it, and a change of kind needs both times, #288/#349), one no-change rule `timesLeft` on every scope, one writer `writeSeriesTimes`; length `W` is wall-clock, stored end `afterElapsed`, changed occurrences of the series' kind take own start + `W` (`applyNewLength`); a new start resets changed occurrences and excluded dates like Google's "All events" (`resetChangedOccurrences`, card note); the only cross-zone primitive is `atInstantInFrameOf` (via `intoFrameOf`, null = refusal), no `getInTimezone` in any function that reads or writes an edit's times (the set fence `calendarSeriesTimeFence` owns); the RECURRENCE-ID conversions and the all-day UNTIL day in `asAllDayItem` remain, a separate known limit (#367); the check returns `changes`/`times`/`resetsChangedOccurrences`, card time lines from `times`, `changes: false` = "Nothing changed". Deleted `applyEditToNamedOccurrence` and keep-my-edits.
 
+## ADR-032: The Search Index Stores an Email's Calendar Invites Raw; email_read Formats Them When It Reads
+
+- **[Full ADR](Companion/Decisions/Active/adr-032-index-stores-raw-invites-format-at-read.md)** — 2026-11-12 (#412): `message_meta.parsedIcsAttachments` holds the raw invite parts (`encodeStoredIcs`: `""` or JSON `{"tabmailStoredIcs":1,"parts":[...]}`, full length), never formatted text; `email_read` formats at read with the ICS parser; an old formatted value (`storedIcsParts` null) is absent, re-derived through `safeGetFull(..., { skipIndex: true })` and written back (`rewriteStoredIcs`, remove + re-add under the fence); empty = no invite, no download; offline = body without the invite, no error, never the old text; native-fts unchanged.
+
 ---
 
 ## Template for New Decisions

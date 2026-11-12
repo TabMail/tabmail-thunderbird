@@ -6,9 +6,42 @@
 
 import { hasPaperclipAttachment, listAttachmentsFromFull } from "../../agent/modules/attachmentParts.js";
 import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, log, resolveUniqueMessageKey, safeGetFull } from "../../agent/modules/utils.js";
-import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../modules/icsParser.js";
+import { makeFolderMembershipId } from "../../fts/folderMembershipIdentity.js";
+import { ftsRequest } from "../../fts/ftsRequest.js";
+import { encodeStoredIcs, extractIcsFromParts, formatIcsAttachmentsAsString, storedIcsParts } from "../modules/icsParser.js";
 
 
+
+// The invite text for a body the index served. A stored invite is formatted as it is read. An
+// old formatted value (earlier versions stored the parser's output, which named an all-day day
+// a day early west of UTC) is never shown: the invites are read again from the message itself and
+// the raw parts written back to the index. When the message cannot be read (offline, not kept on
+// this computer), the invite is left out.
+async function indexedIcsText(stored, header, internalId) {
+  const parts = storedIcsParts(stored);
+  if (parts !== null) return formatIcsAttachmentsAsString(parts);
+  let icsAttachments;
+  try {
+    const full = await safeGetFull(internalId, header, { skipIndex: true });
+    icsAttachments = await extractIcsFromParts(full, internalId);
+  } catch (e) {
+    log(`[TMDBG Tools] email_read: old stored invite not re-derived (message unreadable): ${e}`, "warn");
+    return "";
+  }
+  try {
+    const msgId = await getUniqueMessageKey(header);
+    const folderId = makeFolderMembershipId(String(header.folder?.accountId || ""), String(header.folder?.path || ""));
+    const parsedIcsAttachments = encodeStoredIcs(icsAttachments);
+    const weId = internalId;
+    await ftsRequest("rewriteStoredIcs", { msgId, folderId, weId, parsedIcsAttachments }, async ({ ftsSearch }) => {
+      const { rewriteStoredIcs } = await import("../../fts/indexer.js");
+      return rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments });
+    });
+  } catch (e) {
+    log(`[TMDBG Tools] email_read: stored invite write-back failed: ${e}`, "warn");
+  }
+  return formatIcsAttachmentsAsString(icsAttachments);
+}
 
 export async function run(args = {}, options = {}) {
   try {
@@ -57,9 +90,9 @@ export async function run(args = {}, options = {}) {
       log(`[TMDBG Tools] email_read: Body extracted from safeGetFull (length: ${body.length})`);
       
       if (full?.__tmSynthetic) {
-        // A body served from the FTS index has no MIME parts to scan; the indexer parsed the
-        // calendar invites when it downloaded the message, and the index returns that text.
-        parsedIcs = full.parsedIcsAttachments || "";
+        // A body served from the FTS index has no MIME parts to scan; the index keeps the raw
+        // invites the indexer took from the downloaded message, formatted here.
+        parsedIcs = await indexedIcsText(full.parsedIcsAttachments, header, internalId);
         log(`[TMDBG Tools] email_read: ICS text from the FTS index (length: ${parsedIcs.length})`);
       } else {
         // Extract ICS attachments while we have the full message

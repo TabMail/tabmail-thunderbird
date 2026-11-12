@@ -153,6 +153,22 @@ UNTIL's day, the rewritten one keeps it)
   `test/eventLinkAllDayTooltip.test.js` (the real bridge, the real markdown and mentionAutocomplete
   modules, three zones west of UTC and Auckland).
 
+## Invitations in email (#412)
+
+`email_read` (and the FTS indexer, which stores the same text) summarises a `text/calendar` part with
+`chat/modules/icsParser.js`. A `DTSTART;VALUE=DATE` is never turned into an instant there:
+`parseDateTimeBasic` returns only its digits (`utcMs: null`), and the event is emitted with
+`all_day: true`, `start.date`, `end.last_date` (the day before the exclusive DTEND, never before the
+start; a day DURATION counts the same way) and `when: "all day, <Weekday> YYYY/MM/DD[ to ...]"`,
+weekday from `formatGregorianDay`. Before, UTC midnight printed in the user's zone named the previous
+day west of UTC with clock times. The index stores the raw invite parts and `email_read` formats them as it reads (ADR-032), so this
+fix reaches every indexed message. A row indexed before stored the formatted text; it is never shown:
+`email_read` re-derives the invite from the message (`safeGetFull` `skipIndex`) and writes the raw
+parts back, and offline shows the body without the invite. (Superseded wording, 2026-11-12: "rows
+indexed before the fix keep the old text in `message_meta.parsedIcsAttachments`, `email_read` serves
+that copy, and a reindex rewrites the same stored text".)
+Pinned by `test/emailReadAllDayInvite.test.js` (real email_read + parser, LA/Honolulu/New York/Auckland).
+
 ## The second filter that dropped the item
 
 `queryCalendarItemsInternal` asked the provider for items in `[start, end)` and then re-filtered
