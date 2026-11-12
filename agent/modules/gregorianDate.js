@@ -31,8 +31,8 @@ export function formatGregorianDate(date, options) {
  * whatever zone the caller or the process is in. The day is formatted as
  * UTC midnight in UTC, so no zone conversion can move it; a `timeZone` in
  * `options` is overridden. Turning a day into an instant and formatting it in
- * the user's zone names the next day at UTC+12 and later (noon UTC there is
- * already tomorrow) or the previous day west of UTC.
+ * the user's zone can name another day: noon UTC names the next day at UTC+12
+ * and later, and midnight UTC names the previous day west of UTC.
  * @param {string} dayKey - "YYYY-MM-DD"
  * @param {Intl.DateTimeFormatOptions} options - the date fields to print
  * @returns {string}

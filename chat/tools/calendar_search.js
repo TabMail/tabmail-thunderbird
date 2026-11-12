@@ -156,7 +156,9 @@ export async function run(args = {}, options = {}) {
         return { error: "calendar bridge not available" };
       }
       log(`[TMDBG Tools] calendar_search: using tmCalendar experiment bridge (new session)`);
-      const { days, order } = await buildCalendarSummary(args);
+      const summary = await buildCalendarSummary(args);
+      if (summary.error) return { error: summary.error };
+      const { days, order } = summary;
       const flat = [];
       // Flatten per-day payloads for pagination stability
       for (const dayKey of order) {
@@ -212,7 +214,16 @@ async function buildCalendarSummary(args) {
   // Step 1: Get user timezone for consistent normalization
   const userTz = (typeof args?.timezone === "string" && args.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   log(`[TMDBG CalendarSummary] Using user timezone: ${userTz}`);
-  
+  // The model's `timezone` is free text. A zone Intl rejects would make every
+  // instant below fall back to "now" and give an empty or wrong listing, so it
+  // is an error the model can correct, returned before the session is cached.
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: userTz });
+  } catch (e) {
+    log(`[TMDBG CalendarSummary] Unknown time zone ${userTz}: ${e}`, "error");
+    return { error: `Unknown time zone "${userTz}". Use an IANA zone such as "Pacific/Auckland".` };
+  }
+
   // Step 2: Normalize date range inputs
   const { fromIso, toIso } = resolveDateRange(args);
   const normalizedFromDate = normalizeTimeInput(fromIso, userTz);
