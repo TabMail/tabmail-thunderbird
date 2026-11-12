@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ctx, initFsmSession } from "../modules/context.js";
+import { guestNoticeResultText } from "../modules/calendarGuestNotice.js";
 import { toNaiveIso, toIsoNoMs } from "../modules/helpers.js";
 import { recurrenceArgError } from "../modules/recurrence.js";
 
@@ -313,12 +314,12 @@ export async function completeExecution(currentState, prevState) {
   
   if (prevState === "calendar_event_create_exec" && sess?.createResult) {
     log(`[TMDBG Tools] calendar_event_create.completeExecution: created event successfully`);
+    const guestNotice = guestNoticeResultText(sess.createResult.invitations);
     return {
-      result: "Calendar event created successfully.",
+      result: guestNotice ? `Calendar event created successfully. ${guestNotice}` : "Calendar event created successfully.",
       event_id: sess.createResult.event_id,
       event_title: sess.createResult.event_title,
       calendar_id: sess.createResult.calendar_id,
-      invitations: sess.createResult.invitations,
     };
   }
   

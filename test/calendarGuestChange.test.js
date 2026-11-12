@@ -56,7 +56,7 @@ vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}
 const {
   loadCalendarBridge, fakeAttendee, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem,
 } = await import('./helpers/calendarBridgeHarness.js');
-const { run } = await import('../chat/tools/calendar_event_edit.js');
+const { run, completeExecution } = await import('../chat/tools/calendar_event_edit.js');
 const { runStateEditCalendarEventExec, runStateEditCalendarEventList } = await import('../chat/fsm/calendarEdit.js');
 const { streamText } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
@@ -143,9 +143,9 @@ const SCOPES = {
 let nextPid = 0;
 // The tool's `run` (which stores the edit for the confirmation card), then the
 // edit flow's write, against the real bridge.
-async function edit(scopeName, guests, own, change) {
+async function edit(scopeName, guests, own, change, bridgeOptions = {}) {
   const scope = SCOPES[scopeName];
-  const loaded = loadCalendarBridge(bridgeUrl, { items: [scope.build(guests, own)] });
+  const loaded = loadCalendarBridge(bridgeUrl, { items: [scope.build(guests, own)], ...bridgeOptions });
   globalThis.browser.tmCalendar = checked(loaded.api, schemaErrors);
   schemaErrors.length = 0;
   const pid = `pid-guests-${nextPid += 1}`;
@@ -346,6 +346,37 @@ describe('every edit tells the guests', () => {
       expect(loaded.notices.some((n) => n.guests.includes(mail('dee')))).toBe(true);
     });
   }
+
+  // The assistant reads the tool's result: when Thunderbird could not send
+  // the notice, the change is reported saved and the guests NOT told, so the
+  // assistant cannot report them told.
+  for (const scopeName of Object.keys(SCOPES)) {
+    it(`a notice that could not be sent is said in the result, the change saved (${scopeName})`, async () => {
+      const { sess, items, loaded } = await edit(scopeName, all(), all(), add('dee@example.com'), { guestNoticeSend: () => false });
+      expect(sess.failReason).toBeUndefined();
+      for (const it of [...items.main, ...items.own]) expect(ids(it)).toContain(mail('dee'));
+      expect(loaded.notices.length).toBeGreaterThan(0);
+      const pid = Object.keys(ctx.fsmSessions).find((k) => ctx.fsmSessions[k] === sess);
+      const was = ctx.activePid;
+      ctx.activePid = pid;
+      let out;
+      try { out = await completeExecution('exec_success', 'calendar_event_edit_exec'); } finally { ctx.activePid = was; }
+      expect(out.result).toMatch(/saved, but the guests could NOT be notified/);
+      expect(out.result).not.toMatch(/handed to Thunderbird/);
+      expect(streamText.mock.calls.at(-1)?.[1]).toMatch(/Saved, but the guests could not be notified/);
+    });
+  }
+
+  it('a notice that was sent is said as handed to Thunderbird', async () => {
+    const { sess } = await edit('a one-off event', all(), all(), add('dee@example.com'));
+    const pid = Object.keys(ctx.fsmSessions).find((k) => ctx.fsmSessions[k] === sess);
+    const was = ctx.activePid;
+    ctx.activePid = pid;
+    let out;
+    try { out = await completeExecution('exec_success', 'calendar_event_edit_exec'); } finally { ctx.activePid = was; }
+    expect(out.result).toMatch(/handed to Thunderbird to send/);
+    expect(out.result).not.toMatch(/NOT be notified/);
+  });
 
   it('an edit of an event with no guests is written and tells no one', async () => {
     const { sess, items, loaded } = await edit('a one-off event', [], [], { title: 'Review' });

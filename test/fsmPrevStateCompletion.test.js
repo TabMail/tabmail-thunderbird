@@ -143,8 +143,8 @@ beforeEach(() => {
   ctx.fsmWaiters = Object.create(null);
   ctx.state = null;
   h.results = {
-    createResult: { event_id: 'ev-1', event_title: 'Standup', calendar_id: 'cal-1', invitations: 'sent', id: 'tpl-1', name: 'Tpl' },
-    editResult: { event_id: 'ev-2', event_title: 'Review', calendar_id: 'cal-2', edit_scope: 'this_only', recurrence_id: '2099-01-05T10:00:00', invitations: 'none', id: 'tpl-2', name: 'Tpl2' },
+    createResult: { event_id: 'ev-1', event_title: 'Standup', calendar_id: 'cal-1', invitations: { ok: true }, id: 'tpl-1', name: 'Tpl' },
+    editResult: { event_id: 'ev-2', event_title: 'Review', calendar_id: 'cal-2', edit_scope: 'this_only', recurrence_id: '2099-01-05T10:00:00', invitations: null, id: 'tpl-2', name: 'Tpl2' },
     deleteResult: { event_id: 'ev-3', id: 'tpl-3', name: 'Tpl3' },
     shareResult: { id: 'tpl-4', name: 'Tpl4' },
     downloadResult: { id: 'tpl-5', name: 'Tpl5' },
@@ -161,17 +161,16 @@ describe('FSM completion receives the pre-terminal state (#381)', () => {
     expect(r.output.recurrence_id).toBe('2099-01-05T10:00:00');
     expect(r.output.event_id).toBe('ev-2');
     expect(r.output.calendar_id).toBe('cal-2');
-    expect(r.output.invitations).toBe('none');
+    expect(r.output.result).not.toMatch(/guests/);
     expect(r.output.result).toContain('this_only');
   });
 
-  it('calendar_event_create returns the new event id and invitations', async () => {
+  it('calendar_event_create returns the new event id and the guest notice', async () => {
     const r = await runToCompletion('calendar_event_create', 'calendar_event_create_list', 'calendar_event_create_exec');
     expect(r.output).toMatchObject({
-      result: 'Calendar event created successfully.',
+      result: "Calendar event created successfully. The guests' notice was handed to Thunderbird to send.",
       event_id: 'ev-1',
       calendar_id: 'cal-1',
-      invitations: 'sent',
     });
   });
 

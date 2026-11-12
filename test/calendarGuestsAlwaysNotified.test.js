@@ -161,6 +161,81 @@ describe('a write to an event with guests notifies them, with no argument asking
   }
 });
 
+describe('excluding several occurrences sends one cancellation per date', () => {
+  const DATES = ['2099-10-05T17:00:00', '2099-10-09T17:00:00', '2099-10-12T17:00:00'];
+
+  // Each notice is a step that excludes exactly one more date than the item
+  // before it: Thunderbird's sender cancels that one occurrence.
+  function expectOneCancellationPerDate(notices, count) {
+    expect(notices.map((n) => n.op)).toEqual(Array(count).fill('MODIFY'));
+    const added = notices.map((n) => {
+      const before = new Set((n.oldItem.recurrenceInfo.getRecurrenceItems() || []).filter((r) => r.isNegative).map((r) => r.date.toString()));
+      return n.exdates.filter((d) => !before.has(d));
+    });
+    for (const a of added) expect(a).toHaveLength(1);
+    expect(new Set(added.flat()).size).toBe(count);
+    expectFlaggedAuto(notices);
+  }
+
+  it('three dates excluded from the whole series: three notices, one per date', async () => {
+    const { api, notices } = loadCalendarBridge(bridgeUrl, { items: [series()] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', exdates_add: DATES });
+    expect(res.ok).toBe(true);
+    expect(res.invitations).toEqual({ ok: true });
+    expectOneCancellationPerDate(notices, 3);
+  });
+
+  it('dates excluded together with another change: one update that carries every date', async () => {
+    const { api, notices } = loadCalendarBridge(bridgeUrl, { items: [series()] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', title: 'Sync, renamed', exdates_add: DATES });
+    expect(res.ok).toBe(true);
+    expect(notices.map((n) => n.op)).toEqual(['MODIFY']);
+    expect(notices[0]?.exdates).toHaveLength(3);
+    expect(notices[0]?.item.title).toBe('Sync, renamed');
+  });
+});
+
+describe('a notice Thunderbird could not send is reported, the change kept', () => {
+  for (const [name, guestNoticeSend] of [['send() answers false', () => false], ['send() throws', () => { throw new Error('no transport'); }]]) {
+    it(`${name}: the write stands and the result says the guests were not told`, async () => {
+      const stored = oneOff();
+      const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [stored], guestNoticeSend });
+      const res = await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' });
+      expect(res.ok).toBe(true);
+      expect(calendar.items[0].title).toBe('Review, moved');
+      expect(res.invitations?.ok).toBe(false);
+      expect(res.invitations?.error).toBeTruthy();
+    });
+  }
+
+  it('create and delete report it too', async () => {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [oneOff()], guestNoticeSend: () => false });
+    const created = await loaded.api.createCalendarEvent({ calendar_id: 'cal1', title: 'Kickoff', start_iso: '2099-10-20T09:00:00', end_iso: '2099-10-20T10:00:00', attendees: [{ email: 'ana@example.com' }] });
+    expect(created.ok).toBe(true);
+    expect(created.invitations?.ok).toBe(false);
+    const deleted = await loaded.api.deleteCalendarEvent({ event_id: 'one', calendar_id: 'cal1' });
+    expect(deleted.ok).toBe(true);
+    expect(deleted.invitations?.ok).toBe(false);
+  });
+
+  it('one failed date among several is reported', async () => {
+    let n = 0;
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [series()], guestNoticeSend: () => (n += 1) !== 2 });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', exdates_add: ['2099-10-05T17:00:00', '2099-10-09T17:00:00', '2099-10-12T17:00:00'] });
+    expect(res.invitations?.ok).toBe(false);
+  });
+});
+
+describe('a modification is sequenced as Thunderbird sequences it', () => {
+  it('each write of an item with guests goes through cal.itip.prepareSequence against the stored item', async () => {
+    const stored = oneOff();
+    const { api, sequenced } = loadCalendarBridge(bridgeUrl, { items: [stored] });
+    expect((await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', start_iso: '2099-10-20T11:00:00', end_iso: '2099-10-20T12:00:00' })).ok).toBe(true);
+    expect(sequenced).toHaveLength(1);
+    expect(sequenced[0]?.oldItem).toBe(stored);
+  });
+});
+
 describe('an event without guests is written with no notice', () => {
   it('create, edit and delete of a guestless event call no scheduling and set no flag', async () => {
     const stored = oneOff({ withGuests: false });

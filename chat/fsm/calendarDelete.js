@@ -13,6 +13,7 @@ import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 import { recurrenceInWords } from "../modules/recurrence.js";
 import { shownEventTimesIso } from "../tools/calendar_event_read.js";
 import { deleteCallArgs } from "../tools/calendar_event_delete.js";
+import { guestNoticeBubbleText } from "../modules/calendarGuestNotice.js";
 
 // A repeating event is deleted by scope (delete_scope, routed by the tool):
 // "all" removes the whole item, every occurrence; "this_only" the occurrence
@@ -261,19 +262,8 @@ export async function runStateDeleteCalendarEventExec() {
     } catch (_) {}
 
     resultMsg = deletedText(res.scope);
-    if (res.invitations) {
-      if (res.invitations.ok) {
-        if (typeof res.invitations.recipients !== "undefined") {
-          resultMsg += `. Cancellations sent to ${res.invitations.recipients} attendees.`;
-        } else if (res.invitations.message) {
-          resultMsg += `. ${res.invitations.message}`;
-        } else {
-          resultMsg += `. Cancellations sent to attendees.`;
-        }
-      } else {
-        resultMsg += `. Warning: Failed to send cancellations (${res.invitations.error}).`;
-      }
-    }
+    const guestNotice = guestNoticeBubbleText(res.invitations);
+    if (guestNotice) resultMsg += `. ${guestNotice}`;
   } catch (e) {
     agentBubble.classList.remove("loading");
     const msg = `Failed to delete the event: ${e}`;

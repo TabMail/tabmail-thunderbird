@@ -158,41 +158,103 @@ function getIcsService() {
 }
 
 // -------- Guest notification --------
-// Guests are always told of a write to an event they are on: what Thunderbird's
-// own event dialog does with "Notify attendees" ticked, through the same entry
-// point its transactions use (CalTransactionManager -> cal.itip.checkAndSend).
+// Guests are always told of a write to an event they are on (#423): what
+// Thunderbird's own event dialog does with "Notify attendees" ticked, the way
+// its transactions do it (CalTransactionManager: CalModifyTransaction writes
+// cal.itip.prepareSequence(item, oldItem), then cal.itip.checkAndSend).
 // X-MOZ-SEND-INVITATIONS is the flag CalItipMessageSender reads before it
-// builds any REQUEST or CANCEL; checkAndSend then leaves the message to a
-// calendar that schedules itself (calISchedulingSupport.canNotify: CalDAV
-// server scheduling, Exchange/Graph providers) and otherwise sends it through
-// the calendar's iMIP transport. AUTO: the chat's confirmation card is the
-// user's yes, so Thunderbird does not ask a second time.
+// builds any REQUEST or CANCEL. The message then goes to a calendar that
+// schedules itself (calISchedulingSupport.canNotify: CalDAV server
+// scheduling, Exchange/Graph providers) or through the calendar's iMIP
+// transport. AUTO: the chat's confirmation card is the user's yes, so
+// Thunderbird does not ask a second time.
+//
+// notifyGuests does what cal.itip.checkAndSend does (calItipUtils.sys.mjs),
+// with Thunderbird's own CalItipMessageSender, but keeps send()'s answer,
+// which checkAndSend drops: a notice that could not be handed on (no transport
+// for the calendar, a transport that refuses) is reported, never taken as sent.
+const CAL_ITIP_MESSAGE_SENDER_URL = "resource:///modules/CalItipMessageSender.sys.mjs";
+
 function hasGuests(item) {
   try { return !!item?.getAttendees && item.getAttendees().length > 0; } catch { return false; }
 }
 
-// Marks the item about to be written so its guests are told: set before the
-// write, on the item written, as the event dialog does. An item without
-// guests before or after the write is left alone.
-function markGuestsNotified(item, oldItem = null) {
-  if (!hasGuests(item) && !hasGuests(oldItem)) return;
+// The item to write, ready to tell its guests: the notify flag set (as the
+// event dialog sets it, on the item written) and, for a modification, its
+// SEQUENCE bumped on a major change by Thunderbird's prepareSequence (which
+// returns a copy when it bumps). An item with no guests before or after the
+// write is returned as it is.
+function prepareGuestWrite(item, oldItem = null) {
+  if (!hasGuests(item) && !hasGuests(oldItem)) return item;
   item.setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
+  return oldItem ? getCalNamespace().itip.prepareSequence(item, oldItem) : item;
+}
+
+// One notice, as checkAndSend builds it (the invited-attendee check for an
+// event the user was invited to included). Returns { ok: true } or
+// { ok: false, error }.
+function sendGuestNotice(opType, item, oldItem) {
+  const Ci = globalThis.Ci;
+  const cal = getCalNamespace();
+  let invitedAttendee = null;
+  const itemCalendar = item.calendar;
+  if (itemCalendar?.supportsScheduling && itemCalendar.getSchedulingSupport().isInvitation(item)) {
+    invitedAttendee = cal.itip.getInvitedAttendee(item, itemCalendar);
+  }
+  const { CalItipMessageSender } = ChromeUtils.importESModule(CAL_ITIP_MESSAGE_SENDER_URL);
+  const sender = new CalItipMessageSender(oldItem, invitedAttendee);
+  if (!sender.buildOutgoingMessages(Ci.calIOperationListener[opType], item, { responseMode: Ci.calIItipItem.AUTO })) {
+    return { ok: true };
+  }
+  if (!sender.send(cal.itip.getImipTransport(item))) {
+    return { ok: false, error: "Thunderbird could not send the guests' notice for this calendar (no email account to send it from, or the send was refused)" };
+  }
+  return { ok: true };
 }
 
 // Tells the guests of one write. opType is "ADD", "MODIFY" or "DELETE"
-// (calIOperationListener). Returns { ok: true } or { ok: false, error }; the
-// write itself has already happened.
-function notifyGuests(opType, item, oldItem = null) {
+// (calIOperationListener); the write itself has already happened. Returns
+// null when there are no guests, else { ok: true } or { ok: false, error }.
+//
+// exdateRids: the occurrences this write excluded. Thunderbird's sender turns
+// a modification that only adds EXDATEs into a CANCEL of the FIRST added date
+// alone (CalItipMessageSender.buildOutgoingMessages: "xxx todo: support
+// multiple"), so the guests would still expect the others. When the write
+// adds several and changes nothing else, each date gets its own notice: a
+// step from the item before to the same item with that one date excluded,
+// which the sender cancels. A write that changes more is one REQUEST that
+// carries every EXDATE.
+function notifyGuests(opType, item, oldItem = null, { exdateRids = [] } = {}) {
   if (!hasGuests(item) && !hasGuests(oldItem)) return null;
   try {
-    const Ci = globalThis.Ci;
-    getCalNamespace().itip.checkAndSend(Ci.calIOperationListener[opType], item, oldItem, { responseMode: Ci.calIItipItem.AUTO });
-    tmCalendarDebugLog(`[tmCalendar] notifyGuests: ${opType} handed to Thunderbird scheduling`);
-    return { ok: true };
+    let result;
+    if (opType === "MODIFY" && oldItem && exdateRids.length > 1) {
+      const steps = [oldItem.clone()];
+      steps[0].setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
+      for (const rid of exdateRids) {
+        const next = steps[steps.length - 1].clone();
+        addExdateToItem(next, rid);
+        steps.push(next);
+      }
+      if (getCalNamespace().item.compareContent(item, steps[steps.length - 1])) {
+        result = joinGuestNotices(steps.slice(1).map((step, i) => sendGuestNotice("MODIFY", step, steps[i])));
+      }
+    }
+    result = result || sendGuestNotice(opType, item, oldItem);
+    if (!result.ok) console.error(`[tmCalendar] notifyGuests: ${opType} not sent:`, result.error);
+    else tmCalendarDebugLog(`[tmCalendar] notifyGuests: ${opType} handed to Thunderbird scheduling`);
+    return result;
   } catch (e) {
     console.error(`[tmCalendar] notifyGuests: ${opType} failed:`, e);
     return { ok: false, error: String(e) };
   }
+}
+
+// One answer for the notices of one tool call: the first failure, else
+// { ok: true } when any was sent, else null (no guests).
+function joinGuestNotices(results) {
+  const given = results.filter(Boolean);
+  return given.find((r) => !r.ok) || (given.length ? { ok: true } : null);
 }
 
 // Optional fallback for UID matching without ICS parsing
@@ -2348,9 +2410,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               let invitationResult = null;
               if (replacement) {
                 tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: deleting occurrences (${scope}) of:`, eventId);
-                markGuestsNotified(replacement, series);
-                await targetCalendar.modifyItem(replacement, series);
-                invitationResult = notifyGuests("MODIFY", replacement, series);
+                const written = prepareGuestWrite(replacement, series);
+                await targetCalendar.modifyItem(written, series);
+                invitationResult = notifyGuests("MODIFY", written, series);
               } else {
                 tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: deleting event:", eventId);
                 await targetCalendar.deleteItem(targetEvent);
@@ -2358,7 +2420,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 // that carries the notify flag.
                 if (hasGuests(targetEvent)) {
                   const cancelled = targetEvent.clone();
-                  markGuestsNotified(cancelled);
+                  cancelled.setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
                   invitationResult = notifyGuests("DELETE", cancelled);
                 }
               }
@@ -2465,8 +2527,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
 
             // Persist (returns the created item); its guests are invited.
-            markGuestsNotified(ev);
-            const created = await cal.addItem(ev);
+            const created = await cal.addItem(prepareGuestWrite(ev));
             tmCalendarDebugLog("[tmCalendar] createCalendarEvent: created event with id:", created?.id);
             try { const transpSaved = String(created?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: initial TRANSP on created:", transpSaved || "(empty)"); } catch (_) {}
             try {
@@ -2800,6 +2861,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
 
             // EXDATE additions on an edit of one occurrence go to its series.
+            let exdateNotice = null;
             if (exdates.rids.length && scope !== "series") {
               const parent = item.parentItem || item;
               const parentOld = parent.clone();
@@ -2808,10 +2870,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 try { addExdateToItem(parent, rid); added += 1; } catch (xe) { console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe); }
               }
               tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
-              markGuestsNotified(parent, parentOld);
-              await parent.calendar.modifyItem(parent, parentOld);
-              // The guests are told of the removed occurrences (a CANCEL).
-              notifyGuests("MODIFY", parent, parentOld);
+              const writtenParent = prepareGuestWrite(parent, parentOld);
+              await parent.calendar.modifyItem(writtenParent, parentOld);
+              // The guests are told of the removed occurrences: one CANCEL each.
+              exdateNotice = notifyGuests("MODIFY", writtenParent, parentOld, { exdateRids: exdates.rids });
             }
 
             // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
@@ -2825,8 +2887,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               "X-MOZ-HTML=", clone.getProperty?.("X-MOZ-HTML") || "");
             
             // Always modify using the same calendar as BASE; the guests are told.
-            markGuestsNotified(clone, base);
-            const modified = await base.calendar.modifyItem(clone, base);
+            const written = prepareGuestWrite(clone, base);
+            const modified = await base.calendar.modifyItem(written, base);
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modifyItem completed");
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
             
@@ -2875,7 +2937,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               } catch (ve) { console.warn("[tmCalendar] modifyCalendarEvent: verify fetch failed:", ve); }
             } catch (_) {}
             
-            const invitationResult = notifyGuests("MODIFY", clone, base);
+            const invitationResult = joinGuestNotices([
+              exdateNotice,
+              notifyGuests("MODIFY", written, base, { exdateRids: scope === "series" ? exdates.rids : [] }),
+            ]);
             
             // Return the item's own event_id. An occurrence edit resolves with
             // the PARENT series (CalMemoryCalendar.modifyItem), so the title is
@@ -3195,9 +3260,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // 8. Write the earlier part.
             let cappedMaster;
+            let writtenEarlier;
             try {
-              markGuestsNotified(cappedClone, master);
-              cappedMaster = await cal.modifyItem(cappedClone, master);
+              writtenEarlier = prepareGuestWrite(cappedClone, master);
+              cappedMaster = await cal.modifyItem(writtenEarlier, master);
               tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
             } catch (e) {
               return { ok: false, error: `failed to cap master series: ${e}` };
@@ -3206,8 +3272,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // 9. Persist the new series.
             let created;
             try {
-              markGuestsNotified(newEv);
-              created = await cal.addItem(newEv);
+              created = await cal.addItem(prepareGuestWrite(newEv));
               tmCalendarDebugLog("[tmCalendar] splitRecurringEvent: created new series with id:", created?.id);
             } catch (e) {
               // Revert master cap — best-effort recovery so we don't leave the calendar
@@ -3223,8 +3288,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // 10. The guests are told: the earlier part's shortened rule, then
             // the new series. A failure of either is reported.
-            const notices = [notifyGuests("MODIFY", cappedClone, master), notifyGuests("ADD", created || newEv)].filter(Boolean);
-            const invitationResult = notices.find((n) => !n.ok) || notices[0] || null;
+            const invitationResult = joinGuestNotices([notifyGuests("MODIFY", writtenEarlier, master), notifyGuests("ADD", created || newEv)]);
 
             return {
               ok: true,

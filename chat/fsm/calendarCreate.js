@@ -10,6 +10,7 @@ import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { formatCardTime, streamText } from "../modules/helpers.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
+import { guestNoticeBubbleText } from "../modules/calendarGuestNotice.js";
 
 async function formatEventArgsForDisplay(args) {
   try {
@@ -187,19 +188,8 @@ export async function runStateCreateCalendarEventExec() {
     if (res.event_id) {
       resultMsg += ` with ID: ${res.event_id}`;
     }
-    if (res.invitations) {
-      if (res.invitations.ok) {
-        if (typeof res.invitations.recipients !== "undefined") {
-          resultMsg += `. Invitations sent to ${res.invitations.recipients} attendees.`;
-        } else if (res.invitations.message) {
-          resultMsg += `. ${res.invitations.message}`;
-        } else {
-          resultMsg += `. Invitations sent to attendees.`;
-        }
-      } else {
-        resultMsg += `. Warning: Failed to send invitations (${res.invitations.error}).`;
-      }
-    }
+    const guestNotice = guestNoticeBubbleText(res.invitations);
+    if (guestNotice) resultMsg += `. ${guestNotice}`;
   } catch (e) {
     agentBubble.classList.remove("loading");
     const msg = `Failed to create the event: ${e}`;

@@ -11,6 +11,7 @@ export const fsm = true;
 import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
+import { guestNoticeResultText } from "../modules/calendarGuestNotice.js";
 import { toNaiveIso } from "../modules/helpers.js";
 import { shownEventTimesIso } from "./calendar_event_read.js";
 import { isClearRecurrence, otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
@@ -271,7 +272,7 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   }
 
   // Every edit the bridge would refuse (a scope with no occurrence named, an
-  // occurrence or excluded date that names none, invitations with no guests,
+  // occurrence or excluded date that names none,
   // an all-day event given a time of day without all_day, a move the series'
   // rule cannot follow, an event it cannot find, ...) is refused here, before
   // the confirmation card, so the assistant can react: ask the user, or
@@ -467,6 +468,8 @@ export async function completeExecution(currentState, prevState) {
     } else {
       result = "Calendar event modified successfully — edit_scope: all (the entire event/series).";
     }
+    const guestNotice = guestNoticeResultText(sess.editResult.invitations);
+    if (guestNotice) result += ` ${guestNotice}`;
     return {
       ok: true,
       result,
@@ -475,7 +478,6 @@ export async function completeExecution(currentState, prevState) {
       calendar_id: sess.editResult.calendar_id,
       edit_scope: scope,
       recurrence_id: sess.editResult.recurrence_id,
-      invitations: sess.editResult.invitations,
     };
   }
   

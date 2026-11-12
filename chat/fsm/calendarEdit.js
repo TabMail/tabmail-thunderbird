@@ -12,6 +12,7 @@ import { formatCardTime, streamText } from "../modules/helpers.js";
 import { shownEventTimesIso } from "../tools/calendar_event_read.js";
 import { restatedFields } from "../tools/calendar_event_edit.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
+import { guestNoticeBubbleText } from "../modules/calendarGuestNotice.js";
 
 async function formatEventDetailsForDisplay(details, editArgs) {
   try {
@@ -409,19 +410,8 @@ export async function runStateEditCalendarEventExec() {
     } else {
       resultMsg += " (entire event/series)";
     }
-    if (res.invitations) {
-      if (res.invitations.ok) {
-        if (typeof res.invitations.recipients !== "undefined") {
-          resultMsg += `. Updates sent to ${res.invitations.recipients} attendees.`;
-        } else if (res.invitations.message) {
-          resultMsg += `. ${res.invitations.message}`;
-        } else {
-          resultMsg += `. Updates sent to attendees.`;
-        }
-      } else {
-        resultMsg += `. Warning: Failed to send updates (${res.invitations.error}).`;
-      }
-    }
+    const guestNotice = guestNoticeBubbleText(res.invitations);
+    if (guestNotice) resultMsg += `. ${guestNotice}`;
   } catch (e) {
     agentBubble.classList.remove("loading");
     const msg = `Failed to update the event: ${e}`;

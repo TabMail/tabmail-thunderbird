@@ -11,6 +11,7 @@ export const fsm = true;
 import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
+import { guestNoticeResultText } from "../modules/calendarGuestNotice.js";
 import { toNaiveIso } from "../modules/helpers.js";
 
 // The scopes a delete of a repeating event takes (delete_scope), as the edit's
@@ -271,10 +272,11 @@ export async function completeExecution(currentState, prevState) {
   
   if (prevState === "calendar_event_delete_exec" && sess?.deleteResult) {
     log(`[TMDBG Tools] calendar_event_delete.completeExecution: deleted event successfully (scope ${sess.deleteResult.scope || "none"})`);
+    const deleted = DELETED_RESULT[sess.deleteResult.scope] || "Calendar event deleted successfully.";
+    const guestNotice = guestNoticeResultText(sess.deleteResult.invitations);
     return {
-      result: DELETED_RESULT[sess.deleteResult.scope] || "Calendar event deleted successfully.",
+      result: guestNotice ? `${deleted} ${guestNotice}` : deleted,
       // event_id: sess.deleteResult.event_id,
-      // invitations: sess.deleteResult.invitations,
     };
   }
   

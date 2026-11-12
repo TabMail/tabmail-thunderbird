@@ -678,15 +678,44 @@ const ITEM_FILTER_INCLUDE_OCCURRENCES = 2;
 const OPERATIONS = { ADD: 1, MODIFY: 2, DELETE: 3 };
 const OPERATION_NAMES = { 1: 'ADD', 2: 'MODIFY', 3: 'DELETE' };
 const ITIP_RESPONSE_MODES = { AUTO: 'AUTO', USER: 'USER', NONE: 'NONE' };
+const IMIP_TRANSPORT = { type: 'email' };
 
-export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} } } = {}) {
+// An item's excluded dates (its negative recurrence dates), as strings.
+function exdateKeys(item) {
+  return (item.recurrenceInfo?.getRecurrenceItems() || [])
+    .filter((r) => r.isNegative && r.date)
+    .map((r) => r.date.toString())
+    .sort();
+}
+
+// What cal.item.compareContent compares, for these fakes: every value an
+// edit writes (SEQUENCE, DTSTAMP and the notify flag are ignored, as there).
+function contentKey(item) {
+  const info = item.recurrenceInfo;
+  return JSON.stringify({
+    title: item.title,
+    start: item.startDate?.toString(), end: item.endDate?.toString(),
+    location: item.getProperty('LOCATION'), description: item.getProperty('DESCRIPTION'), transp: item.getProperty('TRANSP'),
+    guests: item.getAttendees().map((a) => a.id),
+    rules: (info?.getRecurrenceItems() || []).map((r) => (r.date ? `${r.isNegative ? '-' : '+'}${r.date.toString()}` : String(r.icalString || r.value || canonicalRuleOf(r)))).sort(),
+    changed: (info?.getExceptionIds?.() || []).map(String).sort(),
+  });
+}
+function canonicalRuleOf(r) {
+  try { return JSON.stringify({ type: r.type, interval: r.interval, count: r.isByCount ? r.count : null, until: r.untilDate?.toString() }); } catch { return '?'; }
+}
+
+export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} }, guestNoticeSend = () => true } = {}) {
   const getItemsCalls = [];
   const modifications = [];
   const deletions = [];
-  // Each write handed to Thunderbird's scheduling (cal.itip.checkAndSend, as
-  // CalTransactionManager does): the operation, the item with its notify flag
-  // read at the call, the item before, and the response mode.
+  // Each notice handed to Thunderbird's CalItipMessageSender, as
+  // cal.itip.checkAndSend builds it: the operation, the item with its notify
+  // flag read at the call, its guests and excluded dates, the item before,
+  // and the response mode. `sent` is what send() answered.
   const notices = [];
+  // Each item put through cal.itip.prepareSequence before a write.
+  const sequenced = [];
   const calendar = {
     id: calendarId,
     name: 'Personal',
@@ -766,16 +795,39 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     timezoneService: { UTC: UTC_ZONE, floating: FLOATING_ZONE, defaultTimezone: LOCAL_ZONE, getTimezone: () => null },
     icsService: { createIcalProperty: (propertyName) => ({ propertyName, value: '' }) },
     itip: {
+      prepareSequence(newItem, oldItem) { sequenced.push({ newItem, oldItem }); return newItem; },
+      getImipTransport: () => IMIP_TRANSPORT,
+      getInvitedAttendee: () => null,
+      // calItipUtils.checkAndSend, as Thunderbird has it: the sender's send()
+      // answer is dropped.
       checkAndSend(opType, item, oldItem, extResponse) {
-        notices.push({
-          op: OPERATION_NAMES[opType], item, oldItem,
-          sendInvitations: item.getProperty('X-MOZ-SEND-INVITATIONS'),
-          guests: item.getAttendees().map((a) => a.id),
-          responseMode: extResponse?.responseMode,
-        });
+        const sender = new FakeItipMessageSender(oldItem, null);
+        if (sender.buildOutgoingMessages(opType, item, extResponse)) sender.send(IMIP_TRANSPORT);
       },
     },
+    item: { compareContent: (a, b) => contentKey(a) === contentKey(b) },
   };
+  // Thunderbird's CalItipMessageSender, recording each notice; send() answers
+  // what `guestNoticeSend` says (true unless a test makes it fail or throw).
+  class FakeItipMessageSender {
+    constructor(originalItem, invitedAttendee) { this.originalItem = originalItem; this.invitedAttendee = invitedAttendee; }
+    buildOutgoingMessages(opType, item, extResponse) {
+      this.notice = {
+        op: OPERATION_NAMES[opType], item, oldItem: this.originalItem,
+        sendInvitations: item.getProperty('X-MOZ-SEND-INVITATIONS'),
+        guests: item.getAttendees().map((a) => a.id),
+        exdates: exdateKeys(item),
+        responseMode: extResponse?.responseMode,
+      };
+      notices.push(this.notice);
+      return 1;
+    }
+    send(transport) {
+      this.notice.transport = transport;
+      this.notice.sent = guestNoticeSend(this.notice);
+      return this.notice.sent;
+    }
+  }
   const ctx = vm.createContext({
     Date, ReadableStream, Intl,
     console,
@@ -801,6 +853,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       importESModule(url) {
         if (url.includes('ExtensionCommon')) return { ExtensionCommon: { ExtensionAPI: class {} } };
         if (url.includes('calUtils')) return { cal };
+        if (url === 'resource:///modules/CalItipMessageSender.sys.mjs') return { CalItipMessageSender: FakeItipMessageSender };
         throw new Error(`unexpected importESModule(${url})`);
       },
       generateQI: () => () => {},
@@ -808,5 +861,5 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   });
   vm.runInContext(readFileSync(bridgePath, 'utf8'), ctx, { filename: 'tmCalendar.sys.mjs' });
   const api = new ctx.tmCalendar().getAPI({}).tmCalendar;
-  return { api, getItemsCalls, modifications, deletions, notices, calendar, ctx };
+  return { api, getItemsCalls, modifications, deletions, notices, sequenced, calendar, ctx };
 }
