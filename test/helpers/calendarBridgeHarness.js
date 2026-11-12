@@ -706,7 +706,7 @@ function canonicalRuleOf(r) {
   try { return JSON.stringify({ type: r.type, interval: r.interval, count: r.isByCount ? r.count : null, until: r.untilDate?.toString() }); } catch { return '?'; }
 }
 
-export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} }, guestNoticeSend = () => true, invitedAs = null, calendarType = 'storage', calendarProperties = {}, itipAdaptScheduleAgent = undefined } = {}) {
+export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} }, guestNoticeSend = () => true, invitedAs = null, calendarType = 'storage', calendarProperties = {}, itipAdaptScheduleAgent = undefined, memoryCalendar = false, modifyItemFails = () => false } = {}) {
   const getItemsCalls = [];
   const modifications = [];
   const deletions = [];
@@ -762,6 +762,9 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     },
     async modifyItem(newItem, oldItem) {
       modifications.push({ newItem, oldItem });
+      // A write the server refuses (a test's modifyItemFails), before anything is stored.
+      if (modifyItemFails(newItem, oldItem)) throw new Error('NS_ERROR_FAILURE: the write was refused');
+      if (memoryCalendar) return memoryModify(newItem, oldItem);
       if (oldItem.parentItem) {
         // An occurrence edit persists through recurrenceInfo.modifyException:
         // keyed by the RECURRENCE-ID, replacing the exception with that key or
@@ -789,6 +792,30 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       return newItem;
     },
   };
+  // memoryCalendar: CalMemoryCalendar.modifyItem as Thunderbird has it. A
+  // stored item is immutable (readOnlySeries); a write REPLACES the stored item
+  // with that id by a new object, which getItem then returns: for an occurrence,
+  // a clone of the stored series (looked up by id) with the occurrence put in
+  // by modifyException; for a series or an event, the item written.
+  function storeFrozen(idx, item) {
+    item.calendar = calendar;
+    if (item.recurrenceInfo) readOnlySeries(item);
+    items[idx] = item;
+    return item;
+  }
+  function memoryModify(newItem, oldItem) {
+    const id = String((oldItem.parentItem || oldItem).id);
+    const idx = items.findIndex((it) => String(it.id) === id);
+    if (idx < 0) throw new Error('modifyItem: unknown target');
+    if (newItem.recurrenceId) {
+      const series = items[idx].clone();
+      series.recurrenceInfo.modifyException(newItem);
+      return storeFrozen(idx, series);
+    }
+    return storeFrozen(idx, newItem);
+  }
+  if (memoryCalendar) for (let i = 0; i < items.length; i += 1) if (items[i].recurrenceInfo) readOnlySeries(items[i]);
+
   // An occurrence, a changed one included, is on its series' calendar
   // (CalItemBase's calendar getter falls back to its parentItem's).
   for (const master of items) {

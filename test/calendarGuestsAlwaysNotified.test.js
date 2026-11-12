@@ -444,3 +444,44 @@ describe('the scheduling agent is chosen as the event dialog chooses it', () => 
     expect(agents(modifications.at(-1).newItem)).toEqual([null, null]);
   });
 });
+
+// An edit of one occurrence that also excludes dates of its series is ONE
+// write of the series (the occurrence put in by modifyException, the EXDATEs
+// added), as Thunderbird stores an occurrence change. Run on a calendar that
+// behaves like CalMemoryCalendar: stored items immutable, a write replaces
+// the stored series.
+describe('an occurrence edit that excludes dates is one series write', () => {
+  const OTHER = ['2099-10-05T17:00:00', '2099-10-09T17:00:00'];
+  const edit = (api) => api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: OCCURRENCE, title: 'Sync, once', exdates_add: OTHER });
+
+  it('the stored series has the occurrence change and every excluded date, from one write', async () => {
+    const { api, calendar, modifications, notices } = loadCalendarBridge(bridgeUrl, { items: [series()], memoryCalendar: true });
+    const res = await edit(api);
+    expect(res.ok).toBe(true);
+    expect(modifications).toHaveLength(1);
+    const stored = await calendar.getItem('ser');
+    const ids = stored.recurrenceInfo.getExceptionIds();
+    expect(ids).toHaveLength(1);
+    expect(stored.recurrenceInfo.getExceptionFor(ids[0]).title).toBe('Sync, once');
+    const excluded = stored.recurrenceInfo.getRecurrenceItems().filter((r) => r.isNegative).map((r) => r.date.toString());
+    expect(excluded).toHaveLength(2);
+    // The occurrence's update, then one cancellation per excluded date.
+    expect(notices.map((n) => n.method)).toEqual(['REQUEST', 'CANCEL', 'CANCEL']);
+    expect(new Set(notices.slice(1).map((n) => n.cancelled)).size).toBe(2);
+    expect(notices.every((n) => n.built === 1 && n.sent === true)).toBe(true);
+    expect(res.invitations).toEqual({ ok: true });
+  });
+
+  it('a refused series write saves nothing, tells no one, and says the edit failed', async () => {
+    const before = series();
+    const { api, calendar, notices } = loadCalendarBridge(bridgeUrl, { items: [before], memoryCalendar: true, modifyItemFails: (newItem) => !newItem.recurrenceId });
+    const res = await edit(api);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/refused/);
+    expect(notices).toEqual([]);
+    const stored = await calendar.getItem('ser');
+    expect(stored).toBe(before);
+    expect(stored.recurrenceInfo.getExceptionIds()).toHaveLength(0);
+    expect(stored.recurrenceInfo.getRecurrenceItems().filter((r) => r.isNegative)).toHaveLength(0);
+  });
+});

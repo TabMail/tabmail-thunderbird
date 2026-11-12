@@ -2958,7 +2958,34 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             
             // Always modify using the same calendar as BASE; the guests are told.
             const written = prepareGuestWrite(clone, base);
-            const modified = await base.calendar.modifyItem(written, base);
+            // An edit of one occurrence that also excludes dates is ONE write
+            // of its series, as Thunderbird stores an occurrence change: a
+            // copy of the stored series carrying the changed occurrence
+            // (recurrenceInfo.modifyException, what CalMemoryCalendar and the
+            // other providers do with an occurrence write) and the new
+            // EXDATEs. So either both are saved or neither, and nothing is
+            // sent for a write that failed. The stored series is immutable.
+            const withSeriesExdates = exdates.rids.length > 0 && scope !== "series";
+            let storedParent = null;
+            let exdatesOnly = null;
+            let modified;
+            if (withSeriesExdates) {
+              storedParent = item.parentItem || item;
+              const parent = storedParent.clone();
+              parent.recurrenceInfo.modifyException(written, false);
+              for (const rid of exdates.rids) addExdateToItem(parent, rid);
+              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: occurrence and EXDATEs in one series write, EXDATE count=", exdates.rids.length);
+              // The series as the guests' cancellations read it: the stored
+              // series with the new EXDATEs and nothing else, so each date
+              // gets its own CANCEL (notifyGuests) apart from the occurrence's update.
+              exdatesOnly = storedParent.clone();
+              for (const rid of exdates.rids) addExdateToItem(exdatesOnly, rid);
+              exdatesOnly.setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
+              const writtenParent = prepareGuestWrite(parent, storedParent);
+              modified = await base.calendar.modifyItem(writtenParent, storedParent);
+            } else {
+              modified = await base.calendar.modifyItem(written, base);
+            }
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modifyItem completed");
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
             
@@ -3008,23 +3035,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             } catch (_) {}
             
             const occurrenceNotice = notifyGuests("MODIFY", written, base, { exdateRids: scope === "series" ? exdates.rids : [] });
-
-            // EXDATE additions on an edit of one occurrence go to its series,
-            // written after the occurrence: the stored series is read again
-            // (the occurrence write stored a new one) and a copy of it gets
-            // the EXDATEs, so neither write undoes the other. The stored item
-            // itself is immutable.
-            let exdateNotice = null;
-            if (exdates.rids.length && scope !== "series") {
-              const storedParent = await base.calendar.getItem((item.parentItem || item).id);
-              const parent = storedParent.clone();
-              for (const rid of exdates.rids) addExdateToItem(parent, rid);
-              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", exdates.rids.length);
-              const writtenParent = prepareGuestWrite(parent, storedParent);
-              await base.calendar.modifyItem(writtenParent, storedParent);
-              // The guests are told of the removed occurrences: one CANCEL each.
-              exdateNotice = notifyGuests("MODIFY", writtenParent, storedParent, { exdateRids: exdates.rids });
-            }
+            // The guests are told of the removed occurrences: one CANCEL each.
+            const exdateNotice = withSeriesExdates
+              ? notifyGuests("MODIFY", exdatesOnly, storedParent, { exdateRids: exdates.rids })
+              : null;
             const invitationResult = joinGuestNotices([occurrenceNotice, exdateNotice]);
             
             // Return the item's own event_id. An occurrence edit resolves with

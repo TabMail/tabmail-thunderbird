@@ -50,8 +50,14 @@ before the write, as the dialog does, so the choice can read it.
 
 ### An occurrence edit that also excludes dates
 
-The occurrence is written first; then the stored series is read again and a copy of it gets the EXDATEs
-(the stored item is immutable; before #423 the EXDATEs were added to the stored item itself and lost).
+ONE write of the series, as Thunderbird stores an occurrence change: a copy of the stored series gets the
+changed occurrence (`recurrenceInfo.modifyException`, what CalMemoryCalendar and the other providers do
+with an occurrence write) and the new EXDATEs, and is written with one `modifyItem`. Either both are saved
+or neither, and no notice goes out for a write that failed (two writes could leave the occurrence saved and
+its guests told while the edit reported failure, and a retry would notify twice). Then the notices: the
+occurrence's update, and one CANCEL per date from a view of the stored series with only the new EXDATEs.
+Before #423 the EXDATEs were added to the stored (immutable) item itself and lost. Pinned on the harness's
+`memoryCalendar` mode (stored items frozen, a write replaces the stored series).
 
 ### One cancellation per excluded date
 
