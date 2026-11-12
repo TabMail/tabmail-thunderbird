@@ -7,7 +7,7 @@
 // date is that calendar date; a date that cannot be read is refused before
 // the confirmation card, never replaced by a guess.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 
 globalThis.browser = {
   tmCalendar: {
@@ -90,5 +90,83 @@ describe('a date the calendar tools cannot read is refused before the card', () 
     expect(edit.failReason).toBeUndefined();
     const create = await runTool(createRun, { title: 'Sync', start_iso: '2099-10-20T15:00:00', end_iso: '2099-10-20T16:00:00' });
     expect(create.failReason).toBeUndefined();
+  });
+});
+
+// A time given with a `timezone` is that zone's wall clock. The computer's
+// own clock changes never move it: a time in the computer's own skipped hour
+// exists in the named zone and reaches the calendar as given (#385).
+describe('a time given in another zone keeps its digits on the computer\'s own clock change', () => {
+  const DAYS_SEARCHED = 800;
+  const COMPUTER = 'America/Los_Angeles';
+  const NAMED = 'Australia/Sydney';
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const dayDigits = (dt) => `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+
+  // Run `fn` with the process on `zone`'s clock.
+  function onClock(zone, fn) {
+    const was = process.env.TZ;
+    process.env.TZ = zone;
+    try { return fn(); } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+  }
+
+  // The first wall time from today at half past an hour that `zone`'s clocks
+  // skip, as "YYYY-MM-DDTHH:30:00".
+  function skippedWallTime(zone) {
+    return onClock(zone, () => {
+      const today = new Date();
+      for (let i = 0; i < DAYS_SEARCHED; i += 1) {
+        const noon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, 12);
+        for (let h = 0; h < 24; h += 1) {
+          const at = new Date(noon.getFullYear(), noon.getMonth(), noon.getDate(), h, 30);
+          if (at.getHours() !== h) return `${dayDigits(noon)}T${pad2(h)}:30:00`;
+        }
+      }
+      throw new Error(`no skipped hour in ${zone}`);
+    });
+  }
+
+  // Whether `naive` exists on `zone`'s clock (reads back as the same digits).
+  const existsIn = (naive, zone) => onClock(zone, () => {
+    const at = new Date(naive);
+    return `${dayDigits(at)}T${pad2(at.getHours())}:${pad2(at.getMinutes())}:${pad2(at.getSeconds())}` === naive;
+  });
+
+  const inComputersGap = skippedWallTime(COMPUTER);
+  const endOf = (naive) => naive.replace(/T(\d{2})/, (_, h) => `T${pad2(Number(h) + 1)}`);
+
+  // The tools run on the computer's clock for every test below (they read
+  // the dates a frame later, so the zone stays set for the whole run).
+  let was;
+  beforeAll(() => { was = process.env.TZ; process.env.TZ = COMPUTER; });
+  afterAll(() => {
+    if (was === undefined) delete process.env.TZ;
+    else process.env.TZ = was;
+  });
+
+  it('the computer skips the given time and the named zone has it', () => {
+    expect(existsIn(inComputersGap, COMPUTER)).toBe(false);
+    expect(existsIn(inComputersGap, NAMED)).toBe(true);
+  });
+
+  it('an edit reaches the card with the time as given in the named zone', async () => {
+    const sess = await runTool(editRun, { event_id: 'evt', start_iso: inComputersGap, end_iso: endOf(inComputersGap), timezone: NAMED });
+    expect(sess.failReason).toBeUndefined();
+    expect(sess.editEventArgs).toMatchObject({ start_iso: inComputersGap, end_iso: endOf(inComputersGap), timezone: NAMED });
+  });
+
+  it('an edit of the end alone reaches the card with the end as given in the named zone', async () => {
+    const sess = await runTool(editRun, { event_id: 'evt', end_iso: inComputersGap, timezone: NAMED });
+    expect(sess.failReason).toBeUndefined();
+    expect(sess.editEventArgs).toMatchObject({ end_iso: inComputersGap, timezone: NAMED });
+  });
+
+  it('a create reaches the card with the time as given in the named zone', async () => {
+    const sess = await runTool(createRun, { title: 'Sync', start_iso: inComputersGap, end_iso: endOf(inComputersGap), timezone: NAMED });
+    expect(sess.failReason).toBeUndefined();
+    expect(sess.createEventArgs).toMatchObject({ start_iso: inComputersGap, end_iso: endOf(inComputersGap), timezone: NAMED });
   });
 });
