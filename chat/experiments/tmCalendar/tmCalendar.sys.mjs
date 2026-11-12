@@ -563,13 +563,20 @@ function occurrenceNamedBy(item, iso, field = "recurrence_id") {
 // The first occurrence `series` actually has, as Thunderbird expands it
 // (getOccurrences: a changed occurrence at its own time, an excluded date
 // gone), or null when it has none. It is not always the series' DTSTART: the
-// occurrence there may be moved or excluded. Searched in windows from just
-// before DTSTART that double until one holds an occurrence.
+// occurrence there may be moved (earlier or later) or excluded. No occurrence
+// starts before the earliest of DTSTART and every changed occurrence's start,
+// so getOccurrences runs from just before that (the reach covers a floating
+// or zone-relabelled value) to an end that doubles until it holds one.
 function firstOccurrenceOf(series) {
   const info = series?.recurrenceInfo;
   if (!info || !series.startDate) return null;
   const startMs = series.startDate.nativeTime / 1000;
-  const from = boundFromIcs(toIcsUntil(new Date(startMs - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
+  let earliestMs = startMs;
+  for (const rid of info.getExceptionIds?.() || []) {
+    const ex = info.getExceptionFor(rid);
+    if (ex?.startDate) earliestMs = Math.min(earliestMs, ex.startDate.nativeTime / 1000);
+  }
+  const from = boundFromIcs(toIcsUntil(new Date(earliestMs - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
   let reach = OCCURRENCE_LOOKUP_REACH_MS;
   for (let i = 0; i < FIRST_OCCURRENCE_WINDOWS; i++, reach *= 2) {
     const to = boundFromIcs(toIcsUntil(new Date(startMs + reach).toISOString()));
