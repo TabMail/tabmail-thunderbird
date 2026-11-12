@@ -1827,18 +1827,27 @@ function resolveEditTimes(item, patch, tz, namedRid) {
   const slot = item.createProxy(item.startDate);
   let ref = namedRid ? info.getOccurrenceFor(namedRid) : slot;
   let refIsChanged = !!(namedRid && info.getExceptionFor(namedRid));
-  // The series' own start, named at an occurrence moved on its own, is the
-  // time the series already has: no change, as in Google Calendar (the moved
-  // occurrence keeps its own time), and an end is measured from that start.
-  if (refIsChanged && patch.start_iso && restates(patch.start_iso, tz, slot.startDate, patch.all_day)
-    && !restates(patch.start_iso, tz, ref.startDate, patch.all_day)) {
+  // An edit named at an occurrence changed on its own is read against the
+  // series' plain occurrence there (`slot`) when it changes the series' kind,
+  // or gives the series' own start: then it changes the series, not that
+  // occurrence. The series' own start is the time the series already has: no
+  // change, as in Google Calendar (the moved occurrence keeps its own time),
+  // and an end is measured from that start. A change of kind (all_day other
+  // than the series') at an occurrence already of that kind, given that
+  // occurrence's own dates, changes every other occurrence: read against the
+  // occurrence, its times would restate and be dropped, and the edit would be
+  // answered "Nothing changed".
+  const changesSeriesKind = typeof patch.all_day === "boolean" && patch.all_day !== !!item.startDate.isDate;
+  if (refIsChanged && (changesSeriesKind || (patch.start_iso && restates(patch.start_iso, tz, slot.startDate, patch.all_day)
+    && !restates(patch.start_iso, tz, ref.startDate, patch.all_day)))) {
     ref = slot;
     refIsChanged = false;
   }
   const left = timesLeft(ref, patch, tz);
   if (!left.start_iso && !left.end_iso) {
-    // No time left: a change of kind still needs both (a time that would
-    // change the kind never restates, so none was dropped).
+    // No time left: a change of kind still needs both (read against the
+    // series' plain occurrence, a time that would change the kind never
+    // restates, so none was dropped).
     const kindError = kindChangeTimesError(!!item.startDate.isDate, patch);
     if (kindError) return { error: kindError };
     return { start: null, length: null, ref, refIsChanged };

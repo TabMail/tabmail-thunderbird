@@ -195,7 +195,11 @@ same design (tabmail-ios #421).
     `resolveEditTimes` when no time is left); the message names both fields and says an all-day `end_iso` is the
     day after the last day. The dates are not derived from the stored ones (a timed event made all-day can span
     other days; one made timed needs the time of day and length the user wants). The `changes` answer of the check
-    no longer has an `all_day` term: a change of kind is in `times`. Superseded: `all_day` alone changed nothing
+    no longer has an `all_day` term: a change of kind is in `times`. A change of the series' kind named at an
+    occurrence changed on its own (on `all` at the first occurrence, or a split) is read against the series' plain
+    occurrence there (`slot`), the same swap `resolveEditTimes` makes for the series' own start: read against an
+    occurrence already of the kind asked, that occurrence's own dates restated and were dropped, and the edit was
+    answered "Nothing changed" while every other occurrence kept its kind. Superseded: `all_day` alone changed nothing
     while the card showed "All-day: no → yes" and the edit reported success, and from an occurrence on it split the
     series into two identical parts; a change to timed with a start only kept the all-day length as a 24-hour timed
     event (one-off and `this_only`), and on a series it got the mixed-kinds refusal. Pinned by

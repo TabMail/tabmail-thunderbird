@@ -173,13 +173,17 @@ const REFUSALS = [
   ['a change of kind given alone, whole series', series, { edit_scope: 'all', all_day: true }, null, KIND_NEEDS_BOTH],
   // A start and an end of different kinds: an edit that leaves all_day out
   // keeps each side's stored kind, and a change of kind needs both times, so
-  // only a series stored that way (another app's all-day start with a timed
-  // end) given a new start reaches it.
+  // only an item stored that way (another app's) reaches it: a series in
+  // either shape given a new start, and an event or one occurrence given a
+  // new start when its stored length is zero or negative (no end follows the
+  // start then).
   ['a series stored with an all-day start and a timed end, given a new start', () => {
     const ev = series({ start: fakeDate(DAY(1)) });
     ev.endDate = fakeDateTime(DAY(1), 15);
     return ev;
   }, { edit_scope: 'all', recurrence_id: `${DAY(1)}T00:00:00`, start_iso: `${DAY(2)}T00:00:00` }, null, MIXED_KINDS],
+  ['an event stored with an all-day start and a timed end before it, given a new start', () => fakeEvent({ id: 'ser', title: 'Holiday', startDate: fakeDate(DAY(6)), endDate: fakeDateTime(DAY(5), 15) }),
+    { start_iso: `${DAY(8)}T00:00:00` }, null, MIXED_KINDS],
   ['a whole series named from its first occurrence, changed on its own, given an end before that occurrence starts', () => series({ exceptions: [changed(1, { startOn: [1, 19] })] }),
     { edit_scope: 'all', recurrence_id: isoAt(1, 19), end_iso: `${DAY(1)}T18:30:00` }, null, END_BEFORE],
   ['a whole series made all-day with an added date', () => series({ items: [recurrenceDate('RDATE', fakeDateTime(DAY(6), 19))] }),

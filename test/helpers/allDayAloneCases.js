@@ -33,7 +33,14 @@ const NAMED_DAY = '2099-01-13';
 const RULE = 'FREQ=DAILY;COUNT=10';
 const WINDOW = ['2099-01-01', '2099-02-01'];
 
-/** The four stored events, in `tzid`: a one-off and a series, timed and all-day. */
+/** `day` ("YYYY-MM-DD") plus one day. */
+function dayAfter(day) {
+  const d = new Date(`${day}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The stored events, in `tzid`: a one-off and a series, timed and all-day. */
 function fixtures(tzid) {
   const allDaySeries = () => {
     const ev = fakeEvent({ id: 'ser', title: 'Retreat', startDate: dateOn(FIRST_DAY), endDate: dateOn('2099-01-11') });
@@ -41,7 +48,23 @@ function fixtures(tzid) {
     ev.recurrenceInfo.item = ev;
     return ev;
   };
+  // A series with one occurrence (on `day`) changed on its own to the other
+  // kind: a timed series' occurrence made all-day, an all-day series' made
+  // timed (10:00 to 11:00).
+  const timedSeriesWithAllDayOn = (day) => seriesOf({ tzid, day: FIRST_DAY, hour: 10, rule: RULE, changed: [{ rid: at(tzid, day, 10), start: dateOn(day), end: dateOn(dayAfter(day)) }] });
+  const allDaySeriesWithTimedOn = (day) => {
+    const ev = allDaySeries();
+    const ex = fakeEvent({ id: 'ser', title: 'Retreat', startDate: at(tzid, day, 10), endDate: at(tzid, day, 11), recurrenceId: dateOn(day) });
+    ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', RULE)], { exceptions: [ex] });
+    ev.recurrenceInfo.item = ev;
+    return ev;
+  };
   return {
+    timedSeriesWithAllDayOn,
+    allDaySeriesWithTimedOn,
+    // A timed event from midnight to the next midnight: made all-day on its
+    // own day, its printed start and end do not change, only its kind.
+    midnightOne: () => fakeEvent({ id: 'one', title: 'Offsite', startDate: at(tzid, FIRST_DAY, 0), endDate: at(tzid, dayAfter(FIRST_DAY), 0) }),
     timedOne: () => fakeEvent({ id: 'one', title: 'Review', startDate: at(tzid, FIRST_DAY, 10), endDate: at(tzid, FIRST_DAY, 11) }),
     allDayOne: () => fakeEvent({ id: 'one', title: 'Holiday', startDate: dateOn(FIRST_DAY), endDate: dateOn('2099-01-11') }),
     timedSeries: () => seriesOf({ tzid, day: FIRST_DAY, hour: 10, rule: RULE }),
@@ -79,7 +102,8 @@ async function kindChangeRefused(userTzid, items, args, { toAllDay }) {
   const loaded = onCalendar(items, userTzid);
   const ids = loaded.calendar.items.map((it) => it.id);
   const before = table(loaded.calendar.items);
-  expect(before.every((r) => r.isDate === !toAllDay), 'fixture: the stored kind differs from the one asked').toBe(true);
+  expect(before.length, 'fixture').toBeGreaterThan(0);
+  expect(!!loaded.calendar.items[0].startDate.isDate, 'fixture: the stored kind differs from the one asked').toBe(!toAllDay);
 
   const run = await edit({ ...args, all_day: toAllDay });
   const after = table(loaded.calendar.items);
@@ -112,7 +136,9 @@ async function kindChangeRefused(userTzid, items, args, { toAllDay }) {
 async function kindChangeMade(userTzid, items, args, { toAllDay, covers }) {
   const loaded = onCalendar(items, userTzid);
   const before = table(loaded.calendar.items);
+  expect(before.length, 'fixture').toBeGreaterThan(0);
   const run = await edit({ ...args, all_day: toAllDay });
+  expect(run.result, 'a change of kind is never "Nothing changed"').not.toEqual({ ok: true, result: NOTHING_CHANGED });
   expect(run.failReason).toBeUndefined();
   expect(run.card).toBeTruthy();
   expect(run.state).toBe('exec_success');
@@ -204,6 +230,46 @@ export function defineAllDayAloneSuite(userTzid) {
     });
     it('all-day series, one occurrence made timed, edit_scope this_only', async () => {
       await kindChangeMade(userTzid, [f.allDaySeries()], { event_id: 'ser', edit_scope: 'this_only', recurrence_id: allDayRid, start_iso: iso(NAMED_DAY, 9), end_iso: iso(NAMED_DAY, 10) }, { toAllDay: false, covers: named });
+    });
+  });
+
+  describe(`${userTzid}: a change of kind given at an occurrence already of that kind, with its own dates, changes the series`, () => {
+    // The occurrence the edit names was changed on its own to the kind asked;
+    // the edit gives that occurrence's own dates. Every other occurrence it
+    // covers takes the new kind (never "Nothing changed").
+    const from = (day) => day >= NAMED_DAY;
+    const allDayAt = { start_iso: NAMED_DAY, end_iso: dayAfter(NAMED_DAY) };
+    const timedAt = { start_iso: iso(NAMED_DAY, 10), end_iso: iso(NAMED_DAY, 11) };
+    it('timed series made all-day from an occurrence made all-day on its own, edit_scope this_and_following', async () => {
+      await kindChangeMade(userTzid, [f.timedSeriesWithAllDayOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: NAMED_DAY, ...allDayAt }, { toAllDay: true, covers: from });
+    });
+    it('all-day series made timed from an occurrence made timed on its own, edit_scope this_and_following', async () => {
+      await kindChangeMade(userTzid, [f.allDaySeriesWithTimedOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso(NAMED_DAY, 10), ...timedAt }, { toAllDay: false, covers: from });
+    });
+    it('timed series, edit_scope all named there: routed to from that occurrence on', async () => {
+      await kindChangeMade(userTzid, [f.timedSeriesWithAllDayOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'all', recurrence_id: NAMED_DAY, ...allDayAt }, { toAllDay: true, covers: from });
+    });
+    it('all-day series, edit_scope all named there: routed to from that occurrence on', async () => {
+      await kindChangeMade(userTzid, [f.allDaySeriesWithTimedOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'all', recurrence_id: iso(NAMED_DAY, 10), ...timedAt }, { toAllDay: false, covers: from });
+    });
+    it('timed series made all-day, edit_scope all, named at its first occurrence made all-day on its own', async () => {
+      await kindChangeMade(userTzid, [f.timedSeriesWithAllDayOn(FIRST_DAY)], { event_id: 'ser', edit_scope: 'all', recurrence_id: FIRST_DAY, start_iso: FIRST_DAY, end_iso: dayAfter(FIRST_DAY) }, { toAllDay: true, covers: all });
+    });
+    it('all-day series made timed, edit_scope all, named at its first occurrence made timed on its own', async () => {
+      await kindChangeMade(userTzid, [f.allDaySeriesWithTimedOn(FIRST_DAY)], { event_id: 'ser', edit_scope: 'all', recurrence_id: iso(FIRST_DAY, 10), start_iso: iso(FIRST_DAY, 10), end_iso: iso(FIRST_DAY, 11) }, { toAllDay: false, covers: all });
+    });
+    it('all_day alone there is refused before the card, both kinds', async () => {
+      await kindChangeRefused(userTzid, [f.timedSeriesWithAllDayOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: NAMED_DAY }, { toAllDay: true });
+      await kindChangeRefused(userTzid, [f.allDaySeriesWithTimedOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso(NAMED_DAY, 10) }, { toAllDay: false });
+    });
+  });
+
+  describe(`${userTzid}: a change of kind with both times is made where only the kind differs, and on a split (controls)`, () => {
+    it('a timed event from midnight to the next midnight made all-day on its own day', async () => {
+      await kindChangeMade(userTzid, [f.midnightOne()], { event_id: 'one', start_iso: FIRST_DAY, end_iso: dayAfter(FIRST_DAY) }, { toAllDay: true, covers: all });
+    });
+    it('timed series made all-day from an occurrence on, edit_scope this_and_following', async () => {
+      await kindChangeMade(userTzid, [f.timedSeries()], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: timedRid, start_iso: NAMED_DAY, end_iso: dayAfter(NAMED_DAY) }, { toAllDay: true, covers: (day) => day >= NAMED_DAY });
     });
   });
 
