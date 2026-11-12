@@ -404,3 +404,25 @@ describe('review r2', () => {
     expect(Object.fromEntries(day8.organizer.properties)).toEqual({});
   });
 });
+
+describe('review r3', () => {
+  it('a local calendar with no address and guests gets the local line, not the no-address one', async () => {
+    const { api, calendar } = bridge([], {}, 'storage');
+    const res = await api.createCalendarEvent(createArgs({ attendees: [{ email: 'ana@example.com' }] }));
+    expect(res.ok).toBe(true);
+    expect(calendar.items[0].organizer).toBeFalsy();
+    expect(res.guest_notice).toBe('This calendar is kept only on this computer, so no one is emailed about it.');
+  });
+
+  it('an edited changed occurrence takes its series\' organizer without the server\'s parameters', async () => {
+    const loaded = bridge([series([guest('ana')], otherOrganizer(), [changedAt(7, [guest('ana')])])], WITH_ADDRESS);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: isoAt(7), title: 'Renamed' });
+    expect(res.ok, res.error).toBe(true);
+    const stored = loaded.calendar.items[0];
+    const day7 = exceptionsOf(stored)[0];
+    expect(day7.organizer.id).toBe('mailto:boss@example.com');
+    expect(Object.fromEntries(day7.organizer.properties)).toEqual({});
+    // The series' own organizer keeps every parameter.
+    expect(Object.fromEntries(stored.organizer.properties)).toEqual({ 'SENT-BY': 'mailto:assistant@example.com', 'SCHEDULE-STATUS': '1.2' });
+  });
+});
