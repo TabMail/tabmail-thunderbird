@@ -40,7 +40,7 @@ globalThis.browser = {
   storage: { onChanged: { addListener: vi.fn() } },
 };
 
-const { loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent } = await import('./helpers/calendarBridgeHarness.js');
+const { loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent, fixedZone } = await import('./helpers/calendarBridgeHarness.js');
 const { renderMarkdown, attachSpecialLinkListeners } = await import('../chat/modules/markdown.js');
 const { getGenericTimezoneAbbr } = await import('../chat/modules/helpers.js');
 const { initMentionAutocomplete, cleanupMentionAutocomplete } = await import('../chat/modules/mentionAutocomplete.js');
@@ -190,6 +190,19 @@ describe.each(ZONES)('with the process zone %s', (zone) => {
       restoreLocale = stubDefaultLocale('en-GB');
       const items = await mentionItemsFor(fakeEvent({ id: 'ad', title: 'Holiday', startDate: fakeDate(DAY), endDate: fakeDate(NEXT_DAY) }), '@Holi');
       expect(items).toEqual([{ label: 'Holiday', description: 'Event • 12/11/2099' }]);
+    });
+
+    // An all-day DATE stored with a zone (another app's, or one TabMail wrote
+    // before all-day values were written floating) has its `start` at midnight in
+    // that zone: for Europe/Berlin 2099-11-12 that is 23:00 UTC on Nov 11. Its day
+    // is still its own date digits, so reading that instant in UTC (or in the
+    // user's zone) would name the wrong day.
+    it('an all-day event stored with a zone east of UTC is listed under its own day', async () => {
+      restoreLocale?.();
+      restoreLocale = stubDefaultLocale('en-US');
+      const berlin = fixedZone('Europe/Berlin', 60);
+      const items = await mentionItemsFor(fakeEvent({ id: 'zd', title: 'Holiday', startDate: fakeDate(DAY, berlin), endDate: fakeDate(NEXT_DAY, berlin) }), '@Holi');
+      expect(items).toEqual([{ label: 'Holiday', description: 'Event • 11/12/2099' }]);
     });
 
     it('a timed event keeps its local day (unchanged)', async () => {

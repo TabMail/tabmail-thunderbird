@@ -70,8 +70,9 @@ export async function resolveContactDetails(contactId) {
  * Resolve calendar event details from an event ID
  * @param {string} eventId - The event ID (not compound)
  * `start` and `end` are epoch milliseconds, passed through from tmCalendar ("" when the event has none).
- * An all-day event (`allDay`) is a date with no zone: its `start` is UTC midnight of its day, which names
- * the previous day west of UTC, so its days are `startDay`/`endDay` ("YYYY-MM-DD", the end exclusive),
+ * An all-day event (`allDay`) is a date with no zone of its own: its `start` is midnight of its day in
+ * whatever zone the DATE was stored with (UTC midnight for a floating or UTC date), which can name another
+ * day in the user's zone, so its days are `startDay`/`endDay` ("YYYY-MM-DD", the end exclusive),
  * passed through from tmCalendar ("" for a timed event). `startDate` (the @-mention list's date, in the
  * user's locale) names an all-day event's `startDay` and a timed event's local day.
  * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", allDay: boolean, startDay: string, endDay: string, attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
