@@ -7,7 +7,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { formatGregorianDay } from "../../agent/modules/gregorianDate.js";
-import { formatTimestampForAgent, toIsoNoMs } from "./helpers.js";
+import { allDayLastDay, formatTimestampForAgent, toIsoNoMs } from "./helpers.js";
 
 export const ICS_PARSER_SETTINGS = {
   attendeeDisplayLimit: 5,
@@ -365,18 +365,18 @@ export function parseIcsToEvents(icsText, icsFilename = "") {
     if (startDate?.kind === "date") {
       const startDay = dayKeyOf(startDate.components);
       const endDate = ev.__dtend ? parseDateTimeBasic(ev.__dtend.value) : null;
-      let lastDay = startDay;
+      // The last day is the day before the exclusive end (RFC 5545), never before the start
+      // (allDayLastDay). A day DURATION ends that many days after the start; with neither, the
+      // event is its start day.
+      let endDay = startDay;
       if (endDate?.kind === "date") {
-        // DTEND of a date is exclusive (RFC 5545): the last day is the day before it,
-        // never before the start (an end equal to the start is one day).
-        const c = endDate.components;
-        const before = dayKeyOf(c, -1);
-        if (before > startDay) lastDay = before;
+        endDay = dayKeyOf(endDate.components);
       } else if (ev.__duration) {
         const m = String(ev.__duration).match(/^P(?:(\d+)W)?(?:(\d+)D)?$/i);
         const days = m ? parseInt(m[1] || "0", 10) * 7 + parseInt(m[2] || "0", 10) : 0;
-        if (days > 1) lastDay = dayKeyOf(startDate.components, days - 1);
+        endDay = dayKeyOf(startDate.components, days);
       }
+      const lastDay = allDayLastDay(endDay, startDay);
       out.push({
         uid: ev.uid || "",
         title: ev.title || "",

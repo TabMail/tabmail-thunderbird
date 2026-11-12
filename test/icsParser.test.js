@@ -15,7 +15,9 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 
 // Mock helpers.js — formatTimestampForAgent and toIsoNoMs
-vi.mock('../chat/modules/helpers.js', () => ({
+// allDayLastDay is the real one: the parser's all-day last day comes from it.
+vi.mock('../chat/modules/helpers.js', async (importOriginal) => ({
+  allDayLastDay: (await importOriginal()).allDayLastDay,
   formatTimestampForAgent: vi.fn((d) => {
     if (!(d instanceof Date) || isNaN(d.getTime())) return '';
     return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
