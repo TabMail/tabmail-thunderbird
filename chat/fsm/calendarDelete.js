@@ -255,6 +255,7 @@ export async function runStateDeleteCalendarEventExec() {
       event_id: eventId,
       scope: res.scope || null,
       invitations: res.invitations,
+      guest_notice: res.guest_notice || null,
     };
     try {
       const pid = ctx.activePid || ctx.activeToolCallId || 0;
@@ -277,6 +278,9 @@ export async function runStateDeleteCalendarEventExec() {
         resultMsg += `. Warning: Failed to send cancellations (${res.invitations.error}).`;
       }
     }
+    // The calendar has no email address of its own: said plainly (the
+    // bridge's guest_notice), never that guests were emailed.
+    if (res.guest_notice) resultMsg += `. ${res.guest_notice}`;
   } catch (e) {
     agentBubble.classList.remove("loading");
     const msg = `Failed to delete the event: ${e}`;

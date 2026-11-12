@@ -74,7 +74,6 @@ async function formatEventArgsForDisplay(args) {
         lines.push(`  ... and ${a.attendees.length - 3} more`);
       }
     }
-    if (a.organizer_email) lines.push(`Organizer: ${a.organizer_email}`);
     if (a.recurrence) {
       lines.push(`Recurrence: ${JSON.stringify(a.recurrence)}`);
     }
@@ -175,6 +174,7 @@ export async function runStateCreateCalendarEventExec() {
       calendar_id: res.calendar_id,
       event_title: res.title,
       invitations: res.invitations,
+      guest_notice: res.guest_notice || null,
     };
     try {
       const pid = ctx.activePid || ctx.activeToolCallId || 0;
@@ -200,6 +200,9 @@ export async function runStateCreateCalendarEventExec() {
         resultMsg += `. Warning: Failed to send invitations (${res.invitations.error}).`;
       }
     }
+    // The calendar has no email address of its own: said plainly (the
+    // bridge's guest_notice), never that guests were emailed.
+    if (res.guest_notice) resultMsg += `. ${res.guest_notice}`;
   } catch (e) {
     agentBubble.classList.remove("loading");
     const msg = `Failed to create the event: ${e}`;
