@@ -187,12 +187,85 @@ function hasGuests(item) {
 function prepareGuestWrite(item, oldItem = null) {
   if (!hasGuests(item) && !hasGuests(oldItem)) return item;
   item.setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
+  adaptScheduleAgent(item);
   return oldItem ? getCalNamespace().itip.prepareSequence(item, oldItem) : item;
 }
 
+// Who sends the scheduling messages on a CalDAV calendar whose server
+// schedules (RFC 6638), as the event dialog decides it before saving
+// (calendar-item-iframe.js onCommandSave): with forceEmailScheduling on, the
+// attendees of an organizer's write are marked SCHEDULE-AGENT=CLIENT, so the
+// server stays quiet while Thunderbird emails (canNotify is false then), and
+// guests get one notice, not two. Thunderbird's own function where it is a
+// cal.itip one (cal.itip.adaptScheduleAgent); on the releases where it is
+// still a dialog-window function (calendar-dialog-utils.js), the same code,
+// copied from calItipUtils.sys.mjs adaptScheduleAgent.
+function adaptScheduleAgent(item) {
+  const itipUtils = getCalNamespace().itip;
+  if (typeof itipUtils.adaptScheduleAgent === "function") {
+    itipUtils.adaptScheduleAgent(item);
+    return;
+  }
+  const Ci = globalThis.Ci;
+  if (
+    !item.calendar ||
+    item.calendar.type != "caldav" ||
+    !item.calendar.getProperty("capabilities.autoschedule.supported")
+  ) {
+    return;
+  }
+
+  const identity = item.calendar.getProperty("imip.identity");
+  const orgEmail = identity?.QueryInterface(Ci.nsIMsgIdentity).email?.toLowerCase();
+  const isOrganizerAction =
+    item.organizer && orgEmail && item.organizer.id.toLowerCase() == "mailto:" + orgEmail;
+  if (item.calendar.getProperty("forceEmailScheduling")) {
+    // For attendees, we change schedule-agent only in case of an
+    // organizer triggered action.
+    if (isOrganizerAction) {
+      for (const attendee of item.getAttendees()) {
+        // Overwriting must always happen consistently for all
+        // attendees regarding SERVER or CLIENT but must not override
+        // e.g. NONE, so we only overwrite if the param is set to
+        // SERVER or doesn't exist.
+        if (
+          attendee.getProperty("SCHEDULE-AGENT") == "SERVER" ||
+          !attendee.getProperty("SCHEDULE-AGENT")
+        ) {
+          attendee.setProperty("SCHEDULE-AGENT", "CLIENT");
+          attendee.deleteProperty("SCHEDULE-STATUS");
+          attendee.deleteProperty("SCHEDULE-FORCE-SEND");
+        }
+      }
+    } else if (
+      item.organizer &&
+      (item.organizer.getProperty("SCHEDULE-AGENT") == "SERVER" ||
+        !item.organizer.getProperty("SCHEDULE-AGENT"))
+    ) {
+      // For organizer, we change the schedule-agent only in case of
+      // an attendee triggered action.
+      item.organizer.setProperty("SCHEDULE-AGENT", "CLIENT");
+      item.organizer.deleteProperty("SCHEDULE-STATUS");
+      item.organizer.deleteProperty("SCHEDULE-FORCE-SEND");
+    }
+  } else if (isOrganizerAction) {
+    for (const attendee of item.getAttendees()) {
+      if (attendee.getProperty("SCHEDULE-AGENT") == "CLIENT") {
+        attendee.deleteProperty("SCHEDULE-AGENT");
+      }
+    }
+  } else if (item.organizer && item.organizer.getProperty("SCHEDULE-AGENT") == "CLIENT") {
+    item.organizer.deleteProperty("SCHEDULE-AGENT");
+  }
+}
+
 // One notice, as checkAndSend builds it (the invited-attendee check for an
-// event the user was invited to included). Returns { ok: true } or
-// { ok: false, error }.
+// event the user was invited to included). Returns { ok: true } only when
+// Thunderbird built a message and its send() took it; otherwise
+// { ok: false, error, reason }: "not_organizer" when the user is a guest of
+// the event (Thunderbird sends at most the user's reply, on an answer change),
+// "no_message" when it built nothing for another reason, "send_failed" when
+// send() refused.
 function sendGuestNotice(opType, item, oldItem) {
   const Ci = globalThis.Ci;
   const cal = getCalNamespace();
@@ -204,17 +277,26 @@ function sendGuestNotice(opType, item, oldItem) {
   const { CalItipMessageSender } = ChromeUtils.importESModule(CAL_ITIP_MESSAGE_SENDER_URL);
   const sender = new CalItipMessageSender(oldItem, invitedAttendee);
   if (!sender.buildOutgoingMessages(Ci.calIOperationListener[opType], item, { responseMode: Ci.calIItipItem.AUTO })) {
-    return { ok: true };
+    if (invitedAttendee) {
+      return { ok: false, reason: "not_organizer", error: "the user is a guest of this event, not its organizer, so its guests were not notified (Thunderbird sends at most the user's own reply)" };
+    }
+    return { ok: false, reason: "no_message", error: "Thunderbird built no notice for this change (no guest other than the calendar's owner, or no change the guests are sent)" };
   }
   if (!sender.send(cal.itip.getImipTransport(item))) {
-    return { ok: false, error: "Thunderbird could not send the guests' notice for this calendar (no email account to send it from, or the send was refused)" };
+    return { ok: false, reason: "send_failed", error: "Thunderbird could not send the guests' notice for this calendar (no email account to send it from, or the send was refused)" };
   }
   return { ok: true };
 }
 
 // Tells the guests of one write. opType is "ADD", "MODIFY" or "DELETE"
 // (calIOperationListener); the write itself has already happened. Returns
-// null when there are no guests, else { ok: true } or { ok: false, error }.
+// null when there are no guests, else { ok: true } or { ok: false, error, reason }.
+//
+// The item before is passed to the sender as a flagged copy: for a change
+// that only adds an EXDATE, Thunderbird swaps in the ORIGINAL's occurrence at
+// that date and reads the notify flag from it, which a proxy reads from its
+// stored parent (CalItemBase.getProperty). A stored event synced from a
+// server has no flag, so without the copy no CANCEL would be built.
 //
 // exdateRids: the occurrences this write excluded. Thunderbird's sender turns
 // a modification that only adds EXDATEs into a CANCEL of the FIRST added date
@@ -228,9 +310,10 @@ function notifyGuests(opType, item, oldItem = null, { exdateRids = [] } = {}) {
   if (!hasGuests(item) && !hasGuests(oldItem)) return null;
   try {
     let result;
-    if (opType === "MODIFY" && oldItem && exdateRids.length > 1) {
-      const steps = [oldItem.clone()];
-      steps[0].setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
+    const original = oldItem ? oldItem.clone() : null;
+    if (original) original.setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
+    if (opType === "MODIFY" && original && exdateRids.length > 1) {
+      const steps = [original];
       for (const rid of exdateRids) {
         const next = steps[steps.length - 1].clone();
         addExdateToItem(next, rid);
@@ -240,7 +323,7 @@ function notifyGuests(opType, item, oldItem = null, { exdateRids = [] } = {}) {
         result = joinGuestNotices(steps.slice(1).map((step, i) => sendGuestNotice("MODIFY", step, steps[i])));
       }
     }
-    result = result || sendGuestNotice(opType, item, oldItem);
+    result = result || sendGuestNotice(opType, item, original);
     if (!result.ok) console.error(`[tmCalendar] notifyGuests: ${opType} not sent:`, result.error);
     else tmCalendarDebugLog(`[tmCalendar] notifyGuests: ${opType} handed to Thunderbird scheduling`);
     return result;
@@ -2527,6 +2610,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
 
             // Persist (returns the created item); its guests are invited.
+            // On its calendar before the write, as the event dialog puts it
+            // (the scheduling choice above reads the calendar).
+            ev.calendar = cal;
             const created = await cal.addItem(prepareGuestWrite(ev));
             tmCalendarDebugLog("[tmCalendar] createCalendarEvent: created event with id:", created?.id);
             try { const transpSaved = String(created?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: initial TRANSP on created:", transpSaved || "(empty)"); } catch (_) {}
@@ -2860,22 +2946,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               || !!guestChange || exdates.rids.length > 0 || (!!patch.recurrence && typeof patch.recurrence === "object");
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
 
-            // EXDATE additions on an edit of one occurrence go to its series.
-            let exdateNotice = null;
-            if (exdates.rids.length && scope !== "series") {
-              const parent = item.parentItem || item;
-              const parentOld = parent.clone();
-              let added = 0;
-              for (const rid of exdates.rids) {
-                try { addExdateToItem(parent, rid); added += 1; } catch (xe) { console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe); }
-              }
-              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
-              const writtenParent = prepareGuestWrite(parent, parentOld);
-              await parent.calendar.modifyItem(writtenParent, parentOld);
-              // The guests are told of the removed occurrences: one CANCEL each.
-              exdateNotice = notifyGuests("MODIFY", writtenParent, parentOld, { exdateRids: exdates.rids });
-            }
-
             // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
 
             // Log complete state before save
@@ -2937,10 +3007,25 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               } catch (ve) { console.warn("[tmCalendar] modifyCalendarEvent: verify fetch failed:", ve); }
             } catch (_) {}
             
-            const invitationResult = joinGuestNotices([
-              exdateNotice,
-              notifyGuests("MODIFY", written, base, { exdateRids: scope === "series" ? exdates.rids : [] }),
-            ]);
+            const occurrenceNotice = notifyGuests("MODIFY", written, base, { exdateRids: scope === "series" ? exdates.rids : [] });
+
+            // EXDATE additions on an edit of one occurrence go to its series,
+            // written after the occurrence: the stored series is read again
+            // (the occurrence write stored a new one) and a copy of it gets
+            // the EXDATEs, so neither write undoes the other. The stored item
+            // itself is immutable.
+            let exdateNotice = null;
+            if (exdates.rids.length && scope !== "series") {
+              const storedParent = await base.calendar.getItem((item.parentItem || item).id);
+              const parent = storedParent.clone();
+              for (const rid of exdates.rids) addExdateToItem(parent, rid);
+              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", exdates.rids.length);
+              const writtenParent = prepareGuestWrite(parent, storedParent);
+              await base.calendar.modifyItem(writtenParent, storedParent);
+              // The guests are told of the removed occurrences: one CANCEL each.
+              exdateNotice = notifyGuests("MODIFY", writtenParent, storedParent, { exdateRids: exdates.rids });
+            }
+            const invitationResult = joinGuestNotices([occurrenceNotice, exdateNotice]);
             
             // Return the item's own event_id. An occurrence edit resolves with
             // the PARENT series (CalMemoryCalendar.modifyItem), so the title is

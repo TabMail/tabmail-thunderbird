@@ -23,6 +23,36 @@ transactions do it (`CalTransactionManager`: `CalModifyTransaction` writes
   schedules itself (`calISchedulingSupport.canNotify`: CalDAV server scheduling, Exchange/Graph providers)
   and otherwise sends iMIP through `cal.itip.getImipTransport(item)`. The bridge does not guess the provider.
 
+### The item before goes to the sender as a flagged copy
+
+For a change that only adds an EXDATE, `buildOutgoingMessages` swaps in the ORIGINAL item's occurrence at that
+date and reads `X-MOZ-SEND-INVITATIONS` from it, and an occurrence proxy reads it from its stored parent
+(`CalItemBase.getProperty`). A stored event synced from a server has no flag, so the bridge passes the sender
+a flagged copy of the item before (every MODIFY), or no CANCEL would be built.
+
+### No message built is never success
+
+`sendGuestNotice` returns `{ ok: true }` only when a message was built and `send()` took it. Built nothing:
+`reason: "not_organizer"` when the user is a guest of the event (Thunderbird sends at most the user's reply;
+the words say the other guests were not notified because the user is a guest), else `reason: "no_message"`
+(owner the only attendee, or nothing the guests are sent). `send()` refused: `reason: "send_failed"`.
+
+### Scheduling agent, as the event dialog sets it
+
+The dialog calls `cal.itip.adaptScheduleAgent(item)` before saving (comm-central
+`calendar/base/content/item-editing/calendar-item-iframe.js` onCommandSave). On a CalDAV calendar with
+server scheduling (`capabilities.autoschedule.supported`) and `forceEmailScheduling`, an organizer's write
+marks the attendees `SCHEDULE-AGENT=CLIENT`, so the server stays quiet while Thunderbird emails
+(`canNotify` is false then); otherwise guests get two notices. `prepareGuestWrite` does the same: Thunderbird's
+`cal.itip.adaptScheduleAgent` where it exists (it is a dialog-window function on esr140), else the same code
+copied from `calendar/base/modules/utils/calItipUtils.sys.mjs`. A created event is put on its calendar
+before the write, as the dialog does, so the choice can read it.
+
+### An occurrence edit that also excludes dates
+
+The occurrence is written first; then the stored series is read again and a copy of it gets the EXDATEs
+(the stored item is immutable; before #423 the EXDATEs were added to the stored item itself and lost).
+
 ### One cancellation per excluded date
 
 `buildOutgoingMessages` turns a modification that only adds EXDATEs into a CANCEL of the FIRST added date

@@ -56,10 +56,20 @@ function series({ withGuests = true } = {}) {
   return ev;
 }
 
-// Every notice was handed to Thunderbird flagged, without a second question.
+// The item before, as the sender gets it: a copy of the stored item carrying
+// the notify flag (Thunderbird reads the flag of an excluded occurrence from it).
+function expectFlaggedCopyOf(given, stored) {
+  expect(given).toBeTruthy();
+  expect(given).not.toBe(stored);
+  expect(given.id).toBe(stored.id);
+  expect(given.getProperty('X-MOZ-SEND-INVITATIONS')).toBe('TRUE');
+}
+
+// Every notice was handed to Thunderbird flagged, built, without a second question.
 function expectFlaggedAuto(notices) {
   for (const n of notices) {
     expect(n.sendInvitations).toBe('TRUE');
+    expect(n.built).toBe(1);
     expect(n.responseMode).toBe('AUTO');
   }
 }
@@ -83,7 +93,7 @@ describe('a write to an event with guests notifies them, with no argument asking
     const res = await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' });
     expect(res.ok).toBe(true);
     expect(notices.map((n) => n.op)).toEqual(['MODIFY']);
-    expect(notices[0]?.oldItem).toBe(stored);
+    expectFlaggedCopyOf(notices[0]?.oldItem, stored);
     expect(notices[0]?.item.title).toBe('Review, moved');
     expectFlaggedAuto(notices);
   });
@@ -94,7 +104,7 @@ describe('a write to an event with guests notifies them, with no argument asking
     const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', title: 'Sync, renamed' });
     expect(res.ok).toBe(true);
     expect(notices.map((n) => n.op)).toEqual(['MODIFY']);
-    expect(notices[0]?.oldItem).toBe(stored);
+    expectFlaggedCopyOf(notices[0]?.oldItem, stored);
     expectFlaggedAuto(notices);
   });
 
@@ -124,7 +134,7 @@ describe('a write to an event with guests notifies them, with no argument asking
     const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: OCCURRENCE, title: 'Sync, later' });
     expect(res.ok).toBe(true);
     expect(notices.map((n) => n.op)).toEqual(['MODIFY', 'ADD']);
-    expect(notices[0]?.oldItem).toBe(stored);
+    expectFlaggedCopyOf(notices[0]?.oldItem, stored);
     expect(notices[1]?.item.title).toBe('Sync, later');
     expect(notices[1]?.guests).toEqual(GUESTS);
     expectFlaggedAuto(notices);
@@ -155,7 +165,7 @@ describe('a write to an event with guests notifies them, with no argument asking
       const res = await api.deleteCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', delete_scope: scope, recurrence_id: OCCURRENCE });
       expect(res.ok).toBe(true);
       expect(notices.map((n) => n.op)).toEqual(['MODIFY']);
-      expect(notices[0]?.oldItem).toBe(stored);
+      expectFlaggedCopyOf(notices[0]?.oldItem, stored);
       expectFlaggedAuto(notices);
     });
   }
@@ -174,6 +184,8 @@ describe('excluding several occurrences sends one cancellation per date', () => 
     });
     for (const a of added) expect(a).toHaveLength(1);
     expect(new Set(added.flat()).size).toBe(count);
+    expect(notices.map((n) => n.method)).toEqual(Array(count).fill('CANCEL'));
+    expect(new Set(notices.map((n) => n.cancelled)).size).toBe(count);
     expectFlaggedAuto(notices);
   }
 
@@ -229,10 +241,79 @@ describe('a notice Thunderbird could not send is reported, the change kept', () 
 describe('a modification is sequenced as Thunderbird sequences it', () => {
   it('each write of an item with guests goes through cal.itip.prepareSequence against the stored item', async () => {
     const stored = oneOff();
-    const { api, sequenced } = loadCalendarBridge(bridgeUrl, { items: [stored] });
+    const { api, sequenced, modifications } = loadCalendarBridge(bridgeUrl, { items: [stored] });
     expect((await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', start_iso: '2099-10-20T11:00:00', end_iso: '2099-10-20T12:00:00' })).ok).toBe(true);
     expect(sequenced).toHaveLength(1);
     expect(sequenced[0]?.oldItem).toBe(stored);
+    // prepareSequence returned a bumped copy: that copy is what is written.
+    expect(sequenced[0]?.returned).not.toBe(sequenced[0]?.newItem);
+    expect(modifications.at(-1)?.newItem).toBe(sequenced[0]?.returned);
+    expect(modifications.at(-1)?.newItem.getProperty('SEQUENCE')).toBe('1');
+  });
+});
+
+// A stored event synced from a server carries no X-MOZ-SEND-INVITATIONS.
+// Removing one occurrence of it must still cancel that occurrence for the
+// guests, and the result says so only when Thunderbird built the CANCEL.
+describe('removing one occurrence of a stored series without the notify flag cancels it', () => {
+  const unflagged = () => {
+    const ev = series();
+    expect(ev.getProperty('X-MOZ-SEND-INVITATIONS')).toBe(null);
+    return ev;
+  };
+  const CASES = [
+    ['delete this_only', (api) => api.deleteCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', delete_scope: 'this_only', recurrence_id: OCCURRENCE })],
+    ['one date excluded from the whole series', (api) => api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', exdates_add: [OCCURRENCE] })],
+    ['one date excluded with an edit of another occurrence', (api) => api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: '2099-10-20T17:00:00', title: 'Sync, once', exdates_add: [OCCURRENCE] })],
+  ];
+  for (const [name, write] of CASES) {
+    it(`${name}: a CANCEL of that occurrence is built and sent, and the result says so`, async () => {
+      const { api, notices } = loadCalendarBridge(bridgeUrl, { items: [unflagged()] });
+      const res = await write(api);
+      expect(res.ok).toBe(true);
+      const cancels = notices.filter((n) => n.method === 'CANCEL');
+      expect(cancels).toHaveLength(1);
+      expect(cancels[0]?.built).toBe(1);
+      expect(cancels[0]?.sent).toBe(true);
+      expect(res.invitations).toEqual({ ok: true });
+    });
+  }
+});
+
+describe('no message built is never reported as notified', () => {
+  it('an event the user was invited to: the guests were not notified because the user is a guest', async () => {
+    const { api, notices } = loadCalendarBridge(bridgeUrl, { items: [oneOff()], invitedAs: 'mailto:ana@example.com' });
+    const res = await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' });
+    expect(res.ok).toBe(true);
+    expect(notices[0]?.built).toBe(0);
+    expect(res.invitations).toMatchObject({ ok: false, reason: 'not_organizer' });
+  });
+
+  it('a message Thunderbird does not build for another reason is reported as not notified, with why', async () => {
+    // The sender builds nothing for an item without the notify flag; the
+    // bridge always sets it, so stand in a sender that builds nothing.
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [oneOff()] });
+    const real = loaded.ctx.ChromeUtils.importESModule;
+    loaded.ctx.ChromeUtils.importESModule = (url) => (url.includes('CalItipMessageSender')
+      ? { CalItipMessageSender: class { buildOutgoingMessages() { return 0; } send() { throw new Error('send without a message'); } } }
+      : real(url));
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' });
+    expect(res.ok).toBe(true);
+    expect(res.invitations).toMatchObject({ ok: false, reason: 'no_message' });
+    expect(res.invitations.error).toMatch(/built no notice/);
+  });
+});
+
+describe('create sets the organizer of an event with guests', () => {
+  it('the created event carries the organizer it was given', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl);
+    const res = await api.createCalendarEvent({
+      calendar_id: 'cal1', title: 'Kickoff', start_iso: '2099-10-20T09:00:00', end_iso: '2099-10-20T10:00:00',
+      attendees: [{ email: 'ana@example.com' }], organizer_email: 'organizer@example.com',
+    });
+    expect(res.ok).toBe(true);
+    expect(calendar.items[0]?.organizer?.id).toBe('mailto:organizer@example.com');
+    expect(calendar.items[0]?.organizer?.isOrganizer).toBe(true);
   });
 });
 
@@ -292,5 +373,74 @@ describe('send_invitations is gone from the add-on', () => {
   it('the delete flow passes it nowhere', () => {
     const src = readFileSync(resolve(__dirname, '../chat/fsm/calendarDelete.js'), 'utf8');
     expect(src).not.toMatch(/send_invitations/);
+  });
+});
+
+describe('the words the user and the assistant get', () => {
+  it('only a built and sent notice reads as handed to Thunderbird', async () => {
+    const { guestNoticeResultText, guestNoticeBubbleText } = await import('../chat/modules/calendarGuestNotice.js');
+    expect(guestNoticeResultText(null)).toBe('');
+    expect(guestNoticeResultText({ ok: true })).toMatch(/handed to Thunderbird/);
+    for (const reason of ['no_message', 'send_failed', undefined]) {
+      const failed = { ok: false, reason, error: 'why it failed' };
+      expect(guestNoticeResultText(failed)).toMatch(/could NOT be notified: why it failed/);
+      expect(guestNoticeResultText(failed)).not.toMatch(/handed to Thunderbird/);
+      expect(guestNoticeBubbleText(failed)).toMatch(/could not be notified \(why it failed\)/);
+    }
+    const guest = { ok: false, reason: 'not_organizer', error: 'x' };
+    expect(guestNoticeResultText(guest)).toMatch(/NOT notified: the user is a guest of this event, not its organizer/);
+    expect(guestNoticeResultText(guest)).not.toMatch(/handed to Thunderbird/);
+    expect(guestNoticeBubbleText(guest)).toMatch(/you are a guest of this event, not its organizer/);
+  });
+});
+
+// A CalDAV calendar whose server schedules (calendar-auto-schedule) with
+// forceEmailScheduling on: Thunderbird emails the guests (canNotify is false),
+// so its event dialog marks the attendees SCHEDULE-AGENT=CLIENT before saving
+// and the server stays quiet. The bridge does the same, or guests get two notices.
+describe('the scheduling agent is chosen as the event dialog chooses it', () => {
+  const identity = { QueryInterface: () => ({ email: 'organizer@example.com' }) };
+  const caldav = (force) => ({
+    calendarType: 'caldav',
+    calendarProperties: { 'capabilities.autoschedule.supported': true, forceEmailScheduling: force, 'imip.identity': identity },
+  });
+  const agents = (item) => item.getAttendees().map((a) => a.getProperty('SCHEDULE-AGENT'));
+
+  it('forceEmailScheduling on: an organizer edit writes every attendee as CLIENT', async () => {
+    const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [oneOff()], ...caldav(true) });
+    expect((await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' })).ok).toBe(true);
+    expect(agents(modifications.at(-1).newItem)).toEqual(['CLIENT', 'CLIENT']);
+  });
+
+  it('forceEmailScheduling on: a created event with guests is written with CLIENT attendees', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, caldav(true));
+    const res = await api.createCalendarEvent({
+      calendar_id: 'cal1', title: 'Kickoff', start_iso: '2099-10-20T09:00:00', end_iso: '2099-10-20T10:00:00',
+      attendees: [{ email: 'ana@example.com' }], organizer_email: 'organizer@example.com',
+    });
+    expect(res.ok).toBe(true);
+    expect(agents(calendar.items[0])).toEqual(['CLIENT']);
+  });
+
+  it('forceEmailScheduling off: the server schedules, and a CLIENT mark is cleared', async () => {
+    const stored = oneOff();
+    stored.getAttendees()[0].setProperty('SCHEDULE-AGENT', 'CLIENT');
+    const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [stored], ...caldav(false) });
+    expect((await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' })).ok).toBe(true);
+    expect(agents(modifications.at(-1).newItem)).toEqual([null, null]);
+  });
+
+  it('a calendar that is not CalDAV is left alone', async () => {
+    const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [oneOff()] });
+    expect((await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' })).ok).toBe(true);
+    expect(agents(modifications.at(-1).newItem)).toEqual([null, null]);
+  });
+
+  it("Thunderbird's own cal.itip.adaptScheduleAgent is used where it exists", async () => {
+    const seen = [];
+    const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [oneOff()], ...caldav(true), itipAdaptScheduleAgent: (item) => seen.push(item) });
+    expect((await api.modifyCalendarEvent({ event_id: 'one', calendar_id: 'cal1', title: 'Review, moved' })).ok).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(agents(modifications.at(-1).newItem)).toEqual([null, null]);
   });
 });

@@ -156,6 +156,7 @@ export function fakeAttendee({ id, commonName = null, participationStatus = null
     id, commonName, participationStatus, rsvp, role, userType, isOrganizer,
     getProperty: (k) => (params.has(k) ? params.get(k) : null),
     setProperty: (k, v) => { params.set(k, v); },
+    deleteProperty: (k) => { params.delete(k); },
     get properties() { return [...params.entries()]; },
     clone: () => fakeAttendee({
       id: att.id, commonName: att.commonName, participationStatus: att.participationStatus, rsvp: att.rsvp,
@@ -705,7 +706,7 @@ function canonicalRuleOf(r) {
   try { return JSON.stringify({ type: r.type, interval: r.interval, count: r.isByCount ? r.count : null, until: r.untilDate?.toString() }); } catch { return '?'; }
 }
 
-export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} }, guestNoticeSend = () => true } = {}) {
+export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} }, guestNoticeSend = () => true, invitedAs = null, calendarType = 'storage', calendarProperties = {}, itipAdaptScheduleAgent = undefined } = {}) {
   const getItemsCalls = [];
   const modifications = [];
   const deletions = [];
@@ -718,6 +719,12 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   const sequenced = [];
   const calendar = {
     id: calendarId,
+    type: calendarType,
+    // calICalendar.getProperty: the properties a test gives the calendar.
+    getProperty: (k) => (k in calendarProperties ? calendarProperties[k] : null),
+    // calISchedulingSupport, when the user is invited to the events (invitedAs).
+    get supportsScheduling() { return !!invitedAs; },
+    getSchedulingSupport: () => ({ isInvitation: () => !!invitedAs, canNotify: () => false }),
     name: 'Personal',
     items,
     getItems(filter, count, start, end) {
@@ -795,13 +802,26 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     timezoneService: { UTC: UTC_ZONE, floating: FLOATING_ZONE, defaultTimezone: LOCAL_ZONE, getTimezone: () => null },
     icsService: { createIcalProperty: (propertyName) => ({ propertyName, value: '' }) },
     itip: {
-      prepareSequence(newItem, oldItem) { sequenced.push({ newItem, oldItem }); return newItem; },
+      // calItipUtils.prepareSequence: on a major change (here: any content
+      // change), a COPY with SEQUENCE one above the larger of the two.
+      prepareSequence(newItem, oldItem) {
+        let out = newItem;
+        if (contentKey(newItem) !== contentKey(oldItem)) {
+          out = newItem.clone();
+          const seq = (it) => Number(it.getProperty('SEQUENCE') || 0);
+          out.setProperty('SEQUENCE', String(Math.max(seq(oldItem), seq(newItem)) + 1));
+        }
+        sequenced.push({ newItem, oldItem, returned: out });
+        return out;
+      },
       getImipTransport: () => IMIP_TRANSPORT,
-      getInvitedAttendee: () => null,
+      // Present (Thunderbird 141+) only when a test gives one.
+      ...(itipAdaptScheduleAgent ? { adaptScheduleAgent: itipAdaptScheduleAgent } : {}),
+      getInvitedAttendee: () => (invitedAs ? fakeAttendee({ id: invitedAs }) : null),
       // calItipUtils.checkAndSend, as Thunderbird has it: the sender's send()
       // answer is dropped.
       checkAndSend(opType, item, oldItem, extResponse) {
-        const sender = new FakeItipMessageSender(oldItem, null);
+        const sender = new FakeItipMessageSender(oldItem, invitedAs ? fakeAttendee({ id: invitedAs }) : null);
         if (sender.buildOutgoingMessages(opType, item, extResponse)) sender.send(IMIP_TRANSPORT);
       },
     },
@@ -809,18 +829,51 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   };
   // Thunderbird's CalItipMessageSender, recording each notice; send() answers
   // what `guestNoticeSend` says (true unless a test makes it fail or throw).
+  //
+  // As CalItipMessageSender.buildOutgoingMessages does, it builds nothing for
+  // the user's own invitation (an invited attendee: at most a REPLY, on an
+  // answer change), turns a change that only adds excluded dates into a
+  // DELETE of the ORIGINAL's occurrence at the first one (whose notify flag,
+  // a proxy's, is its stored parent's), and builds nothing when the item it
+  // ends with lacks X-MOZ-SEND-INVITATIONS=TRUE. `method` is the message
+  // (REQUEST or CANCEL), `cancelled` the occurrence a CANCEL names, `built`
+  // the count it returns.
   class FakeItipMessageSender {
     constructor(originalItem, invitedAttendee) { this.originalItem = originalItem; this.invitedAttendee = invitedAttendee; }
     buildOutgoingMessages(opType, item, extResponse) {
-      this.notice = {
-        op: OPERATION_NAMES[opType], item, oldItem: this.originalItem,
-        sendInvitations: item.getProperty('X-MOZ-SEND-INVITATIONS'),
+      let op = OPERATION_NAMES[opType];
+      let sendItem = item;
+      let cancelled = null;
+      const original = this.originalItem;
+      const notice = {
+        op, item, oldItem: original,
         guests: item.getAttendees().map((a) => a.id),
         exdates: exdateKeys(item),
         responseMode: extResponse?.responseMode,
       };
-      notices.push(this.notice);
-      return 1;
+      notices.push(notice);
+      this.notice = notice;
+      if (this.invitedAttendee) { notice.built = 0; return 0; }
+      if (original && item.recurrenceInfo && original.recurrenceInfo && !original.recurrenceId) {
+        const before = new Set(exdateKeys(original));
+        const added = (item.recurrenceInfo.getRecurrenceItems() || []).filter((r) => r.isNegative && r.date && !before.has(r.date.toString()));
+        if (added.length) {
+          const stripped = item.clone();
+          for (const r of stripped.recurrenceInfo.getRecurrenceItems().filter((x) => x.isNegative && x.date && !before.has(x.date.toString()))) {
+            stripped.recurrenceInfo.deleteRecurrenceItem(r);
+          }
+          if (contentKey(stripped) === contentKey(original)) {
+            sendItem = original.recurrenceInfo.getOccurrenceFor(added[0].date);
+            cancelled = added[0].date.toString();
+            op = 'DELETE';
+          }
+        }
+      }
+      notice.sendInvitations = sendItem.getProperty('X-MOZ-SEND-INVITATIONS');
+      notice.method = op === 'DELETE' ? 'CANCEL' : 'REQUEST';
+      notice.cancelled = cancelled;
+      notice.built = notice.sendInvitations === 'TRUE' ? 1 : 0;
+      return notice.built;
     }
     send(transport) {
       this.notice.transport = transport;
@@ -831,7 +884,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   const ctx = vm.createContext({
     Date, ReadableStream, Intl,
     console,
-    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIOperationListener: OPERATIONS, calIItipItem: ITIP_RESPONSE_MODES, calIDateTime: {}, calIDuration: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
+    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIOperationListener: OPERATIONS, calIItipItem: ITIP_RESPONSE_MODES, nsIMsgIdentity: {}, calIDateTime: {}, calIDuration: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
     // The datetime and duration contracts and the recurrence and event ones
     // are the XPCOM lookups the query/details/modify paths need; timers are
     // optional (the bridge resolves without them).
@@ -845,7 +898,16 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         if (key === '@mozilla.org/calendar/event;1') {
           return { createInstance: () => fakeEvent({ id: null, title: '', startDate: null, endDate: null }) };
         }
-        if (key === '@mozilla.org/calendar/attendee;1') return { createInstance: () => ({}) };
+        // A new calIAttendee: no fields set, its parameters read and written
+        // as calIAttendee.getProperty/setProperty/deleteProperty do.
+        if (key === '@mozilla.org/calendar/attendee;1') {
+          return {
+            createInstance: () => {
+              const params = new Map();
+              return { getProperty: (k) => (params.has(k) ? params.get(k) : null), setProperty: (k, v) => { params.set(k, v); }, deleteProperty: (k) => { params.delete(k); } };
+            },
+          };
+        }
         throw new Error(`XPCOM Cc[${String(key)}] lookup`);
       },
     }),
