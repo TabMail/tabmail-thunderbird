@@ -47,6 +47,20 @@ function englishDay(dayKey) {
   return `${weekday}, ${MONTHS[m - 1]} ${d}, ${y}`;
 }
 
+/**
+ * The instant whose wall clock in `timezone` reads 10:00 on 2099-11-12,
+ * derived from the zone's own offset so it holds under any DST rule.
+ */
+function tenAmOn20991112In(timezone) {
+  const wallAsUtc = Date.UTC(2099, 10, 12, 10, 0, 0);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric',
+  }).formatToParts(new Date(wallAsUtc));
+  const get = (type) => Number(parts.find((p) => p.type === type).value);
+  const offsetMs = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute')) - wallAsUtc;
+  return wallAsUtc - offsetMs;
+}
+
 /** A day `offset` days from today, as `YYYY-MM-DD` from the local clock. */
 function dayKeyFromToday(offset) {
   const d = new Date();
@@ -83,14 +97,7 @@ describe('calendar_search run() lists a day under its own date east of UTC+12', 
   });
 
   it.each(['Pacific/Kiritimati', 'Pacific/Auckland'])('a timed and an all-day event on 2099-11-12 in %s', async (timezone) => {
-    // 10:00 on 2099-11-12 in the zone: the instant whose wall clock there reads so.
-    const wallAsUtc = Date.UTC(2099, 10, 12, 10, 0, 0);
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric',
-    }).formatToParts(new Date(wallAsUtc));
-    const get = (type) => Number(parts.find((p) => p.type === type).value);
-    const offsetMs = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute')) - wallAsUtc;
-    const startMs = wallAsUtc - offsetMs;
+    const startMs = tenAmOn20991112In(timezone);
 
     browser.tmCalendar.queryCalendarItems.mockResolvedValueOnce([
       { id: 'ev-timed', calendarId: 'cal-1', title: 'Planning review', isAllDay: false, startMs, endMs: startMs + 3600000 },
@@ -113,8 +120,7 @@ describe('calendar_search run() never answers an unknown time zone with a wrong 
   });
 
   it('an unknown zone is an error naming it, and a corrected retry in the same turn lists the event', async () => {
-    // 10:00 on 2099-11-12 in Auckland (NZDT, UTC+13) is 21:00 UTC the day before.
-    const startMs = Date.UTC(2099, 10, 11, 21, 0, 0);
+    const startMs = tenAmOn20991112In('Pacific/Auckland');
     browser.tmCalendar.queryCalendarItems.mockImplementation(async () => [
       { id: 'ev-timed', calendarId: 'cal-1', title: 'Planning review', isAllDay: false, startMs, endMs: startMs + 3600000 },
     ]);

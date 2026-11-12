@@ -54,11 +54,18 @@ sees for a timed occurrence, so a reply or an event it creates or moves could ca
   prints such a value: UTC midnight of the digits, formatted with `timeZone: "UTC"` (a caller's
   `timeZone` is overridden), so neither the user's zone nor the process zone can move it. Use it
   for every date-only value the assistant reads; the `timezone` the header reports is unchanged.
-  The old `CHAT_SETTINGS.middayHourForDateHeader` is gone. Pinned by
-  `test/calendarDayHeaderDateLine.test.js` (exact "Thursday, November 12, 2026" for the key
-  2026-11-12 in zones from Pago Pago to Kiritimati, a one-year sweep against a digit oracle, and
-  `run()` with an explicit zone east of UTC+12) and `test/gregorianDay.test.js` (the helper under
-  several process zones, options zones and default locales).
+  The old `CHAT_SETTINGS.middayHourForDateHeader` is gone.
+  An unknown `timezone` argument (e.g. "NZDT") is refused once, where it enters
+  `buildCalendarSummary`, before the range is resolved or the calendar queried: `calendar_search`
+  and `calendar_read` return `Unknown time zone "NZDT". Use an IANA zone such as
+  "Pacific/Auckland".` and nothing is cached, so a corrected retry in the same turn lists afresh.
+  The check is the same `Intl.DateTimeFormat` construction the zone conversion uses, so it refuses
+  exactly the zones that conversion would have turned into "now" (an empty or wrong listing).
+  Pinned by `test/calendarDayHeaderDateLine.test.js` (exact "Thursday, November 12, 2099" for the
+  key 2099-11-12 in zones from Pago Pago to Kiritimati, a one-year sweep against a digit oracle,
+  `run()` with an explicit zone east of UTC+12, and the unknown-zone refusal followed by a
+  corrected retry) and `test/gregorianDay.test.js` (the helper under several process zones,
+  options zones and default locales).
 - Digit-built formatters (`formatTimestampForAgent`, `formatCardTime`, `toIsoNoMs`, `toNaiveIso`)
   use `Date` getters, which are always Gregorian; they need no locale. Explicit `"en-US"` or `"en-CA"`
   `Intl` calls that only extract parts (`formatToParts`, a zone offset, a `YYYY-MM-DD` key) are
