@@ -199,7 +199,10 @@ same design (tabmail-ios #421).
     occurrence changed on its own (on `all` at the first occurrence, or a split) is read against the series' plain
     occurrence there (`slot`), the same swap `resolveEditTimes` makes for the series' own start: read against an
     occurrence already of the kind asked, that occurrence's own dates restated and were dropped, and the edit was
-    answered "Nothing changed" while every other occurrence kept its kind. Superseded: `all_day` alone changed nothing
+    answered "Nothing changed" while every other occurrence kept its kind. With no time left, the kind compared is the
+    occurrence's read against: from an occurrence made the other kind on its own (a split), `all_day` of the series'
+    kind given alone asks for that occurrence's kind to change, and is refused for both times (2026-11-12; it was
+    "Nothing changed"). On `all` with no time the series path does not read the named occurrence. Superseded: `all_day` alone changed nothing
     while the card showed "All-day: no → yes" and the edit reported success, and from an occurrence on it split the
     series into two identical parts; a change to timed with a start only kept the all-day length as a 24-hour timed
     event (one-off and `this_only`), and on a series it got the mixed-kinds refusal. Pinned by

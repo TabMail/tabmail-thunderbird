@@ -1847,8 +1847,10 @@ function resolveEditTimes(item, patch, tz, namedRid) {
   if (!left.start_iso && !left.end_iso) {
     // No time left: a change of kind still needs both (read against the
     // series' plain occurrence, a time that would change the kind never
-    // restates, so none was dropped).
-    const kindError = kindChangeTimesError(!!item.startDate.isDate, patch);
+    // restates, so none was dropped). The kind changed is the occurrence's
+    // read against: all_day of the series' kind, named at an occurrence made
+    // the other kind on its own, changes that occurrence's kind.
+    const kindError = kindChangeTimesError(!!ref.startDate.isDate, patch);
     if (kindError) return { error: kindError };
     return { start: null, length: null, ref, refIsChanged };
   }

@@ -98,12 +98,17 @@ function table(items) {
  * `toAllDay`) and asserts it is refused before the card with nothing written,
  * the assistant told to give both start_iso and end_iso.
  */
-async function kindChangeRefused(userTzid, items, args, { toAllDay }) {
+async function kindChangeRefused(userTzid, items, args, { toAllDay, onlyNamedDiffers = false }) {
   const loaded = onCalendar(items, userTzid);
   const ids = loaded.calendar.items.map((it) => it.id);
   const before = table(loaded.calendar.items);
   expect(before.length, 'fixture').toBeGreaterThan(0);
-  expect(!!loaded.calendar.items[0].startDate.isDate, 'fixture: the stored kind differs from the one asked').toBe(!toAllDay);
+  // `onlyNamedDiffers`: the series is of the kind asked; only the occurrence
+  // the edit names (changed on its own) is of the other kind.
+  expect(!!loaded.calendar.items[0].startDate.isDate, 'fixture: the stored kind against the one asked').toBe(onlyNamedDiffers ? toAllDay : !toAllDay);
+  if (onlyNamedDiffers) {
+    expect(before.filter((r) => r.isDate !== toAllDay), 'fixture: one occurrence of the other kind').toHaveLength(1);
+  }
 
   const run = await edit({ ...args, all_day: toAllDay });
   const after = table(loaded.calendar.items);
@@ -261,6 +266,19 @@ export function defineAllDayAloneSuite(userTzid) {
     it('all_day alone there is refused before the card, both kinds', async () => {
       await kindChangeRefused(userTzid, [f.timedSeriesWithAllDayOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: NAMED_DAY }, { toAllDay: true });
       await kindChangeRefused(userTzid, [f.allDaySeriesWithTimedOn(NAMED_DAY)], { event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: iso(NAMED_DAY, 10) }, { toAllDay: false });
+    });
+  });
+
+  describe(`${userTzid}: all_day alone, equal to the series' kind but not to the occurrence named (changed on its own), is refused before the card`, () => {
+    // The user asks for that occurrence, and those after it, to take the
+    // other kind: it needs both times, as every other change of kind does.
+    const timedSeriesFrom = (day, scope) => kindChangeRefused(userTzid, [f.timedSeriesWithAllDayOn(day)], { event_id: 'ser', edit_scope: scope, recurrence_id: day }, { toAllDay: false, onlyNamedDiffers: true });
+    const allDaySeriesFrom = (day, scope) => kindChangeRefused(userTzid, [f.allDaySeriesWithTimedOn(day)], { event_id: 'ser', edit_scope: scope, recurrence_id: iso(day, 10) }, { toAllDay: true, onlyNamedDiffers: true });
+    it('timed series, all_day:false from an occurrence made all-day on its own, edit_scope this_and_following', async () => {
+      await timedSeriesFrom(NAMED_DAY, 'this_and_following');
+    });
+    it('all-day series, all_day:true from an occurrence made timed on its own, edit_scope this_and_following', async () => {
+      await allDaySeriesFrom(NAMED_DAY, 'this_and_following');
     });
   });
 
