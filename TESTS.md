@@ -92,6 +92,15 @@
 
 ---
 
+## Source-Fence and Invariant Suites
+
+These suites read the add-on's source or package as text and fail on a pattern anywhere in it, so a change to any file can break them. Run them with the targeted tests after every change, beside the suites that cover the changed code.
+
+- Source fences: `test/actionMutationFence.test.js`, `test/calendarDurationPreservation.test.js` (drift guard of the bridge's `applyDurationPreservation`), `test/calendarSeriesTimeFence.test.js`, `test/calendarServiceAcquisition.test.js`, `test/chatTurnsSingleWriter.test.js`, `test/experimentLogGate.test.js`, `test/extensionPageCsp.test.js`, `test/noWipeFence.test.js`, `test/promptStoreFence.test.js`
+- Package invariants: `test/acknowledgments.test.js`, `test/xpiContents.test.js`
+
+---
+
 ## Testability Tiers
 
 - **VERY HIGH:** Chat tools (31 pure `run()` functions), utility functions, merge algorithms
