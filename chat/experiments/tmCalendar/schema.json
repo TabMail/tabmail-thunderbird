@@ -134,6 +134,7 @@
             "event_id": { "type": "string", "optional": true },
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
+            "guest_notice": { "type": "string", "optional": true, "description": "Set when the event has guests and either the calendar is kept only on this computer or it has no email address of its own: the plain sentence the reply carries." },
             "error": { "type": "string", "optional": true }
           }
         },
@@ -228,6 +229,7 @@
             "recurrence_id": { "type": "string", "optional": true, "description": "The occurrence event_id names, as the value the read tools print in its recurrence_id (its start, as written) and the edit tools take back to name it: on edit_scope 'this_only', the edited occurrence; on 'this_and_following', the new series' first occurrence as Thunderbird expands it." },
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
+            "guest_notice": { "type": "string", "optional": true, "description": "Set when the event has guests and either the calendar is kept only on this computer or it has no email address of its own: the plain sentence the reply carries." },
             "split_at": { "type": "string", "optional": true, "description": "On edit_scope 'this_and_following': where the new series starts." },
             "changes": { "type": "boolean", "optional": true, "description": "With check_only: whether the edit changes anything (a time or value it only restates is no change)." },
             "times": {
@@ -321,6 +323,7 @@
             "recurrence_id": { "type": "string", "optional": true, "description": "The occurrence event_id names: the NEW series' first occurrence as Thunderbird expands it, given as the value the read tools print in its recurrence_id (its start), which the edit tools take back to name it." },
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
+            "guest_notice": { "type": "string", "optional": true, "description": "Set when the event has guests and either the calendar is kept only on this computer or it has no email address of its own: the plain sentence the reply carries." },
             "split_at": { "type": "string", "optional": true },
             "changes": { "type": "boolean", "optional": true, "description": "With check_only: whether the edit changes anything (a time or value it only restates is no change)." },
             "times": {

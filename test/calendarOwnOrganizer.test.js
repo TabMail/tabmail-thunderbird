@@ -401,7 +401,7 @@ describe('review r2', () => {
     expect(day8.organizer.id).toBe('mailto:boss@example.com');
     expect(day8.organizer.commonName).toBe('Boss');
     expect(day8.organizer.isOrganizer).toBe(true);
-    expect(Object.fromEntries(day8.organizer.properties)).toEqual({});
+    expect(Object.fromEntries(day8.organizer.properties || [])).toEqual({});
   });
 });
 
@@ -421,7 +421,7 @@ describe('review r3', () => {
     const stored = loaded.calendar.items[0];
     const day7 = exceptionsOf(stored)[0];
     expect(day7.organizer.id).toBe('mailto:boss@example.com');
-    expect(Object.fromEntries(day7.organizer.properties)).toEqual({});
+    expect(Object.fromEntries(day7.organizer.properties || [])).toEqual({});
     // The series' own organizer keeps every parameter.
     expect(Object.fromEntries(stored.organizer.properties)).toEqual({ 'SENT-BY': 'mailto:assistant@example.com', 'SCHEDULE-STATUS': '1.2' });
   });

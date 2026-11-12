@@ -118,11 +118,13 @@ describe('an attendee change keeps everyone still on the list as stored', () => 
     const own = ownAttendees().map(entry);
     expect(own).not.toEqual(SERIES_ENTRIES.slice(0, 3));
 
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
     const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...EDITS['one occurrence'].args, add_attendees: [{ email: 'dana@example.com' }] });
     expect(res, res.error).toMatchObject({ ok: true });
 
-    const saved = EDITS['one occurrence'].saved({ master });
+    // The series as stored now: when the changed occurrence had no organizer,
+    // the edit writes the series with the series' organizer on it (#423).
+    const saved = EDITS['one occurrence'].saved({ master: calendar.items.find((it) => it.id === 'ser') });
     // Dana was added without a name, so none is set.
     expect(saved.getAttendees().map(entry)).toEqual([...own, added('mailto:dana@example.com', undefined)]);
   });

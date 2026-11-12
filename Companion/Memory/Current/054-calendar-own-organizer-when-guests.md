@@ -52,3 +52,7 @@ no `CalItipMessageSender`, no `SCHEDULE-AGENT`.
 `send_invitations`, `sendCalendarInvitations`, `getInvitePolicy` etc. stay for now (cleanup is TB #429).
 Supersedes the 050 statements that an edit's organizer is whatever `organizer_email` the tool fills in.
 Tests: `test/calendarOwnOrganizer.test.js` (harness `loadCalendarBridge` takes `calendarProperties`).
+`guest_notice` is declared in the experiment's `schema.json` returns of createCalendarEvent, modifyCalendarEvent
+and splitRecurringEvent (the schema check the guest-change tests run caught it undeclared, 2026-11-12). A
+this_only edit that writes the series replaces the stored series object: tests read the stored item back from the
+calendar, not the original fixture object.

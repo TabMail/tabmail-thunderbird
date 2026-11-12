@@ -783,7 +783,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         if (key === '@mozilla.org/calendar/event;1') {
           return { createInstance: () => Object.assign(fakeEvent({ id: null, title: '', startDate: null, endDate: null }), { addAttendee() {} }) };
         }
-        if (key === '@mozilla.org/calendar/attendee;1') return { createInstance: () => fakeAttendee({ id: null }) };
+        if (key === '@mozilla.org/calendar/attendee;1') return { createInstance: () => ({}) };
         throw new Error(`XPCOM Cc[${String(key)}] lookup`);
       },
     }),
