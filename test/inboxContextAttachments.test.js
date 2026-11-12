@@ -236,3 +236,27 @@ describe('buildInboxContext attachment flags from the index, outside the backgro
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([1, 2, 3]);
   });
 });
+
+// Each entry carries its header's date as epoch ms (dateMs) so the archive/delete selection list sorts and
+// draws inbox-sourced rows from the number, never by parsing a display string back (#405). Producer-backed:
+// the real buildInboxContext, not a hand-written entry.
+describe('buildInboxContext dateMs', () => {
+  beforeEach(() => { getHasAttachmentBulk.mockImplementation(async (ids) => ids.map(() => false)); });
+
+  it('gives each entry its header date as epoch ms', async () => {
+    const byId = Object.fromEntries(messages.map((m) => [m.id, m.date.getTime()]));
+    const ctx = JSON.parse(await buildInboxContext());
+    expect(ctx.map((e) => e.internalId)).toEqual([1, 2, 3]);
+    for (const e of ctx) {
+      expect(e.dateMs).toBe(byId[e.internalId]);
+      expect(e.dateMs).toBeGreaterThan(0);
+    }
+  });
+
+  it('gives 0 to an entry whose header has no date', async () => {
+    const { date: _drop, ...undated } = message(4, 0);
+    messages = [message(1, 1), undated];
+    const ctx = JSON.parse(await buildInboxContext());
+    expect(ctx.map((e) => [e.internalId, e.dateMs])).toEqual([[1, messages[0].date.getTime()], [4, 0]]);
+  });
+});
