@@ -426,3 +426,15 @@ describe('review r3', () => {
     expect(Object.fromEntries(stored.organizer.properties)).toEqual({ 'SENT-BY': 'mailto:assistant@example.com', 'SCHEDULE-STATUS': '1.2' });
   });
 });
+
+describe('a storage calendar TbSync created', () => {
+  it('a TbSync-marked storage calendar with guests gets no local line; a plain storage calendar does', async () => {
+    const synced = bridge([], { ...WITH_ADDRESS, tbSyncProvider: 'eas' }, 'storage');
+    const res = await synced.api.createCalendarEvent(createArgs({ attendees: [{ email: 'ana@example.com' }] }));
+    expect(res.ok).toBe(true);
+    expect(res.guest_notice).toBeUndefined();
+    const local = bridge([], WITH_ADDRESS, 'storage');
+    const res2 = await local.api.createCalendarEvent(createArgs({ attendees: [{ email: 'ana@example.com' }] }));
+    expect(res2.guest_notice).toBe('This calendar is kept only on this computer, so no one is emailed about it.');
+  });
+});

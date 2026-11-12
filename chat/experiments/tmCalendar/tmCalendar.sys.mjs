@@ -1438,6 +1438,17 @@ const NO_CALENDAR_ADDRESS_NOTICE = "This calendar has no email address of its ow
 // type "storage"): there is no server, and the add-on sends nothing.
 const LOCAL_CALENDAR_NOTICE = "This calendar is kept only on this computer, so no one is emailed about it.";
 
+// A calendar kept only on this computer: Thunderbird's local calendar
+// ("storage") that TbSync did not create. TbSync syncs Exchange (EAS-4-TbSync
+// up to 4.x) into "storage" calendars, and its core marks every calendar it
+// creates with the "tbSyncProvider" property (an "orphaned" one included).
+function isLocalOnlyCalendar(calendar) {
+  if (String(calendar?.type || "") !== "storage") return false;
+  let tbSync = "";
+  try { tbSync = String(calendar.getProperty("tbSyncProvider") || ""); } catch {}
+  return !tbSync;
+}
+
 // The reply's guest notice for a write, from the organizer results of the
 // items it wrote (null for an item without guests): a local calendar says no
 // one is emailed; otherwise a calendar with no address says so. Plain CalDAV,
@@ -1445,7 +1456,7 @@ const LOCAL_CALENDAR_NOTICE = "This calendar is kept only on this computer, so n
 function guestNoticeOf(calendar, results) {
   const withGuests = results.filter((r) => r !== null && r !== undefined);
   if (withGuests.length === 0) return {};
-  if (String(calendar?.type || "") === "storage") return { guest_notice: LOCAL_CALENDAR_NOTICE };
+  if (isLocalOnlyCalendar(calendar)) return { guest_notice: LOCAL_CALENDAR_NOTICE };
   if (withGuests.includes("none")) return { guest_notice: NO_CALENDAR_ADDRESS_NOTICE };
   return {};
 }

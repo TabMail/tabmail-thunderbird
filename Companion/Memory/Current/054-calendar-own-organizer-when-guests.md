@@ -56,3 +56,11 @@ Tests: `test/calendarOwnOrganizer.test.js` (harness `loadCalendarBridge` takes `
 and splitRecurringEvent (the schema check the guest-change tests run caught it undeclared, 2026-11-12). A
 this_only edit that writes the series replaces the stored series object: tests read the stored item back from the
 calendar, not the original fixture object.
+TbSync (owner ruling 2026-11-12, option B): the local line is only for a "storage" calendar that TbSync did not
+create (`isLocalOnlyCalendar`). EAS-4-TbSync 4.x syncs Exchange into "storage" calendars
+(EAS-4-TbSync tag v4.18, `content/provider.js:599`, `createCalendar("storage", ...)`); TbSync's core marks every
+calendar it creates through a provider with `tbSyncProvider` and `tbSyncAccountID` (TbSync branch TB140, v4.16,
+`content/modules/lightning.js:766-767`, `prepareAndCreateCalendar`; also tag v4.12 lines 765-766; a disconnected one
+becomes `tbSyncProvider` "orphaned", lines 139-140), DAV-4-TbSync included (v4.7 `content/provider.js:517`
+`createCalendar`, called by the same core function). Any non-empty `tbSyncProvider` means no local line.
+EAS-4-TbSync 5.x uses its own type `ext-eas4tbsync@jobisoft.de` (not storage).
