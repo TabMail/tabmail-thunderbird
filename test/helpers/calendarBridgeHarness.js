@@ -453,7 +453,12 @@ function untilInstantMs(until) {
 // ends at the first one after UNTIL, compared as ical.js's Time.compare does: by
 // instant, the occurrence in the start's zone (a DATE at midnight there) and
 // UNTIL, parsed from the rule's text, at offset 0 (a DATE or floating value has
-// no zone, a `Z` value is UTC).
+// no zone, a `Z` value is UTC). The range is compared the same way: the
+// occurrence and both bounds made date-times (`isDate = false`) and compared by
+// ical.js's Time.compare, by instant, a DATE at midnight in its own zone and a
+// floating value at offset 0. CalDateTime.compare, which takes a DATE by its
+// date alone, is not what the rule uses: with it, an all-day occurrence ended a
+// range that ends later on its own day.
 function ruleOccurrences(value, start, rangeStart, rangeEnd, maxCount) {
   const until = untilOfRule(value);
   const recur = ICAL.Recur.fromString(String(value).split(';').filter((p) => !/^UNTIL=/i.test(p)).join(';'));
@@ -476,8 +481,8 @@ function ruleOccurrences(value, start, rangeStart, rangeEnd, maxCount) {
       });
     }
     if (until && occ.nativeTime / 1000 > untilInstantMs(until)) break;
-    if (rangeEnd && occ.compare(rangeEnd) >= 0) break;
-    if (rangeStart && occ.compare(rangeStart) < 0) continue;
+    if (rangeStart && occ.nativeTime < rangeStart.nativeTime) continue;
+    if (rangeEnd && occ.nativeTime >= rangeEnd.nativeTime) break;
     out.push(occ);
     if (maxCount && out.length >= maxCount) break;
   }
@@ -571,26 +576,47 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
   if (!info) return inRange(item, rangeStart, rangeEnd) ? [{ start: item.startDate, item }] : [];
   const dates = new Map();
   const items = info.getRecurrenceItems();
+  // CalRecurrenceInfo.calculateDates asks each rule and date for the range
+  // made date-times (cal.dtz.ensureDateTime), from the range's start moved
+  // back by the series' length (searchStart), so an occurrence that began
+  // before the range and runs into it is found; of each item's dates it then
+  // skips the first ones that end at or before the range's start.
+  const rangeStartDt = ensureDateTime(rangeStart);
+  const rangeEndDt = ensureDateTime(rangeEnd);
+  const length = item.endDate && item.startDate ? item.endDate.subtractDate(item.startDate) : null;
+  const searchStart = rangeStartDt.clone();
+  if (length) {
+    const back = length.clone();
+    back.inSeconds = -back.inSeconds;
+    searchStart.addDuration(back);
+  }
+  const endsInRange = (d) => {
+    if (!length) return true;
+    const end = d.clone();
+    end.addDuration(length);
+    return rangeStartDt.compare(end) < 0;
+  };
   for (const r of items) {
+    let found;
     if (r.date) {
-      if (!r.isNegative && r.date.compare(rangeStart) >= 0 && r.date.compare(rangeEnd) < 0) dates.set(ridKey(r.date), r.date);
+      if (r.isNegative) continue;
+      // CalRecurrenceDate.getOccurrences.
+      found = r.date.compare(searchStart) >= 0 && r.date.compare(rangeEndDt) < 0 ? [r.date] : [];
     } else if (typeof r.getOccurrences === 'function') {
-      for (const d of r.getOccurrences(item.startDate, rangeStart, rangeEnd, 0)) dates.set(ridKey(d), d);
+      found = r.getOccurrences(item.startDate, searchStart, rangeEndDt, 0);
+    } else {
+      continue;
     }
+    const first = found.findIndex(endsInRange);
+    for (const d of first < 0 ? [] : found.slice(first)) dates.set(ridKey(d), d);
   }
   // CalRecurrenceInfo.calculateDates: a changed occurrence replaces its slot,
   // and an EXDATE removes the occurrence with its RECURRENCE-ID, a changed one
   // included (by its exact key), but only an EXDATE inside the range searched (the range's start
   // moved back by the series' duration): a changed occurrence moved away from
   // an excluded slot still shows at its own time in a range without the slot.
-  const searchStart = rangeStart.clone();
-  if (item.endDate && item.startDate) {
-    const back = item.endDate.subtractDate(item.startDate);
-    back.inSeconds = -back.inSeconds;
-    searchStart.addDuration(back);
-  }
   const removed = new Set(items
-    .filter((r) => r.date && r.isNegative && r.date.compare(searchStart) >= 0 && r.date.compare(rangeEnd) < 0)
+    .filter((r) => r.date && r.isNegative && r.date.compare(searchStart) >= 0 && r.date.compare(rangeEndDt) < 0)
     .map((r) => ridKey(r.date)));
   // A DATE EXDATE removes every occurrence on its day, by the first 8
   // characters of the occurrence's own date in its own zone (bug 734245), a

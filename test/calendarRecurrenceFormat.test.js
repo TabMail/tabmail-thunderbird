@@ -597,8 +597,12 @@ describe('split: the capped rule and the following part\'s rule', () => {
 const anHourLater = (k) => (k.startsWith('changed ') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
 
 describe('split: the two parts make the series\' occurrences', () => {
-  // Wide enough for every occurrence these series make.
-  const RANGE = [fakeDate('2099-09-01'), fakeDate('2101-01-01')];
+  // Wide enough for every occurrence these series make. Thunderbird's rule
+  // expansion compares an occurrence with the range by instant (an all-day one
+  // at midnight in its own zone), so the range ends at 12:00 UTC, where no
+  // all-day day of these zones (UTC-10 to UTC+9) starts: an unbounded series
+  // then has the same last day whatever its zone.
+  const RANGE = [fakeDate('2099-09-01'), fakeDateTime('2101-01-01', 12, 0, UTC_ZONE)];
   const instantKey = (dt) => (dt.isDate ? dt.toString() : new Date(dt.nativeTime / 1000).toISOString());
   const occurrenceKeys = (item) => seriesOccurrences(item, ...RANGE)
     .map(({ start, item: occ }) => (occ.recurrenceId ? `changed ${instantKey(start)} ${occ.title}` : instantKey(start)))
