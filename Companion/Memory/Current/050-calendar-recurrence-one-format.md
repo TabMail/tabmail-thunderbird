@@ -446,6 +446,12 @@ same design (tabmail-ios #421).
   RDATEs less EXDATEs, changed occurrences at their own time) as CalRecurrenceInfo does.
 - Split tests assert OCCURRENCES: for each start kind and for an unbounded, a COUNT and an UNTIL rule with EXDATEs,
   RDATEs and changed occurrences on both sides of the split, the two parts' occurrences together equal the series'.
+  The same loop pins the earlier part's UNTIL in its start's value type for every kind, floating included (no Z).
+- `test/calendarSplitFloatingWest.test.js` and `test/calendarSplitFloatingEast.test.js` (cases in
+  `test/helpers/floatingSplitCases.js`, Los Angeles and Sydney, on Thunderbird's own dates) split floating timed
+  series (daily at 00:00 to 23:30, and six-hourly): the named occurrence and every later one are the following
+  part's only, every earlier one stays in the earlier part, and the earlier part's UNTIL is floating and before
+  the named occurrence (#392).
 - `seriesOccurrences` drops a changed occurrence whose RECURRENCE-ID an EXDATE names, as `calculateDates` does;
   excluded-date tests assert the occurrence is gone, so an EXDATE at a moved occurrence's start (not its id) fails.
   `test/calendarOccurrenceRoundTrip.test.js` feeds a changed occurrence's printed start, through the edit tool's

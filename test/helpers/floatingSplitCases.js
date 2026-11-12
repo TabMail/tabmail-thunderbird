@@ -25,7 +25,7 @@ const FIRST = '2099-10-10';
 const SPLIT_AFTER = 5;
 const DAYS_SHOWN = 12;
 const CASES = [
-  ...[[0, 30], [9, 0], [12, 0], [17, 0], [23, 30]].map(([hour, minute]) => ({ hour, minute, rule: 'FREQ=DAILY' })),
+  ...[[0, 0], [0, 30], [9, 0], [12, 0], [17, 0], [23, 30]].map(([hour, minute]) => ({ hour, minute, rule: 'FREQ=DAILY' })),
   { hour: 15, minute: 0, rule: 'FREQ=HOURLY;INTERVAL=6' },
 ];
 
