@@ -2998,8 +2998,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // RFC 5545 §3.3.10: the UNTIL value type MUST match DTSTART's.
             //   - All-day master (DTSTART is VALUE=DATE) → UNTIL must be a bare
             //     DATE `YYYYMMDD`. Use (split − 1 day), from the DATE's own digits.
-            //   - Timed master → UNTIL must be a UTC date-time `…THHMMSSZ`.
+            //   - Zoned timed master → UNTIL is a UTC date-time `…THHMMSSZ`.
             //     Use (split − 1 second).
+            //   - Floating timed master → UNTIL is a floating date-time
+            //     `…THHMMSS` (no Z), (split − 1 second) by its digits. A
+            //     floating value's instant is its digits at offset 0, so these
+            //     are the UTC digits of that instant without the Z.
             // `toIcsUntil` only emits the date-time form, so the all-day branch
             // formats the bare DATE itself.
             const isAllDayMaster = !!master.startDate?.isDate;
@@ -3009,7 +3013,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               afterSplit = dayDateFrom(splitDt, 1);
             } else {
               const splitMs = splitDt.nativeTime / 1000;
-              untilValue = toIcsUntil(new Date(splitMs - 1000).toISOString());
+              const capUtc = toIcsUntil(new Date(splitMs - 1000).toISOString());
+              untilValue = zonedStartZone(master) ? capUtc : capUtc?.replace(/Z$/, "");
               afterSplit = boundFromIcs(toIcsUntil(new Date(splitMs + 1000).toISOString()));
             }
             if (!untilValue || !afterSplit) return { ok: false, error: "failed to compute UNTIL value" };
