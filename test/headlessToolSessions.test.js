@@ -164,14 +164,20 @@ async function runTool(run, name, args) {
 }
 
 // Adds one more of what each tool lists, newer than all before it.
+// Events start a few seconds after today's local midnight: calendar_read with
+// no query reads only today, so an event placed hours from now would fall on
+// tomorrow late in the day (#395).
 let added = 0;
 function addEverywhere(label) {
   added += 1;
   const dateMs = Date.now() - HOUR_MS + added * 1000;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const startMs = todayStart.getTime() + added * 1000;
   world.memory.push({ memId: `turn:${label}`, sessionId: 'persistent_chat', role: 'exchange', content: `[USER]: the ${label} plan`, dateMs });
   world.mail.push({ uniqueId: `account1:/INBOX:${label}@example.com`, subject: `${label} plan`, author: 'sender@example.com', dateMs, hasAttachments: false });
   world.inbox.unshift({ uniqueId: `account1:/INBOX:${label}@example.com`, subject: `${label} plan`, from: 'sender@example.com', date: '' });
-  world.events.push({ id: `event-${label}`, calendarId: 'cal1', title: `${label} plan`, startMs: Date.now() + added * HOUR_MS, endMs: Date.now() + added * HOUR_MS + HOUR_MS / 2 });
+  world.events.push({ id: `event-${label}`, calendarId: 'cal1', title: `${label} plan`, startMs, endMs: startMs + HOUR_MS / 2 });
 }
 
 const SEARCHES = {
@@ -184,6 +190,7 @@ const SEARCHES = {
 };
 
 beforeEach(() => {
+  added = 0;
   world.memory.length = 0;
   world.mail.length = 0;
   world.inbox.length = 0;
