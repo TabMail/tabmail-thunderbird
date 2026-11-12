@@ -21,6 +21,12 @@ no `CalItipMessageSender`, no `SCHEDULE-AGENT`.
   so the event was saved without an organizer and its server is not told to notify the guests."), which the fsm
   appends to the reply and `completeExecution` passes on. No reply text claims guests were emailed.
 
+- Local calendar (owner ruling 2026-11-12): a write with guests to a calendar kept only on this computer
+  (`calendar.type === "storage"`, Thunderbird's CalStorageCalendar) returns `guest_notice` "This calendar is kept
+  only on this computer, so no one is emailed about it." (it takes precedence over the no-address line). Plain
+  CalDAV stays silent; Google and Outlook are unchanged. One helper, `guestNoticeOf(calendar, results)`, builds
+  the notice on create, every edit scope (a split counts both parts) and delete this_only / this_and_following.
+
 ## Where it runs
 
 - create: after the attendees, before `addItem`; no longer depends on `send_invitations`.

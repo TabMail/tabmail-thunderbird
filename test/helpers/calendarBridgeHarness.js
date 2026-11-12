@@ -673,13 +673,15 @@ const ITEM_FILTER_INCLUDE_OCCURRENCES = 2;
  * recurring master carries its occurrences). Returns the experiment API, the
  * recorded provider calls (deletions included), and the provider itself for state assertions.
  */
-export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', calendarProperties = {}, console = { log() {}, warn() {}, error() {} } } = {}) {
+export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', calendarProperties = {}, calendarType = 'memory', console = { log() {}, warn() {}, error() {} } } = {}) {
   const getItemsCalls = [];
   const modifications = [];
   const deletions = [];
   const calendar = {
     id: calendarId,
     name: 'Personal',
+    // calICalendar.type: the provider ("storage" = kept only on this computer).
+    type: calendarType,
     items,
     // calICalendar.getProperty: the calendar's own properties (organizerId,
     // organizerCN, ...), null for one it does not have.

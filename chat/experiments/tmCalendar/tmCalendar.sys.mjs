@@ -1433,6 +1433,22 @@ function attendeeAddress(id) {
 // no email address of its own: no organizer is set, so its server does not
 // notify them. Never claims anyone was emailed.
 const NO_CALENDAR_ADDRESS_NOTICE = "This calendar has no email address of its own, so the event was saved without an organizer and its server is not told to notify the guests.";
+// What the reply says when an event with guests is saved to a calendar kept
+// only on this computer (Thunderbird's local calendar, CalStorageCalendar,
+// type "storage"): there is no server, and the add-on sends nothing.
+const LOCAL_CALENDAR_NOTICE = "This calendar is kept only on this computer, so no one is emailed about it.";
+
+// The reply's guest notice for a write, from the organizer results of the
+// items it wrote (null for an item without guests): a local calendar says no
+// one is emailed; otherwise a calendar with no address says so. Plain CalDAV,
+// Google and Outlook calendars with an address say nothing.
+function guestNoticeOf(calendar, results) {
+  const withGuests = results.filter((r) => r !== null && r !== undefined);
+  if (withGuests.length === 0) return {};
+  if (String(calendar?.type || "") === "storage") return { guest_notice: LOCAL_CALENDAR_NOTICE };
+  if (withGuests.includes("none")) return { guest_notice: NO_CALENDAR_ADDRESS_NOTICE };
+  return {};
+}
 
 // An event the assistant saves with guests and no organizer is organized by
 // the calendar's own address: calendar.getProperty("organizerId"), the
@@ -2582,7 +2598,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 id: returnedId,
                 scope,
                 invitations: invitationResult,
-                ...(organizerResult === "none" ? { guest_notice: NO_CALENDAR_ADDRESS_NOTICE } : {})
+                ...guestNoticeOf(targetCalendar, [organizerResult])
               };
             } catch (e) {
               console.error("[tmCalendar] deleteCalendarEvent failed:", e);
@@ -2715,7 +2731,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               event_id: created?.id || null, 
               title: created?.title || null,
               invitations: invitationResult,
-              ...(organizerResult === "none" ? { guest_notice: NO_CALENDAR_ADDRESS_NOTICE } : {})
+              ...guestNoticeOf(cal, [organizerResult])
             };
           } catch (e) {
             console.error("[tmCalendar] createCalendarEvent failed:", e);
@@ -3158,7 +3174,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               recurrence_id: isOccurrence ? shownNaiveIso(clone.startDate) : null,
               title: (isOccurrence ? clone.title : modified?.title) || null,
               invitations: invitationResult,
-              ...(organizerResult === "none" ? { guest_notice: NO_CALENDAR_ADDRESS_NOTICE } : {})
+              ...guestNoticeOf(base.calendar, [organizerResult])
             };
           } catch (e) {
             console.error("[tmCalendar] modifyCalendarEvent failed:", e);
@@ -3527,7 +3543,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               old_event_id: eventId,
               title: created?.title || null,
               invitations: invitationResult,
-              ...(organizerResult === "none" || earlierOrganizerResult === "none" ? { guest_notice: NO_CALENDAR_ADDRESS_NOTICE } : {}),
+              ...guestNoticeOf(cal, [organizerResult, earlierOrganizerResult]),
               split_at: splitIso,
             };
           } catch (e) {

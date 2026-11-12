@@ -90,8 +90,8 @@ function series(guests, organizer = null, exceptions = []) {
 
 // The bridge on one calendar; a created event keeps the attendees added to it
 // (the harness' new event drops them otherwise).
-function bridge(items, calendarProperties) {
-  const loaded = loadCalendarBridge(bridgeUrl, { items, calendarProperties });
+function bridge(items, calendarProperties, calendarType = undefined) {
+  const loaded = loadCalendarBridge(bridgeUrl, { items, calendarProperties, calendarType });
   const cc = loaded.ctx.Cc;
   loaded.ctx.Cc = new Proxy({}, {
     get(_t, key) {
@@ -324,5 +324,40 @@ describe('the edit and delete replies', () => {
     expect(shown).not.toMatch(/cancellations? sent|emailed/i);
     const done = await completeDelete(null, 'calendar_event_delete_exec');
     expect(String(done.guest_notice || '')).toMatch(/no email address of its own/);
+  });
+});
+
+// A calendar kept only on this computer (type "storage") says no one is
+// emailed, on every write with guests; a CalDAV one with an address says
+// nothing.
+describe('a calendar kept only on this computer', () => {
+  const LOCAL_LINE = 'This calendar is kept only on this computer, so no one is emailed about it.';
+  const WRITES = {
+    create: { items: () => [], run: (api) => api.createCalendarEvent(createArgs({ attendees: [{ email: 'ana@example.com' }] })) },
+    ...Object.fromEntries(Object.entries(EDITS).map(([name, c]) => [name, { items: () => [c.build(null)], run: c.run }])),
+  };
+  it.each(Object.keys(WRITES))('%s: a local calendar with guests says so; CalDAV does not', async (name) => {
+    const w = WRITES[name];
+    const local = bridge(w.items(), WITH_ADDRESS, 'storage');
+    const res = await w.run(local.api);
+    expect(res.ok, res.error).toBe(true);
+    expect(res.guest_notice).toBe(LOCAL_LINE);
+    const caldav = bridge(w.items(), WITH_ADDRESS, 'caldav');
+    const res2 = await w.run(caldav.api);
+    expect(res2.ok, res2.error).toBe(true);
+    expect(res2.guest_notice).toBeUndefined();
+  });
+  it('a local calendar event without guests says nothing', async () => {
+    const { api } = bridge([], WITH_ADDRESS, 'storage');
+    expect((await api.createCalendarEvent(createArgs())).guest_notice).toBeUndefined();
+  });
+  it('the create reply shows the line', async () => {
+    const { api } = bridge([], WITH_ADDRESS, 'storage');
+    globalThis.browser.tmCalendar = api;
+    ctx.activePid = 10;
+    ctx.fsmSessions[10] = { createEventArgs: createArgs({ attendees: [{ email: 'ana@example.com' }] }) };
+    streamText.mockClear();
+    await runStateCreateCalendarEventExec();
+    expect(streamText.mock.calls.map((c) => String(c[1])).join('\n')).toContain(LOCAL_LINE);
   });
 });
