@@ -184,9 +184,14 @@ export function fakeEvent({
   let uid = id;
   let start = startDate;
   let attendeeList = [...attendees];
+  let parent = null;
   const deleteProperty = (k) => { props.delete(k); params.delete(k); };
   const ev = {
-    title, endDate, recurrenceId, parentItem: null, calendar: null, recurrenceInfo: null, organizer,
+    title, endDate, recurrenceId, calendar: null, recurrenceInfo: null, organizer,
+    // CalItemBase: `get parentItem() { return this.mParentItem || this; }`, so
+    // an event that is no occurrence is its own parent.
+    get parentItem() { return parent || ev; },
+    set parentItem(value) { parent = value || null; },
     isEvent: () => true,
     getProperty: (k) => (props.has(k) ? props.get(k) : null),
     setProperty: (k, v) => {
@@ -234,7 +239,7 @@ export function fakeEvent({
         attendees: attendeeList.map(copy), organizer: copy(ev.organizer),
         alarms: alarms.map(copy), categories, attachments: attachments.map(copy),
       });
-      c.parentItem = ev.parentItem; c.calendar = ev.calendar;
+      c.parentItem = ev.parentItem === ev ? null : ev.parentItem; c.calendar = ev.calendar;
       // CalItemBase.cloneItemBaseInto clones the recurrence info, so a change to
       // the clone's rule never reaches the stored item before modifyItem.
       c.recurrenceInfo = typeof ev.recurrenceInfo?.clone === 'function' ? ev.recurrenceInfo.clone(c) : ev.recurrenceInfo;
@@ -721,7 +726,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     },
     async modifyItem(newItem, oldItem) {
       modifications.push({ newItem, oldItem });
-      if (oldItem.parentItem) {
+      if (oldItem.parentItem && oldItem.parentItem !== oldItem) {
         // An occurrence edit persists through recurrenceInfo.modifyException:
         // keyed by the RECURRENCE-ID, replacing the exception with that key or
         // ADDING one.

@@ -32,13 +32,18 @@ no `CalItipMessageSender`, no `SCHEDULE-AGENT`.
 - create: after the attendees, before `addItem`; no longer depends on `send_invitations`.
 - edit `all` (the series clone), one-off: after the guest change, before `modifyItem`. Reverses the old
   "don't set organizer during modify".
-- edit `this_only` (review r1, 2026-11-12): the occurrence first takes its series' organizer when it has none; if it
-  ends with one the series lacks, the series is written ONCE with the organizer and the occurrence as its changed
-  occurrence (`modifyException`), so the series and every changed occurrence carry the same ORGANIZER (RFC 6638
-  3.2.4.2 same-organizer-in-all-components; a strict server refuses a mixed resource). Otherwise the occurrence is
-  written as before.
+- edit `this_only` (review r1, corrected r2, 2026-11-12), only for a REAL occurrence (`base.recurrenceId` and
+  `base.parentItem !== base`: in Thunderbird a one-off event is its own `parentItem`, so a one-off edit takes the
+  plain path). The occurrence first takes its series' organizer when it has none of its own (address, name and
+  flag only). The series is written ONCE, with the occurrence as its changed occurrence (`modifyException`), when
+  the occurrence ends with an organizer AND the resource has guests (the series, any changed occurrence or the
+  edited occurrence) AND `giveSeriesOrganizer` changes something: the series lacks an organizer, or any changed
+  occurrence lacks one. Then the series and every changed occurrence carry the same ORGANIZER (RFC 6638 3.2.4.2
+  same-organizer-in-all-components; a strict server refuses a mixed resource). Otherwise the occurrence is written
+  as before. A guest-less series never gets an organizer from this path, even when a changed occurrence has one.
 - "has guests" for a series means the series or any changed occurrence has some; every changed occurrence without
-  an organizer gets a copy of the series' (`giveSeriesOrganizer`), on every series write above.
+  an organizer gets the series' person (`organizerLike`: address, name and organizer flag only, never server
+  parameters such as SCHEDULE-STATUS), on every series write above; one with its own organizer keeps it.
 - split: on the new series AND the earlier part, before the ask-again step, so the organizer (same address as
   an attendee entry) is not reset to NEEDS-ACTION.
 - delete `this_only` / `this_and_following`: on the series written in place (`replacement`), after `check_only`.

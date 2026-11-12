@@ -1470,16 +1470,26 @@ function exceptionsOf(item) {
 function hasGuests(item) {
   return item.getAttendees().length > 0 || exceptionsOf(item).some((ex) => ex.getAttendees().length > 0);
 }
+// A new organizer naming the same person: the address, the name and the
+// organizer flag only, never a server's own parameters (SCHEDULE-STATUS, ...).
+function organizerLike(organizer) {
+  const org = globalThis.Cc["@mozilla.org/calendar/attendee;1"].createInstance(globalThis.Ci.calIAttendee);
+  org.id = organizer.id;
+  if (organizer.commonName) org.commonName = organizer.commonName;
+  org.isOrganizer = true;
+  return org;
+}
 // Gives a series an organizer where it has none, and each changed occurrence
-// without one a copy of the series'. Says whether anything changed.
+// without one the series' person (organizerLike); an organizer one has is
+// never changed. Says whether anything changed.
 function giveSeriesOrganizer(series, organizer) {
   let changed = false;
-  if (!series.organizer) { series.organizer = organizer.clone(); changed = true; }
+  if (!series.organizer) { series.organizer = organizerLike(organizer); changed = true; }
   const info = series.recurrenceInfo;
   for (const ex of exceptionsOf(series)) {
     if (ex.organizer) continue;
     const copy = ex.clone();
-    copy.organizer = series.organizer.clone();
+    copy.organizer = organizerLike(series.organizer);
     info.modifyException(copy, true);
     changed = true;
   }
@@ -2956,8 +2966,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // One occurrence takes its series' organizer when it has none of
             // its own; its series gets the same one below (RFC 6638: one
             // ORGANIZER for every component of the resource).
-            const seriesOfOccurrence = scope !== "series" ? base.parentItem : null;
-            if (seriesOfOccurrence?.organizer && !clone.organizer) clone.organizer = seriesOfOccurrence.organizer.clone();
+            // Only a real occurrence has a series: a one-off event is its own
+            // parentItem (CalItemBase).
+            const seriesOfOccurrence = scope !== "series" && base.recurrenceId && base.parentItem && base.parentItem !== base
+              ? base.parentItem : null;
+            if (seriesOfOccurrence?.organizer && !clone.organizer) clone.organizer = organizerLike(seriesOfOccurrence.organizer);
             const organizerResult = setOwnOrganizerIfGuests(clone, base.calendar);
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
@@ -3083,7 +3096,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // is written once, with the occurrence as its changed occurrence,
             // so every component of the resource names the same organizer.
             const seriesWithOrganizer = (() => {
+              // Never an organizer on a series without guests (none on it,
+              // on any changed occurrence, or on the edited occurrence).
               if (!seriesOfOccurrence || !clone.organizer) return null;
+              if (!hasGuests(seriesOfOccurrence) && clone.getAttendees().length === 0) return null;
               const copy = seriesOfOccurrence.clone();
               return giveSeriesOrganizer(copy, clone.organizer) ? copy : null;
             })();

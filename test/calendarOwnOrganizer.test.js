@@ -361,3 +361,46 @@ describe('a calendar kept only on this computer', () => {
     expect(streamText.mock.calls.map((c) => String(c[1])).join('\n')).toContain(LOCAL_LINE);
   });
 });
+
+describe('review r2', () => {
+  it('a one-off event (its own parentItem, as in Thunderbird) with guests is edited and gets the calendar\'s address', async () => {
+    const ev = oneOff([guest('ana')]);
+    expect(ev.parentItem).toBe(ev);
+    const loaded = bridge([ev], WITH_ADDRESS);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', title: 'Renamed' });
+    expect(res.ok, res.error).toBe(true);
+    expect(organizerOf(loaded.calendar.items[0])).toEqual({ id: OWN, isOrganizer: true });
+  });
+
+  it('a guest-less series whose only organizer is on a changed occurrence gets none from an edit of one occurrence', async () => {
+    const x = fakeAttendee({ id: 'mailto:x@example.com', isOrganizer: true });
+    const loaded = bridge([series([], null, [changedAt(7, [], x), changedAt(8, [])])], WITH_ADDRESS);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: isoAt(7), title: 'Renamed' });
+    expect(res.ok, res.error).toBe(true);
+    const stored = loaded.calendar.items[0];
+    expect(stored.organizer).toBeFalsy();
+    const day8 = exceptionsOf(stored).find((ex) => ex.title === 'Planning' && !ex.organizer);
+    expect(day8).toBeTruthy();
+  });
+
+  it('an edited changed occurrence without an organizer takes its series\' organizer, not the calendar\'s address', async () => {
+    const loaded = bridge([series([guest('ana')], otherOrganizer(), [changedAt(7, [guest('ana')])])], WITH_ADDRESS);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: isoAt(7), title: 'Renamed' });
+    expect(res.ok, res.error).toBe(true);
+    for (const item of resourceOf(loaded.calendar.items[0])) expect(item.organizer.id).toBe('mailto:boss@example.com');
+  });
+
+  it('a changed occurrence keeps its own different organizer; one without takes only the series\' address, name and flag', async () => {
+    const own = fakeAttendee({ id: 'mailto:other@example.com', commonName: 'Other', isOrganizer: true, properties: { 'SCHEDULE-STATUS': '2.0' } });
+    const loaded = bridge([series([guest('ana')], otherOrganizer(), [changedAt(7, [guest('ana')], own), changedAt(8, [guest('ana')])])], WITH_ADDRESS);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', title: 'Renamed' });
+    expect(res.ok, res.error).toBe(true);
+    const [day7, day8] = exceptionsOf(loaded.calendar.items[0]).sort((a, b) => a.startDate.compare(b.startDate));
+    expect(day7.organizer.id).toBe('mailto:other@example.com');
+    expect(Object.fromEntries(day7.organizer.properties)).toEqual({ 'SCHEDULE-STATUS': '2.0' });
+    expect(day8.organizer.id).toBe('mailto:boss@example.com');
+    expect(day8.organizer.commonName).toBe('Boss');
+    expect(day8.organizer.isOrganizer).toBe(true);
+    expect(Object.fromEntries(day8.organizer.properties)).toEqual({});
+  });
+});
