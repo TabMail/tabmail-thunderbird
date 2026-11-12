@@ -133,6 +133,8 @@ const RULE_DAYS = 'this series repeats on days its rule names in a way a move ca
 const ALL_DAY_TIME = /^this is an all-day event, and the edit gives a time of day without all_day\. Ask the user/;
 const ALL_DAY_END = /^this is an all-day event, so its end_iso is the day after its last day and must be later than start_iso\. Ask the user/;
 const END_BEFORE = /^the event would end before it starts\. An end_iso alone changes only the end/;
+const KIND_NEEDS_BOTH = /^the edit makes this (all-day|timed) event (timed|all-day), which needs both start_iso and end_iso: give both with all_day \(for an all-day event, end_iso is the day after its last day\)/;
+const MIXED_KINDS = /^the edit would leave the start all-day and the end timed/;
 // The bridge's check before the card failing: the tool refuses the edit.
 const checkThrows = (loaded) => {
   const modify = loaded.api.modifyCalendarEvent;
@@ -165,7 +167,23 @@ const REFUSALS = [
   ['an all-day event given a time of day without all_day', allDayOneOff, { start_iso: `${DAY(8)}T15:00:00` }, null, ALL_DAY_TIME],
   ['an all-day end on its start', allDayOneOff, { start_iso: `${DAY(8)}T00:00:00`, end_iso: `${DAY(8)}T00:00:00` }, null, ALL_DAY_END],
   ['a timed end before its start', oneOff, { end_iso: isoAt(1, 16) }, null, END_BEFORE],
-  ['an all-day event given a timed end alone', allDayOneOff, { all_day: false, end_iso: `${DAY(6)}T15:00:00` }, null, /^the edit would leave the start all-day and the end timed/],
+  ['an all-day event given a timed end alone', allDayOneOff, { all_day: false, end_iso: `${DAY(6)}T15:00:00` }, null, KIND_NEEDS_BOTH],
+  ['a change of kind given alone, one event', allDayOneOff, { all_day: false }, null, KIND_NEEDS_BOTH],
+  ['a change of kind given alone, one occurrence', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), all_day: true }, null, KIND_NEEDS_BOTH],
+  ['a change of kind given alone, whole series', series, { edit_scope: 'all', all_day: true }, null, KIND_NEEDS_BOTH],
+  // A start and an end of different kinds: an edit that leaves all_day out
+  // keeps each side's stored kind, and a change of kind needs both times, so
+  // only an item stored that way (another app's) reaches it: a series in
+  // either shape given a new start, and an event or one occurrence given a
+  // new start when its stored length is zero or negative (no end follows the
+  // start then).
+  ['a series stored with an all-day start and a timed end, given a new start', () => {
+    const ev = series({ start: fakeDate(DAY(1)) });
+    ev.endDate = fakeDateTime(DAY(1), 15);
+    return ev;
+  }, { edit_scope: 'all', recurrence_id: `${DAY(1)}T00:00:00`, start_iso: `${DAY(2)}T00:00:00` }, null, MIXED_KINDS],
+  ['an event stored with an all-day start and a timed end before it, given a new start', () => fakeEvent({ id: 'ser', title: 'Holiday', startDate: fakeDate(DAY(6)), endDate: fakeDateTime(DAY(5), 15) }),
+    { start_iso: `${DAY(8)}T00:00:00` }, null, MIXED_KINDS],
   ['a whole series named from its first occurrence, changed on its own, given an end before that occurrence starts', () => series({ exceptions: [changed(1, { startOn: [1, 19] })] }),
     { edit_scope: 'all', recurrence_id: isoAt(1, 19), end_iso: `${DAY(1)}T18:30:00` }, null, END_BEFORE],
   ['a whole series made all-day with an added date', () => series({ items: [recurrenceDate('RDATE', fakeDateTime(DAY(6), 19))] }),
@@ -203,6 +221,9 @@ const REFUSALS = [
   ['a split whose following part\'s rule cannot be written', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), title: 'Renamed' }, ruleWriteThrowsAt(2), /^failed to build the new series' recurrence: Error: NS_ERROR_OBJECT_IS_IMMUTABLE/],
   ['a split of an all-day series given a time of day without all_day', () => series({ start: fakeDate(DAY(1)) }),
     { edit_scope: 'this_and_following', recurrence_id: `${DAY(4)}T00:00:00`, start_iso: `${DAY(4)}T09:00:00` }, null, ALL_DAY_TIME],
+  ['a split given a change of kind alone', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), all_day: true }, null, KIND_NEEDS_BOTH],
+  ['a split given a change of kind with a start only', () => series({ start: fakeDate(DAY(1)) }),
+    { edit_scope: 'this_and_following', recurrence_id: `${DAY(4)}T00:00:00`, start_iso: `${DAY(4)}T09:00:00`, all_day: false }, null, KIND_NEEDS_BOTH],
   ['a split made all-day whose following part has an added date', () => series({ items: [recurrenceDate('RDATE', fakeDateTime(DAY(7), 19))] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: `${DAY(4)}T00:00:00`, end_iso: `${DAY(5)}T00:00:00`, all_day: true }, null, KIND_CHANGE],
   ['a split at an occurrence changed on its own, given an end before it starts', () => series({ exceptions: [changed(4, { startOn: [4, 19] })] }),
