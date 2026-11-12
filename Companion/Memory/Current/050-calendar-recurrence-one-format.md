@@ -199,10 +199,18 @@ same design (tabmail-ios #421).
     occurrence changed on its own (on `all` at the first occurrence, or a split) is read against the series' plain
     occurrence there (`slot`), the same swap `resolveEditTimes` makes for the series' own start: read against an
     occurrence already of the kind asked, that occurrence's own dates restated and were dropped, and the edit was
-    answered "Nothing changed" while every other occurrence kept its kind. With no time left, the kind compared is the
-    occurrence's read against: from an occurrence made the other kind on its own (a split), `all_day` of the series'
-    kind given alone asks for that occurrence's kind to change, and is refused for both times (2026-11-12; it was
-    "Nothing changed"). On `all` with no time the series path does not read the named occurrence. Superseded: `all_day` alone changed nothing
+    answered "Nothing changed" while every other occurrence kept its kind. The swap never fires when the edit changes
+    the NAMED occurrence's kind (`changesNamedKind`): then the edit is read against that occurrence, so its old times
+    are the card's (an occurrence moved in time and made the other kind shows its own 14:00, not the slot's 10:00,
+    as #369 requires). The kind is checked ONCE, before `timesLeft`, against the occurrence read against
+    (`kindChangeTimesError(!!ref.startDate.isDate, patch)`): any change of kind needs both times (owner ruling
+    2026-11-12, "Option 1"). So at an occurrence made the other kind on its own, `all_day` of the series' kind is a
+    change of that occurrence's kind: given alone or with a start alone (the series' time or another) it is refused
+    for both times; with both times (the series' own, or another end) it is made from that occurrence on, the card
+    and the write agree. Before (2026-11-12 review), the series'-own-start swap read such an edit against the slot:
+    the series' own times restated and it answered "Nothing changed", a start alone did too, and another end showed
+    "All-day event: yes -> no" on the card while the write left that occurrence all-day. On `all` with no time the
+    series path does not read the named occurrence. Superseded: `all_day` alone changed nothing
     while the card showed "All-day: no → yes" and the edit reported success, and from an occurrence on it split the
     series into two identical parts; a change to timed with a start only kept the all-day length as a 24-hour timed
     event (one-off and `this_only`), and on a series it got the mixed-kinds refusal. Pinned by

@@ -1829,31 +1829,30 @@ function resolveEditTimes(item, patch, tz, namedRid) {
   let refIsChanged = !!(namedRid && info.getExceptionFor(namedRid));
   // An edit named at an occurrence changed on its own is read against the
   // series' plain occurrence there (`slot`) when it changes the series' kind,
-  // or gives the series' own start: then it changes the series, not that
-  // occurrence. The series' own start is the time the series already has: no
-  // change, as in Google Calendar (the moved occurrence keeps its own time),
-  // and an end is measured from that start. A change of kind (all_day other
-  // than the series') at an occurrence already of that kind, given that
-  // occurrence's own dates, changes every other occurrence: read against the
-  // occurrence, its times would restate and be dropped, and the edit would be
-  // answered "Nothing changed".
+  // or gives the series' own start, and does not change that occurrence's
+  // kind: then it changes the series, not that occurrence. The series' own
+  // start is the time the series already has: no change, as in Google
+  // Calendar (the moved occurrence keeps its own time), and an end is
+  // measured from that start. A change of kind (all_day other than the
+  // series') at an occurrence already of that kind, given that occurrence's
+  // own dates, changes every other occurrence: read against the occurrence,
+  // its times would restate and be dropped, and the edit would be answered
+  // "Nothing changed". An edit that changes the named occurrence's kind is
+  // read against it (its old times are the card's).
   const changesSeriesKind = typeof patch.all_day === "boolean" && patch.all_day !== !!item.startDate.isDate;
-  if (refIsChanged && (changesSeriesKind || (patch.start_iso && restates(patch.start_iso, tz, slot.startDate, patch.all_day)
+  const changesNamedKind = typeof patch.all_day === "boolean" && patch.all_day !== !!ref.startDate.isDate;
+  if (refIsChanged && !changesNamedKind && (changesSeriesKind || (patch.start_iso && restates(patch.start_iso, tz, slot.startDate, patch.all_day)
     && !restates(patch.start_iso, tz, ref.startDate, patch.all_day)))) {
     ref = slot;
     refIsChanged = false;
   }
+  // The one check of a change of kind here: against the occurrence read
+  // against, it needs both times (a time given with a kind other than that
+  // occurrence's never restates it, so none is dropped).
+  const kindError = kindChangeTimesError(!!ref.startDate.isDate, patch);
+  if (kindError) return { error: kindError };
   const left = timesLeft(ref, patch, tz);
-  if (!left.start_iso && !left.end_iso) {
-    // No time left: a change of kind still needs both (read against the
-    // series' plain occurrence, a time that would change the kind never
-    // restates, so none was dropped). The kind changed is the occurrence's
-    // read against: all_day of the series' kind, named at an occurrence made
-    // the other kind on its own, changes that occurrence's kind.
-    const kindError = kindChangeTimesError(!!ref.startDate.isDate, patch);
-    if (kindError) return { error: kindError };
-    return { start: null, length: null, ref, refIsChanged };
-  }
+  if (!left.start_iso && !left.end_iso) return { start: null, length: null, ref, refIsChanged };
   if (!left.start_iso && refIsChanged && !!ref.startDate.isDate !== !!item.startDate.isDate) {
     return { error: NAMED_OTHER_KIND_ERROR };
   }
