@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   accounts: null,
   stored: {},
   listener: null,
+  rewriteStoredIcs: null,
 }));
 
 vi.mock('../agent/modules/config.js', () => ({ SETTINGS: {} }));
@@ -27,7 +28,10 @@ vi.mock('../fts/operationCoordinator.js', () => ({
   runFtsMembershipMutation: vi.fn(),
   writeOwnedFtsScanStatus: vi.fn(async () => {}),
 }));
-vi.mock('../fts/indexer.js', () => ({ indexMessages: (...args) => h.indexMessages(...args) }));
+vi.mock('../fts/indexer.js', () => ({
+  indexMessages: (...args) => h.indexMessages(...args),
+  rewriteStoredIcs: (...args) => h.rewriteStoredIcs(...args),
+}));
 vi.mock('../fts/incrementalIndexer.js', () => ({ initIncrementalIndexer: vi.fn(async () => {}) }));
 vi.mock('../fts/maintenanceScheduler.js', () => ({
   initMaintenanceScheduler: vi.fn(async () => {}),
@@ -155,5 +159,42 @@ describe('attachment flag repair startup trigger', () => {
       expect.objectContaining({ type: 'ftsProgress', folder: 'Inbox', totalIndexed: 5 }),
     );
     expect(h.logSmartReindexRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+// email_read sends the invite rewrite to the background, which owns the helper. The message's
+// WebExtension id must reach rewriteStoredIcs: it is what a lost row is queued for indexing by.
+describe('rewriteStoredIcs command', () => {
+  beforeEach(() => {
+    h.log = vi.fn();
+    h.indexMessages = vi.fn(async () => ({}));
+    h.logSmartReindexRun = vi.fn(async () => {});
+    h.repairedAccounts = vi.fn(async () => new Set(['account1']));
+    h.accounts = [];
+    h.stored = {};
+    h.listener = null;
+    h.rewriteStoredIcs = vi.fn(async () => 1);
+    globalThis.browser = {
+      storage: { local: { get: vi.fn(async (key) => (typeof key === 'string' ? { [key]: h.stored[key] } : { ...h.stored })) } },
+      accounts: { list: vi.fn(async () => h.accounts) },
+      runtime: {
+        sendMessage: vi.fn(async () => {}),
+        onMessage: { addListener: vi.fn((fn) => { h.listener = fn; }), removeListener: vi.fn() },
+      },
+    };
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete globalThis.browser;
+  });
+
+  it('passes the message id, folder, WebExtension id and value through to rewriteStoredIcs', async () => {
+    await startEngine();
+    const fields = { msgId: 'account1:/INBOX:a@example.com', folderId: 'tm-folder:v1:["account1","/INBOX"]', weId: 42, parsedIcsAttachments: '' };
+    expect(await sendFts('rewriteStoredIcs', fields)).toBe(1);
+    expect(h.rewriteStoredIcs).toHaveBeenCalledTimes(1);
+    expect(h.rewriteStoredIcs.mock.calls[0][1]).toEqual(fields);
   });
 });

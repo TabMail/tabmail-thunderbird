@@ -363,7 +363,8 @@ async function readdRows(ftsSearch, epoch, stale) {
  * never updates a row, so the row is removed and re-added; when the re-add fails after the remove
  * went through (the row is gone), the message (WebExtension id `weId`) is queued once through the
  * incremental indexer's new-message path, so it is back in the index this session, indexed from
- * the message itself. The next email_read of the message tries again if that queueing fails.
+ * the message itself. That is tried once; if it fails, the message stays out of the index until the
+ * startup fingerprint check queues it (ADR-032).
  * @returns {Promise<number>} rows rewritten (0 when the message is no longer indexed)
  */
 export async function rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments }) {
@@ -391,9 +392,9 @@ export async function rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parse
         const header = await browser.messages.get(weId);
         const { onNewMailReceived } = await import("./incrementalIndexer.js");
         onNewMailReceived(header.folder, [header]);
-        log(`[TMDBG FTS] rewriteStoredIcs: row removed but not re-added; queued ${msgId} for indexing`, "warn");
+        log(`[TMDBG FTS] rewriteStoredIcs: row removed but not re-added; requested re-index of ${msgId}`, "warn");
       } catch (eQueue) {
-        log(`[TMDBG FTS] rewriteStoredIcs: could not queue ${msgId} for indexing: ${eQueue}`, "warn");
+        log(`[TMDBG FTS] rewriteStoredIcs: could not request re-index of ${msgId}: ${eQueue}`, "warn");
       }
     }
     throw e;

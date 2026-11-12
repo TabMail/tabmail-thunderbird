@@ -462,13 +462,13 @@ describe('rewriteStoredIcs (email_read healing an old formatted invite)', () => 
     expect(index.has(key(1))).toBe(true);
   });
 
-  it('tries the queue once per read, and the next read can try again', async () => {
+  it('requests the re-index once, with no second request when that fails', async () => {
     onNewMailReceived.mockImplementation(() => { throw new Error('queue refused'); });
     ftsSearch.indexBatch.mockImplementationOnce(async () => { throw new Error('helper error'); });
     await expect(rewrite()).rejects.toThrow('helper error');
     expect(onNewMailReceived).toHaveBeenCalledTimes(1);
     expect(index.has(key(1))).toBe(false);
-    // The next read: the row is gone, so there is nothing to rewrite; the message is read live.
+    // A later rewrite finds no row, so it rewrites nothing and requests nothing.
     expect(await rewrite()).toBe(0);
     expect(onNewMailReceived).toHaveBeenCalledTimes(1);
   });
