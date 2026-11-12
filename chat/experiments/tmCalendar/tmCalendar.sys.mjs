@@ -744,6 +744,10 @@ function ruleShiftedByDays(value, days, was, now) {
   return { value: out.join(";") };
 }
 
+// The scopes a delete of a repeating event takes (delete_scope), the same
+// values as an edit's edit_scope.
+const DELETE_SCOPES = ["this_only", "this_and_following", "all"];
+
 // An edit's event_id that names no event on the user's calendars: the id may
 // be stale or another kind of id, so the assistant looks it up again rather
 // than retrying it.
@@ -2318,7 +2322,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         },
         async deleteCalendarEvent(details) {
           try {
-            const Ci = globalThis.Ci; const Cc = globalThis.Cc;
             const mgr = getCalendarManager();
             if (!mgr) {
               console.error("[tmCalendar] deleteCalendarEvent: calendar manager unavailable");
@@ -2327,7 +2330,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const d = details || {};
             const eventId = String(d.event_id || "");
             const calendar_id = String(d.calendar_id || "");  // optional calendar ID for faster lookup
-            const confirm = !!d.confirm;
             if (!eventId) {
               console.error("[tmCalendar] deleteCalendarEvent: event_id is required");
               return { ok: false, error: "event_id is required" };
@@ -2382,21 +2384,50 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               return { ok: false, error: "event not found" };
             }
 
-            // Delete the event
-            try {
-              if (!confirm) {
-                // Show confirmation dialog
-                const wm = Cc["@mozilla.org/appshell/window-mediator;1"].getService(Ci.nsIWindowMediator);
-                const w = wm.getMostRecentWindow("mail:3pane");
-                if (w && w.confirm) {
-                  const eventTitle = targetEvent.title || "this event";
-                  const confirmMsg = `Are you sure you want to delete "${eventTitle}"?`;
-                  if (!w.confirm(confirmMsg)) {
-                    return { ok: false, error: "user cancelled deletion" };
+            // A repeating event is deleted by scope (delete_scope), which it
+            // must name: there is no default. "all" deletes the stored series;
+            // "this_only" excludes the occurrence recurrence_id names (as the
+            // series edit's exdates_add does, on a copy); "this_and_following"
+            // writes the series before that occurrence (earlierPartBefore, the
+            // split's earlier part), so it and every later occurrence go. An
+            // event that does not repeat is deleted whatever the scope says.
+            // `replacement` is the series written in place of the stored one,
+            // or null when the stored item is deleted.
+            const series = targetEvent.parentItem || targetEvent;
+            let scope = null;
+            let replacement = null;
+            if (series.recurrenceInfo) {
+              scope = String(d.delete_scope || "");
+              if (!DELETE_SCOPES.includes(scope)) {
+                return { ok: false, error: "delete_scope is required for a repeating event: 'this_only', 'this_and_following' or 'all'" };
+              }
+              if (scope !== "all") {
+                const recurIdStr = String(d.recurrence_id || "");
+                if (!recurIdStr) {
+                  return { ok: false, error: `delete_scope='${scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.` };
+                }
+                const named = occurrenceNamedBy(series, recurIdStr);
+                if (named.error) return { ok: false, error: named.error };
+                const rid = named.occurrence.recurrenceId;
+                if (scope === "this_only") {
+                  replacement = series.clone();
+                  asAllDayItem(replacement);
+                  addExdateToItem(replacement, rid);
+                } else {
+                  if (isFirstOccurrence(series, rid)) {
+                    return { ok: false, error: "recurrence_id is the series' first occurrence: to delete every occurrence, use delete_scope 'all'" };
                   }
+                  const earlier = earlierPartBefore(series, rid);
+                  if (earlier.error) return { ok: false, error: earlier.error };
+                  replacement = earlier.part;
                 }
               }
-              
+            }
+            // A check before the confirmation card stops here, before any
+            // write: every refusal is above.
+            if (d.check_only) return { ok: true, scope };
+
+            try {
               // Send cancellation invitations before deleting (if requested)
               let invitationResult = null;
               if (details.send_invitations && targetEvent) {
@@ -2416,14 +2447,20 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 }
               }
               
-              tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: deleting event:", eventId);
-              await targetCalendar.deleteItem(targetEvent);
+              if (replacement) {
+                tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: deleting occurrences (${scope}) of:`, eventId);
+                await targetCalendar.modifyItem(replacement, series);
+              } else {
+                tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: deleting event:", eventId);
+                await targetCalendar.deleteItem(targetEvent);
+              }
               tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: event deleted successfully");
               // Return the item's own id
               const returnedId = String(targetEvent.id || "");
               return { 
                 ok: true,
                 id: returnedId,
+                scope,
                 invitations: invitationResult
               };
             } catch (e) {

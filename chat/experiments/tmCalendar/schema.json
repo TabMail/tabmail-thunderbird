@@ -348,7 +348,14 @@
             "properties": {
               "event_id": { "type": "string" },
               "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID for faster lookup. If provided, searches this calendar first." },
-              "confirm": { "type": "boolean", "optional": true },
+              "delete_scope": {
+                "type": "string",
+                "optional": true,
+                "enum": ["this_only", "this_and_following", "all"],
+                "description": "For a repeating event, which occurrences go: the one recurrence_id names, it and every later one, or the whole series. Required for a repeating event; ignored for one that does not repeat."
+              },
+              "recurrence_id": { "type": "string", "optional": true, "description": "The occurrence to delete, or to delete from: its start as the read tools show it. Required when delete_scope is 'this_only' or 'this_and_following'." },
+              "check_only": { "type": "boolean", "optional": true, "description": "Run the delete, every refusal included, up to its first write and write nothing. ok: false carries the refusal." },
               "send_invitations": { "type": "boolean", "optional": true },
               "organizer_email": { "type": "string", "optional": true }
             },

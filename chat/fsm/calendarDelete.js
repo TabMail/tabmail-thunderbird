@@ -12,12 +12,33 @@ import { formatCardTime, streamText } from "../modules/helpers.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 import { recurrenceInWords } from "../modules/recurrence.js";
 import { shownEventTimesIso } from "../tools/calendar_event_read.js";
+import { deleteCallArgs } from "../tools/calendar_event_delete.js";
 
-// The delete removes the whole item, so a repeating event goes with every
-// occurrence (one occurrence is removed by the edit tool, exdates_add).
+// A repeating event is deleted by scope (delete_scope, routed by the tool):
+// "all" removes the whole item, every occurrence; "this_only" the occurrence
+// recurrence_id names; "this_and_following" that occurrence and every later
+// one. The card says which, and the write does exactly that.
 const SERIES_DELETE_NOTE = "Repeating event: every occurrence will be deleted";
+const OCCURRENCE_DELETE_NOTE = "One occurrence of a repeating event; the rest of the series stays.";
 
-function formatEventDetailsForDisplay(details) {
+// An occurrence time as the card's Start line states it: a date alone for a
+// date (an all-day occurrence, or the slot of one).
+function cardTime(naiveIso) {
+  return formatCardTime(naiveIso, { allDay: /^\d{4}-\d{2}-\d{2}$/.test(String(naiveIso)) });
+}
+
+// "This and every later occurrence" from the named one; an occurrence moved
+// off its usual time also shows that original time (its slot), where the
+// series is cut.
+function followingDeleteNote(details) {
+  const d = details || {};
+  if (!d.recurrenceIdSlot) return "This and every later occurrence will be deleted; earlier ones stay.";
+  const shown = shownEventTimesIso(d);
+  const start = formatCardTime(shown.start_iso, { allDay: d.isAllDay === true });
+  return `This and every later occurrence will be deleted (from ${start}, originally ${cardTime(d.recurrenceIdSlot)}); earlier ones stay.`;
+}
+
+function formatEventDetailsForDisplay(details, scope = null) {
   try {
     const d = details || {};
     const lines = [];
@@ -35,12 +56,17 @@ function formatEventDetailsForDisplay(details) {
     if (typeof d.isAllDay !== "undefined")
       lines.push(`All-day: ${d.isAllDay ? "yes" : "no"}`);
     // Keyed on isRecurring, not recurrence: a series repeating by added dates
-    // alone has no rule fields and is still deleted whole. The rule is named
-    // only when it can be fully stated (recurrenceInWords).
+    // alone has no rule fields and is still deleted by scope. The rule is
+    // named only when it can be fully stated (recurrenceInWords), and not for
+    // one occurrence, which the rule does not change.
     if (d.isRecurring) {
-      lines.push(SERIES_DELETE_NOTE);
-      const words = recurrenceInWords(d.recurrence);
-      if (words) lines.push(`Repeats ${words}`);
+      if (scope === "this_only") {
+        lines.push(OCCURRENCE_DELETE_NOTE);
+      } else {
+        lines.push(scope === "this_and_following" ? followingDeleteNote(d) : SERIES_DELETE_NOTE);
+        const words = recurrenceInWords(d.recurrence);
+        if (words) lines.push(`Repeats ${words}`);
+      }
     }
     if (d.location) lines.push(`Location: ${d.location}`);
     if (d.organizer) lines.push(`Organizer: ${d.organizer}`);
@@ -66,13 +92,25 @@ async function fetchEventDetails(eventId) {
   return { ok: false, error: "details API not available" };
 }
 
+// What went, by the scope the bridge deleted, for the user. "This and every
+// later" names no date: the cut is at the occurrence's slot, which for one
+// moved on its own is not where it is now (the card states both).
+function deletedText(scope) {
+  if (scope === "this_only") return "Occurrence deleted";
+  if (scope === "this_and_following") return "This and every later occurrence deleted; earlier ones stay";
+  if (scope === "all") return "Repeating event deleted: every occurrence";
+  return "Calendar event deleted";
+}
+
 export async function runStateDeleteCalendarEventList() {
   const agentBubble = await createNewAgentBubble("Preparing event preview...");
   let eventId = null;
+  let scope = null;
   try {
     const pid = ctx.activePid || ctx.activeToolCallId || 0;
     const sess = pid ? (ctx.fsmSessions[pid] ||= {}) : {};
     eventId = sess?.deleteEventArgs?.event_id || null;
+    scope = sess?.deleteEventArgs?.delete_scope || null;
   } catch (_) {}
 
   if (!eventId) {
@@ -105,7 +143,7 @@ export async function runStateDeleteCalendarEventList() {
   agentBubble.classList.remove("loading");
   let assistantText = "";
   if (details && details.ok) {
-    const formatted = formatEventDetailsForDisplay(details);
+    const formatted = formatEventDetailsForDisplay(details, scope);
     assistantText = `I found this calendar event:\n\n${formatted}`;
     streamText(agentBubble, assistantText);
   } else {
@@ -157,12 +195,16 @@ export async function runStateDeleteCalendarEventExec() {
   let eventId = null;
   let organizerEmail = null;
   let sendInvitations = undefined;
+  // The call's arguments as the tool stashed them (scope as routed): the
+  // write is the delete the card stated.
+  let args = {};
   try {
     const pid = ctx.activePid || ctx.activeToolCallId || 0;
     const sess = pid ? (ctx.fsmSessions[pid] ||= {}) : {};
-    eventId = sess?.deleteEventArgs?.event_id || null;
-    organizerEmail = sess?.deleteEventArgs?.organizer_email || null;
-    sendInvitations = sess?.deleteEventArgs?.send_invitations;
+    args = sess?.deleteEventArgs || {};
+    eventId = args.event_id || null;
+    organizerEmail = args.organizer_email || null;
+    sendInvitations = args.send_invitations;
   } catch (_) {}
 
   if (!eventId) {
@@ -197,8 +239,7 @@ export async function runStateDeleteCalendarEventExec() {
   let deleteResult = null;
   try {
     const res = await browser.tmCalendar.deleteCalendarEvent({
-      event_id: eventId,
-      confirm: true,
+      ...deleteCallArgs(args),
       organizer_email: organizerEmail,
       send_invitations: sendInvitations,
     });
@@ -212,6 +253,7 @@ export async function runStateDeleteCalendarEventExec() {
     // Store result in session for completeExecution to retrieve
     deleteResult = {
       event_id: eventId,
+      scope: res.scope || null,
       invitations: res.invitations,
     };
     try {
@@ -221,7 +263,7 @@ export async function runStateDeleteCalendarEventExec() {
       }
     } catch (_) {}
 
-    resultMsg = "Calendar event deleted";
+    resultMsg = deletedText(res.scope);
     if (res.invitations) {
       if (res.invitations.ok) {
         if (typeof res.invitations.recipients !== "undefined") {

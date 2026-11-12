@@ -116,9 +116,11 @@ function load(items) {
   return harness;
 }
 
-// The card text the bubble shows and the relay sends, before any delete.
-async function showCard(eventId, harness) {
-  fsmCtx.fsmSessions['pid-test'] = { deleteEventArgs: { event_id: eventId } };
+// The card text the bubble shows and the relay sends, before any delete. A
+// repeating event is deleted whole by delete_scope 'all', as the tool stashes
+// it once the user said so.
+async function showCard(eventId, harness, scope = { delete_scope: 'all' }) {
+  fsmCtx.fsmSessions['pid-test'] = { deleteEventArgs: { event_id: eventId, ...scope } };
   await runStateDeleteCalendarEventList();
   expect(fsmCtx.state).not.toBe('exec_fail');
   const card = streamText.mock.calls.map((c) => c[1]).find((t) => t.startsWith('I found this calendar event'));
@@ -206,7 +208,7 @@ describe('delete card for a repeating event', () => {
 
   it('a one-off event: no series line', async () => {
     const harness = load([oneOff('one')]);
-    const card = await showCard('one', harness);
+    const card = await showCard('one', harness, {});
     expect(card).not.toContain(SERIES_LINE);
     expect(repeatsLine(card)).toBeNull();
     await confirmDelete();

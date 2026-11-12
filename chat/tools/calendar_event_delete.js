@@ -11,6 +11,15 @@ export const fsm = true;
 import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
+import { toNaiveIso } from "../modules/helpers.js";
+
+// The scopes a delete of a repeating event takes (delete_scope), as the edit's
+// edit_scope. There is no default: the user is asked when it is unclear.
+const DELETE_SCOPES = ["this_only", "this_and_following", "all"];
+
+// The question for the user when a repeating event is to be deleted and the
+// call names no scope.
+const ASK_DELETE_SCOPE = "This event repeats. Ask the user \"Just this one, this and following, or all of them?\" (unless their words already said which), then call calendar_event_delete again with delete_scope 'this_only', 'this_and_following' or 'all', and for 'this_only' or 'this_and_following' with recurrence_id (the occurrence's start_iso as calendar_event_read shows it).";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -21,14 +30,15 @@ function normalizeArgs(args = {}) {
   
   // calendar_id is required for disambiguation
   if (typeof a.calendar_id === "string" && a.calendar_id) out.calendar_id = a.calendar_id;
-  
-  // confirm defaults to false if not provided
-  if (typeof a.confirm === "boolean") {
-    out.confirm = a.confirm;
-  } else {
-    out.confirm = false;
-  }
-  
+
+  // recurrence_id — the start of the occurrence to delete, or to delete from,
+  // as the read tools show it (null when it is not a date: refused below).
+  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = toNaiveIso(a.recurrence_id);
+
+  // delete_scope — "this_only" | "this_and_following" | "all". Any other value
+  // is kept, so it is refused by name rather than dropped.
+  if (typeof a.delete_scope === "string" && a.delete_scope.trim()) out.delete_scope = a.delete_scope.toLowerCase().trim();
+
   // Include invitation properties
   if (typeof a.send_invitations === "boolean") {
     out.send_invitations = a.send_invitations;
@@ -98,7 +108,16 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
     return;
   }
 
+  // Every later step reads this snapshot of the call's arguments (and the
+  // card and the write read it from the session).
   const norm = normalizeArgs(args);
+
+  // A date the tool cannot read is refused, never replaced by a guess.
+  if (typeof args?.recurrence_id === "string" && args.recurrence_id.trim() && !norm.recurrence_id) {
+    await failOut(`recurrence_id "${args.recurrence_id}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS, or YYYY-MM-DD for a date, then retry.`);
+    return;
+  }
+
   if (!norm.event_id) {
     await failOut("event_id is required. Use calendar_search or calendar_read to look up the event_id of the calendar event you want to delete, then retry.");
     return;
@@ -109,11 +128,72 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
     return;
   }
 
+  // The event as the card shows it: the occurrence recurrence_id names, unless
+  // the whole series goes. A read that fails is stashed as it is, and the list
+  // state reports it (no card, nothing deleted).
+  let details = await safeFetchEventDetails(norm.event_id, norm.delete_scope === "all" ? null : norm.recurrence_id);
+  if (details?.ok) {
+    log(`[TMDBG Tools] calendar_event_delete: pre-fetched event details for id=${norm.event_id}`);
+  } else {
+    log(`[TMDBG Tools] calendar_event_delete: event details not confirmed pre-list: ${details?.error || "unknown"}`, "warn");
+  }
+
+  if (!details?.ok) {
+    // Reported by the list state.
+  } else if (!details.isRecurring) {
+    // An event that does not repeat is deleted as it is; a scope means nothing.
+    delete norm.delete_scope;
+    delete norm.recurrence_id;
+  } else {
+    // A repeating event: the scope is named (never a default), and an
+    // occurrence scope names its occurrence.
+    if (!norm.delete_scope) {
+      await failOut(ASK_DELETE_SCOPE);
+      return;
+    }
+    if (!DELETE_SCOPES.includes(norm.delete_scope)) {
+      await failOut(`delete_scope "${norm.delete_scope}" is not one of 'this_only', 'this_and_following' or 'all'. ${ASK_DELETE_SCOPE}`);
+      return;
+    }
+    if (norm.delete_scope !== "all" && !norm.recurrence_id) {
+      await failOut(`delete_scope '${norm.delete_scope}' needs recurrence_id: the occurrence's start_iso as calendar_event_read or calendar_read shows it (every occurrence of a repeating event has the series' event_id).`);
+      return;
+    }
+    // This and every later occurrence, from the first: the whole series.
+    if (norm.delete_scope === "this_and_following" && details.recurrenceIdIsFirst === true) {
+      norm.delete_scope = "all";
+      const series = await safeFetchEventDetails(norm.event_id, null);
+      if (!series?.ok) {
+        await failOut(`could not read this event (${series?.error || "unknown error"}); try again`);
+        return;
+      }
+      details = series;
+    }
+    if (norm.delete_scope === "all") delete norm.recurrence_id;
+
+    // Every delete the bridge would refuse (an occurrence that is not one, a
+    // series it cannot cut there, ...) is refused here, before the card: the
+    // bridge runs the same delete up to its first write and writes nothing.
+    let check = null;
+    try {
+      check = await browser.tmCalendar.deleteCalendarEvent({ ...deleteCallArgs(norm), check_only: true });
+      if (!check) throw new Error("no answer");
+    } catch (e) {
+      await failOut(`the calendar could not check this delete (${e}); try again`);
+      return;
+    }
+    if (check.ok === false) {
+      await failOut(String(check.error || "the calendar refused this delete"));
+      return;
+    }
+  }
+
   // Enter FSM state and stash delete args
   ctx.state = "calendar_event_delete_list";
   try {
     if (pid && ctx.fsmSessions[pid]) {
       ctx.fsmSessions[pid].deleteEventArgs = norm;
+      ctx.fsmSessions[pid].deleteEventDetails = details;
     }
   } catch (_) {}
 
@@ -131,19 +211,6 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
   ctx.rawUserTexts.push(fakeUserText);
   log(`[TMDBG Tools] calendar_event_delete: Established FSM marker in chat history`);
 
-  // Optionally validate existence of event here by fetching details
-  try {
-    const details = await safeFetchEventDetails(norm.event_id);
-    if (details && details.ok) {
-      try { const pid = ctx.activePid || ctx.activeToolCallId || 0; if (pid) ctx.fsmSessions[pid].deleteEventDetails = details; } catch (_) {}
-      log(`[TMDBG Tools] calendar_event_delete: pre-fetched event details for id=${norm.event_id}`);
-    } else {
-      log(`[TMDBG Tools] calendar_event_delete: event details not confirmed pre-list: ${(details && details.error) || "unknown"}`, "warn");
-    }
-  } catch (e) {
-    log(`[TMDBG Tools] calendar_event_delete: failed to prefetch details: ${e}`, "warn");
-  }
-
   // Use the agent bubble from tool orchestration
   let agentBubble = options.agentBubble;
   if (!agentBubble) {
@@ -156,13 +223,16 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
   await core.executeAgentAction();
 }
 
-async function safeFetchEventDetails(eventId) {
+async function safeFetchEventDetails(eventId, recurrenceId = null) {
   try {
     if (browser?.tmCalendar?.getCalendars && browser?.tmCalendar?.queryCalendarItems) {
       // Use experimental helper if exposed (later we can add a dedicated getEventDetails)
       // For now, try a broad query of today and match id client-side if available in cache
       // but primary path: use a dedicated bridge call if present
       if (typeof browser.tmCalendar.getCalendarEventDetails === "function") {
+        // No calendar: the first calendar holding the id, the item the delete
+        // (which is given no calendar either) finds.
+        if (recurrenceId) return await browser.tmCalendar.getCalendarEventDetails(String(eventId), "", String(recurrenceId));
         return await browser.tmCalendar.getCalendarEventDetails(String(eventId));
       }
     }
@@ -172,7 +242,24 @@ async function safeFetchEventDetails(eventId) {
   return { ok: false, error: "details not available" };
 }
 
+// The arguments the bridge delete is given, for the check before the card and
+// for the confirmed write alike, so both act on the same item: no calendar,
+// the first calendar holding the id, as the card's details read finds it.
+export function deleteCallArgs(norm) {
+  const out = { event_id: norm.event_id };
+  if (norm.delete_scope) out.delete_scope = norm.delete_scope;
+  if (norm.recurrence_id) out.recurrence_id = norm.recurrence_id;
+  return out;
+}
+
 export function resetPaginationSessions() {}
+
+// What the assistant is told went, by the scope the bridge deleted.
+const DELETED_RESULT = {
+  this_only: "Occurrence deleted successfully; the rest of the series stays.",
+  this_and_following: "This and every later occurrence deleted successfully; earlier ones stay.",
+  all: "Repeating event deleted successfully: every occurrence.",
+};
 
 // FSM tool completion handler – returns structured result with deletion details
 export async function completeExecution(currentState, prevState) {
@@ -186,9 +273,9 @@ export async function completeExecution(currentState, prevState) {
   }
   
   if (prevState === "calendar_event_delete_exec" && sess?.deleteResult) {
-    log(`[TMDBG Tools] calendar_event_delete.completeExecution: deleted event successfully`);
+    log(`[TMDBG Tools] calendar_event_delete.completeExecution: deleted event successfully (scope ${sess.deleteResult.scope || "none"})`);
     return {
-      result: "Calendar event deleted successfully.",
+      result: DELETED_RESULT[sess.deleteResult.scope] || "Calendar event deleted successfully.",
       // event_id: sess.deleteResult.event_id,
       // invitations: sess.deleteResult.invitations,
     };

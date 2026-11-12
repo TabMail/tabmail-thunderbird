@@ -408,6 +408,20 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
   return info;
 }
 
+/**
+ * A stored series as Thunderbird hands it out: immutable. A calendar's items
+ * are frozen (calIItemBase.makeImmutable), so changing the rule, excluded
+ * dates or changed occurrences of the stored item itself throws, and a write
+ * goes through a clone (whose recurrence info is a fresh, mutable copy).
+ */
+export function readOnlySeries(item) {
+  const info = item.recurrenceInfo;
+  for (const name of ['appendRecurrenceItem', 'deleteRecurrenceItem', 'removeOccurrenceAt', 'removeExceptionFor', 'modifyException']) {
+    info[name] = () => { throw new Error(`NS_ERROR_OBJECT_IS_IMMUTABLE: ${name} on a stored item`); };
+  }
+  return item;
+}
+
 // An RRULE or EXRULE value as Thunderbird reads it back: CalRecurrenceRule keeps
 // the parsed ical.js Recur and re-serializes it (Recur.toJSON) as FREQ, COUNT,
 // INTERVAL when above 1, the BY-parts in the order given, UNTIL, then WKST
