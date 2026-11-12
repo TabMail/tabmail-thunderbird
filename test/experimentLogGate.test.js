@@ -205,7 +205,6 @@ const VISIBLE_FAILURES = [
   ['theme/experiments/tmMessageListCardView/tmMessageListCardView.sys.mjs', 'ThreadCard.fillRow not found'],
   ['theme/experiments/tmMessageListTableView/tmMessageListTableView.sys.mjs', 'ThreadRow.fillRow not found'],
   ['chat/experiments/tmCalendar/tmCalendar.sys.mjs', 'modifyCalendarEvent: duration preservation failed:'],
-  ['chat/experiments/tmCalendar/tmCalendar.sys.mjs', 'splitRecurringEvent: duration preservation failed:'],
 ];
 
 describe('experiment logging', () => {
