@@ -29,6 +29,10 @@ vi.mock('../fts/nativeEngine.js', () => ({
   nativeFtsSearch: new Proxy({}, { get: (_t, name) => (...args) => native.impl[name](...args) }),
 }));
 
+// The incremental indexer's new-message path: rewriteStoredIcs queues a message whose row it lost.
+const onNewMailReceived = vi.hoisted(() => vi.fn());
+vi.mock('../fts/incrementalIndexer.js', async (importOriginal) => ({ ...(await importOriginal()), onNewMailReceived }));
+
 const { safeGetFull } = await import('../agent/modules/utils.js');
 const { encodeStoredIcs, storedIcsParts } = await import('../chat/modules/icsParser.js');
 const { buildBatchHeader, indexMessages } = await import('../fts/indexer.js');
@@ -397,20 +401,75 @@ describe('full smart reindex attachment flag repair', () => {
 });
 
 describe('rewriteStoredIcs (email_read healing an old formatted invite)', () => {
-  it('writes the new invite value over the stored row and keeps every other column', async () => {
+  const value = () => encodeStoredIcs([{ filename: 'i.ics', contentType: 'text/calendar', partName: '1', text: 'BEGIN:VCALENDAR' }]);
+  const rewrite = async () => {
     const { rewriteStoredIcs } = await import('../fts/indexer.js');
+    return rewriteStoredIcs(ftsSearch, { msgId: key(1), folderId: folderIdOf(INBOX1), weId: 1, parsedIcsAttachments: value() });
+  };
+  beforeEach(() => {
+    index.set(key(1), { ...storedRow(1, false), attachmentNames: 'scan pdf' });
+    browser.messages.get = vi.fn(async (id) => message(id));
+    // The new-message path indexes the message from the message itself.
+    onNewMailReceived.mockImplementation((_folder, headers) => {
+      for (const h of headers) index.set(key(h.id), { ...storedRow(h.id, true), parsedIcsAttachments: value() });
+    });
+  });
+
+  it('writes the new invite value over the stored row and keeps every other column', async () => {
     const before = { ...index.get(key(1)) };
-    const value = encodeStoredIcs([{ filename: 'i.ics', contentType: 'text/calendar', partName: '1', text: 'BEGIN:VCALENDAR' }]);
-    expect(await rewriteStoredIcs(ftsSearch, { msgId: key(1), folderId: folderIdOf(INBOX1), parsedIcsAttachments: value })).toBe(1);
+    expect(await rewrite()).toBe(1);
     const after = index.get(key(1));
-    expect(after.parsedIcsAttachments).toBe(value);
-    for (const col of ['subject', 'from_', 'to_', 'cc', 'bcc', 'body', 'dateMs', 'folderId']) expect(after[col]).toEqual(before[col]);
+    expect(after.parsedIcsAttachments).toBe(value());
+    for (const col of ['subject', 'from_', 'to_', 'cc', 'bcc', 'body', 'attachmentNames', 'dateMs', 'folderId']) expect(after[col]).toEqual(before[col]);
+    expect(after.attachmentNames).toBe('scan pdf');
     expect(after.hasAttachments).toBe(!!before.hasAttachments);
+    expect(onNewMailReceived).not.toHaveBeenCalled();
   });
 
   it('writes nothing for a message that is no longer indexed', async () => {
     const { rewriteStoredIcs } = await import('../fts/indexer.js');
-    expect(await rewriteStoredIcs(ftsSearch, { msgId: 'account1:/INBOX:gone@example.com', folderId: folderIdOf(INBOX1), parsedIcsAttachments: '' })).toBe(0);
+    expect(await rewriteStoredIcs(ftsSearch, { msgId: 'account1:/INBOX:gone@example.com', folderId: folderIdOf(INBOX1), weId: 9, parsedIcsAttachments: '' })).toBe(0);
     expect(ftsSearch.indexBatch).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when a fenced write lands between its read and its write', async () => {
+    const read = ftsSearch.getMessageByMsgId.getMockImplementation();
+    ftsSearch.getMessageByMsgId.mockImplementationOnce(async (id) => {
+      const row = await read(id);
+      await coordinator.runFtsMembershipMutation(async () => {});
+      return row;
+    });
+    const before = { ...index.get(key(1)) };
+    await expect(rewrite()).rejects.toThrow('membership_epoch_changed');
+    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
+    expect(ftsSearch.indexBatch).not.toHaveBeenCalled();
+    expect(index.get(key(1))).toEqual(before);
+    expect(onNewMailReceived).not.toHaveBeenCalled();
+  });
+
+  it('puts the message back in the index this session when the re-add fails after the remove', async () => {
+    ftsSearch.indexBatch.mockImplementationOnce(async () => { throw new Error('helper error'); });
+    await expect(rewrite()).rejects.toThrow('helper error');
+    expect(onNewMailReceived).toHaveBeenCalledTimes(1);
+    expect(onNewMailReceived).toHaveBeenCalledWith(INBOX1, [message(1)]);
+    expect(index.has(key(1))).toBe(true);
+  });
+
+  it('queues the message when the re-add comes up short', async () => {
+    ftsSearch.indexBatch.mockImplementationOnce(async () => ({ count: 0 }));
+    await expect(rewrite()).rejects.toThrow('re-added 0 of 1 rows');
+    expect(onNewMailReceived).toHaveBeenCalledTimes(1);
+    expect(index.has(key(1))).toBe(true);
+  });
+
+  it('tries the queue once per read, and the next read can try again', async () => {
+    onNewMailReceived.mockImplementation(() => { throw new Error('queue refused'); });
+    ftsSearch.indexBatch.mockImplementationOnce(async () => { throw new Error('helper error'); });
+    await expect(rewrite()).rejects.toThrow('helper error');
+    expect(onNewMailReceived).toHaveBeenCalledTimes(1);
+    expect(index.has(key(1))).toBe(false);
+    // The next read: the row is gone, so there is nothing to rewrite; the message is read live.
+    expect(await rewrite()).toBe(0);
+    expect(onNewMailReceived).toHaveBeenCalledTimes(1);
   });
 });

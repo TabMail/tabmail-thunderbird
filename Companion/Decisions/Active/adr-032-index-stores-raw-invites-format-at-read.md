@@ -29,7 +29,12 @@ text again (the indexer takes it from the index copy; the attachment-flag repair
   `{ skipIndex: true }` (skips the index tier and a cached index copy; `getFull` stays inside
   `safeGetFull`), shows them, and writes the raw parts back (`rewriteStoredIcs` in `fts/indexer.js`,
   background command `rewriteStoredIcs`: the stored row removed and re-added with every other column
-  as stored, under the membership fence, as the attachment-flag repair does). The indexer, writing a
+  as stored, under the membership fence, as the attachment-flag repair does). If the remove went
+  through and the re-add fails or comes up short, the message is queued once through the incremental
+  indexer's new-message path (`onNewMailReceived`), so it is back in the index this session; if
+  Thunderbird closes in between, the startup fingerprint check re-queues it. Left open: while that
+  check is off (the first full scan unfinished, or a helper without fingerprint support) the
+  message stays out of search until a manual reindex. The indexer, writing a
   row again from an index copy, re-derives an old value the same way.
 - **Empty means none.** An empty stored value means the message had no calendar part (the old
   formatter printed a header line for any calendar part found, even an unreadable one), so it is

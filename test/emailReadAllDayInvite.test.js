@@ -151,6 +151,7 @@ describe.each(['America/Los_Angeles', 'Pacific/Auckland'])('email_read on a body
     expect(fields).toEqual({
       msgId: 'account1:/INBOX:a@example.com',
       folderId: 'tm-folder:v1:["account1","/INBOX"]',
+      weId: 42,
       parsedIcsAttachments: encodeStoredIcs(icsPartsOf(mail)),
     });
   });

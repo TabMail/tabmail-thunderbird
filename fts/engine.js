@@ -172,8 +172,8 @@ function attachCommandInterface() {
               return;
             case "rewriteStoredIcs": {
               const { rewriteStoredIcs } = await import("./indexer.js");
-              const { msgId, folderId, parsedIcsAttachments } = msg;
-              sendResponse(await rewriteStoredIcs(ftsSearch, { msgId, folderId, parsedIcsAttachments }));
+              const { msgId, folderId, weId, parsedIcsAttachments } = msg;
+              sendResponse(await rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments }));
               return;
             }
             case "getMessageByMsgId": {

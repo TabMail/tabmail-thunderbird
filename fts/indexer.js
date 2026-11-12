@@ -359,27 +359,45 @@ async function readdRows(ftsSearch, epoch, stale) {
 
 /**
  * Rewrites one indexed message's stored invites (email_read, after re-deriving an old formatted
- * value from the message). Every other stored column is written again as stored.
+ * value from the message). Every other stored column is written again as stored. The native index
+ * never updates a row, so the row is removed and re-added; when the re-add fails after the remove
+ * went through (the row is gone), the message (WebExtension id `weId`) is queued once through the
+ * incremental indexer's new-message path, so it is back in the index this session, indexed from
+ * the message itself. The next email_read of the message tries again if that queueing fails.
  * @returns {Promise<number>} rows rewritten (0 when the message is no longer indexed)
  */
-export async function rewriteStoredIcs(ftsSearch, { msgId, folderId, parsedIcsAttachments }) {
+export async function rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments }) {
   const epoch = getFtsMembershipEpoch();
   const stored = await ftsSearch.getMessageByMsgId(msgId);
   if (!stored) return 0;
-  return readdRows(ftsSearch, epoch, [{
-    msgId,
-    folderId,
-    subject: stored.subject,
-    from_: stored.from_,
-    to_: stored.to_,
-    cc: stored.cc,
-    bcc: stored.bcc,
-    body: stored.body,
-    attachmentNames: stored.attachmentNames,
-    dateMs: stored.dateMs,
-    hasAttachments: !!stored.hasAttachments,
-    parsedIcsAttachments: String(parsedIcsAttachments || ""),
-  }]);
+  try {
+    return await readdRows(ftsSearch, epoch, [{
+      msgId,
+      folderId,
+      subject: stored.subject,
+      from_: stored.from_,
+      to_: stored.to_,
+      cc: stored.cc,
+      bcc: stored.bcc,
+      body: stored.body,
+      attachmentNames: stored.attachmentNames,
+      dateMs: stored.dateMs,
+      hasAttachments: !!stored.hasAttachments,
+      parsedIcsAttachments: String(parsedIcsAttachments || ""),
+    }]);
+  } catch (e) {
+    if (!(await ftsSearch.getMessageByMsgId(msgId))) {
+      try {
+        const header = await browser.messages.get(weId);
+        const { onNewMailReceived } = await import("./incrementalIndexer.js");
+        onNewMailReceived(header.folder, [header]);
+        log(`[TMDBG FTS] rewriteStoredIcs: row removed but not re-added; queued ${msgId} for indexing`, "warn");
+      } catch (eQueue) {
+        log(`[TMDBG FTS] rewriteStoredIcs: could not queue ${msgId} for indexing: ${eQueue}`, "warn");
+      }
+    }
+    throw e;
+  }
 }
 
 /**

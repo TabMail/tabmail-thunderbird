@@ -32,9 +32,10 @@ async function indexedIcsText(stored, header, internalId) {
     const msgId = await getUniqueMessageKey(header);
     const folderId = makeFolderMembershipId(String(header.folder?.accountId || ""), String(header.folder?.path || ""));
     const parsedIcsAttachments = encodeStoredIcs(icsAttachments);
-    await ftsRequest("rewriteStoredIcs", { msgId, folderId, parsedIcsAttachments }, async ({ ftsSearch }) => {
+    const weId = internalId;
+    await ftsRequest("rewriteStoredIcs", { msgId, folderId, weId, parsedIcsAttachments }, async ({ ftsSearch }) => {
       const { rewriteStoredIcs } = await import("../../fts/indexer.js");
-      return rewriteStoredIcs(ftsSearch, { msgId, folderId, parsedIcsAttachments });
+      return rewriteStoredIcs(ftsSearch, { msgId, folderId, weId, parsedIcsAttachments });
     });
   } catch (e) {
     log(`[TMDBG Tools] email_read: stored invite write-back failed: ${e}`, "warn");
