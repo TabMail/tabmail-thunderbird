@@ -1441,12 +1441,37 @@ const NO_CALENDAR_ADDRESS_NOTICE = "This calendar has no email address of its ow
 // scheduling server notifies guests only of an event whose ORGANIZER is its
 // user. An existing organizer is never changed (the user may be a guest of
 // someone else's meeting), an event without guests gets none, and nothing is
-// ever taken from the model. Returns "set" when it set one, "kept" when one
-// was there, "none" when the event has guests but the calendar has no address
-// (saved without an organizer), and null when the event has no guests.
+// ever taken from the model. A series counts as having guests when it or any
+// changed occurrence has some, and every changed occurrence without an
+// organizer takes the series' (RFC 6638 3.2.4.2: every component of one
+// resource carries the same ORGANIZER). Returns "set" when it set one, "kept"
+// when one was there, "none" when the event has guests but the calendar has no
+// address (saved without an organizer), and null when it has no guests.
+function exceptionsOf(item) {
+  const info = item?.recurrenceInfo;
+  return info ? [...(info.getExceptionIds({}) || [])].map((rid) => info.getExceptionFor(rid)) : [];
+}
+function hasGuests(item) {
+  return item.getAttendees().length > 0 || exceptionsOf(item).some((ex) => ex.getAttendees().length > 0);
+}
+// Gives a series an organizer where it has none, and each changed occurrence
+// without one a copy of the series'. Says whether anything changed.
+function giveSeriesOrganizer(series, organizer) {
+  let changed = false;
+  if (!series.organizer) { series.organizer = organizer.clone(); changed = true; }
+  const info = series.recurrenceInfo;
+  for (const ex of exceptionsOf(series)) {
+    if (ex.organizer) continue;
+    const copy = ex.clone();
+    copy.organizer = series.organizer.clone();
+    info.modifyException(copy, true);
+    changed = true;
+  }
+  return changed;
+}
 function setOwnOrganizerIfGuests(item, calendar) {
-  if (!item || item.getAttendees().length === 0) return null;
-  if (item.organizer) return "kept";
+  if (!item || !hasGuests(item)) return null;
+  if (item.organizer) { giveSeriesOrganizer(item, item.organizer); return "kept"; }
   let id = "";
   let cn = "";
   try { id = String(calendar?.getProperty?.("organizerId") || "").trim(); } catch {}
@@ -1456,7 +1481,7 @@ function setOwnOrganizerIfGuests(item, calendar) {
   org.id = /^mailto:/i.test(id) ? id : `mailto:${id}`;
   if (cn) org.commonName = cn;
   org.isOrganizer = true;
-  item.organizer = org;
+  giveSeriesOrganizer(item, org);
   return "set";
 }
 
@@ -2912,6 +2937,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // The organizer, once the guests are known: the calendar's own
             // address when the edited item has guests and no organizer (the
             // series for an `all` edit, the occurrence for a this_only one).
+            // One occurrence takes its series' organizer when it has none of
+            // its own; its series gets the same one below (RFC 6638: one
+            // ORGANIZER for every component of the resource).
+            const seriesOfOccurrence = scope !== "series" ? base.parentItem : null;
+            if (seriesOfOccurrence?.organizer && !clone.organizer) clone.organizer = seriesOfOccurrence.organizer.clone();
             const organizerResult = setOwnOrganizerIfGuests(clone, base.calendar);
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
@@ -3031,7 +3061,23 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               "X-MOZ-HTML=", clone.getProperty?.("X-MOZ-HTML") || "");
             
             // Always modify using the same calendar as BASE
-            const modified = await base.calendar.modifyItem(clone, base);
+            // The series of an edited occurrence carries the occurrence's
+            // organizer too, as does each of its changed occurrences, where
+            // they have none (never changing one they have): then the series
+            // is written once, with the occurrence as its changed occurrence,
+            // so every component of the resource names the same organizer.
+            const seriesWithOrganizer = (() => {
+              if (!seriesOfOccurrence || !clone.organizer) return null;
+              const copy = seriesOfOccurrence.clone();
+              return giveSeriesOrganizer(copy, clone.organizer) ? copy : null;
+            })();
+            let modified;
+            if (seriesWithOrganizer) {
+              seriesWithOrganizer.recurrenceInfo.modifyException(clone, false);
+              modified = await base.calendar.modifyItem(seriesWithOrganizer, seriesOfOccurrence);
+            } else {
+              modified = await base.calendar.modifyItem(clone, base);
+            }
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modifyItem completed");
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
             

@@ -53,7 +53,11 @@ const {
   loadCalendarBridge, fakeAttendee, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem,
 } = await import('./helpers/calendarBridgeHarness.js');
 const { runStateCreateCalendarEventExec } = await import('../chat/fsm/calendarCreate.js');
+const { runStateEditCalendarEventExec } = await import('../chat/fsm/calendarEdit.js');
+const { runStateDeleteCalendarEventExec } = await import('../chat/fsm/calendarDelete.js');
 const { completeExecution } = await import('../chat/tools/calendar_event_create.js');
+const { completeExecution: completeEdit } = await import('../chat/tools/calendar_event_edit.js');
+const { completeExecution: completeDelete } = await import('../chat/tools/calendar_event_delete.js');
 const { streamText } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
 
@@ -75,9 +79,11 @@ const otherOrganizer = () => fakeAttendee({
   properties: { 'SENT-BY': 'mailto:assistant@example.com', 'SCHEDULE-STATUS': '1.2' },
 });
 const oneOff = (guests, organizer = null) => fakeEvent({ id: 'ser', title: 'Sync', startDate: dayAt(1), endDate: hourAfter(dayAt(1)), attendees: guests, organizer });
-function series(guests, organizer = null) {
+// An occurrence changed on its own, at its slot.
+const changedAt = (n, guests, organizer = null) => fakeEvent({ id: 'ser', title: 'Planning', startDate: dayAt(n), endDate: hourAfter(dayAt(n)), recurrenceId: dayAt(n), attendees: guests, organizer });
+function series(guests, organizer = null, exceptions = []) {
   const ev = oneOff(guests, organizer);
-  ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY;COUNT=10')]);
+  ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY;COUNT=10')], { exceptions });
   ev.recurrenceInfo.item = ev;
   return ev;
 }
@@ -98,6 +104,12 @@ function bridge(items, calendarProperties) {
 const createArgs = (extra = {}) => ({
   calendar_id: 'cal1', title: 'Sync', start_iso: isoAt(1), end_iso: '2099-10-01T18:00:00', ...extra,
 });
+const exceptionsOf = (item) => {
+  const info = item?.recurrenceInfo;
+  return info ? info.getExceptionIds().map((rid) => info.getExceptionFor(rid)) : [];
+};
+// The stored series and every changed occurrence of it: one resource.
+const resourceOf = (item) => [item, ...exceptionsOf(item)];
 const organizerOf = (item) => (item?.organizer ? { id: item.organizer.id, isOrganizer: item.organizer.isOrganizer } : null);
 
 describe('create', () => {
@@ -161,9 +173,15 @@ const EDITS = {
     written: ({ calendar }) => [calendar.items[0]],
   },
   'an edit of one occurrence': {
-    build: (o) => series([guest('ana')], o),
+    // A changed occurrence (day 7) besides the one edited (day 4): the series
+    // and both carry the same organizer (RFC 6638 3.2.4.2).
+    build: (o) => series([guest('ana')], o, [changedAt(7, [guest('ana')], o && o.clone())]),
     run: (api) => api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: isoAt(4), title: 'Renamed' }),
-    written: ({ modifications }) => [modifications.at(-1).newItem],
+    written: ({ calendar }) => {
+      const all = resourceOf(calendar.items[0]);
+      expect(all).toHaveLength(3);
+      return all;
+    },
   },
   'a split (both parts)': {
     build: (o) => series([guest('ana')], o),
@@ -236,5 +254,75 @@ describe('a whole-event delete', () => {
     expect(loaded.deletions).toEqual([stored]);
     expect(stored.organizer).toBeFalsy();
     expect(loaded.modifications).toHaveLength(0);
+  });
+});
+
+describe('the address as the calendar gives it', () => {
+  it('a bare address gets mailto: once', async () => {
+    const { api, calendar } = bridge([], { organizerId: 'me@example.com' });
+    await api.createCalendarEvent(createArgs({ attendees: [{ email: 'ana@example.com' }] }));
+    expect(calendar.items[0].organizer.id).toBe('mailto:me@example.com');
+  });
+  it('a mailto: in capitals is not prefixed again', async () => {
+    const { api, calendar } = bridge([], { organizerId: 'MAILTO:me@example.com' });
+    await api.createCalendarEvent(createArgs({ attendees: [{ email: 'ana@example.com' }] }));
+    expect(calendar.items[0].organizer.id).toBe('MAILTO:me@example.com');
+  });
+});
+
+describe('guests only on a changed occurrence', () => {
+  const build = () => series([], null, [changedAt(7, [guest('ana')])]);
+  it('an edit of the whole series gives the series and that occurrence the calendar\'s address', async () => {
+    const loaded = bridge([build()], WITH_ADDRESS);
+    expect((await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'all', title: 'Renamed' })).ok).toBe(true);
+    for (const item of resourceOf(loaded.calendar.items[0])) expect(organizerOf(item)).toEqual({ id: OWN, isOrganizer: true });
+  });
+  it('an edit of that occurrence alone gives its series the same organizer', async () => {
+    const loaded = bridge([build()], WITH_ADDRESS);
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: isoAt(7), title: 'Renamed' });
+    expect(res.ok, res.error).toBe(true);
+    const all = resourceOf(loaded.calendar.items[0]);
+    expect(all).toHaveLength(2);
+    for (const item of all) expect(organizerOf(item)).toEqual({ id: OWN, isOrganizer: true });
+  });
+});
+
+describe('a split whose earlier part alone keeps guests', () => {
+  it('says the calendar has no address when only the earlier part has guests', async () => {
+    const loaded = bridge([series([guest('ana')])], {});
+    const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: isoAt(4), remove_attendees: [{ email: 'ana@example.com' }] });
+    expect(res.ok, res.error).toBe(true);
+    expect(following(loaded.calendar).getAttendees()).toHaveLength(0);
+    expect(res.guest_notice).toMatch(/no email address of its own/);
+  });
+});
+function following(calendar) { return calendar.items.find((it) => it.id !== 'ser'); }
+
+describe('the edit and delete replies', () => {
+  it('an edit on a calendar with no address says so, to the user and the model', async () => {
+    const { api } = bridge([oneOff([guest('ana')])], {});
+    globalThis.browser.tmCalendar = api;
+    ctx.activePid = 8;
+    ctx.fsmSessions[8] = { editEventArgs: { event_id: 'ser', calendar_id: 'cal1', title: 'Renamed' } };
+    streamText.mockClear();
+    await runStateEditCalendarEventExec();
+    const shown = streamText.mock.calls.map((c) => String(c[1])).join('\n');
+    expect(shown).toMatch(/no email address of its own/);
+    expect(shown).not.toMatch(/(invitations?|updates?) sent|emailed/i);
+    const done = await completeEdit(null, 'calendar_event_edit_exec');
+    expect(String(done.guest_notice || '')).toMatch(/no email address of its own/);
+  });
+  it('a delete of one occurrence on a calendar with no address says so, to the user and the model', async () => {
+    const { api } = bridge([series([guest('ana')])], {});
+    globalThis.browser.tmCalendar = api;
+    ctx.activePid = 9;
+    ctx.fsmSessions[9] = { deleteEventArgs: { event_id: 'ser', calendar_id: 'cal1', delete_scope: 'this_only', recurrence_id: isoAt(4) } };
+    streamText.mockClear();
+    await runStateDeleteCalendarEventExec();
+    const shown = streamText.mock.calls.map((c) => String(c[1])).join('\n');
+    expect(shown).toMatch(/no email address of its own/);
+    expect(shown).not.toMatch(/cancellations? sent|emailed/i);
+    const done = await completeDelete(null, 'calendar_event_delete_exec');
+    expect(String(done.guest_notice || '')).toMatch(/no email address of its own/);
   });
 });

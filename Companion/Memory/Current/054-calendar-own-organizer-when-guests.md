@@ -24,8 +24,15 @@ no `CalItipMessageSender`, no `SCHEDULE-AGENT`.
 ## Where it runs
 
 - create: after the attendees, before `addItem`; no longer depends on `send_invitations`.
-- edit `all` (the series clone), `this_only` (the occurrence clone only; its series is not written for it),
-  one-off: after the guest change, before `modifyItem`. Reverses the old "don't set organizer during modify".
+- edit `all` (the series clone), one-off: after the guest change, before `modifyItem`. Reverses the old
+  "don't set organizer during modify".
+- edit `this_only` (review r1, 2026-11-12): the occurrence first takes its series' organizer when it has none; if it
+  ends with one the series lacks, the series is written ONCE with the organizer and the occurrence as its changed
+  occurrence (`modifyException`), so the series and every changed occurrence carry the same ORGANIZER (RFC 6638
+  3.2.4.2 same-organizer-in-all-components; a strict server refuses a mixed resource). Otherwise the occurrence is
+  written as before.
+- "has guests" for a series means the series or any changed occurrence has some; every changed occurrence without
+  an organizer gets a copy of the series' (`giveSeriesOrganizer`), on every series write above.
 - split: on the new series AND the earlier part, before the ask-again step, so the organizer (same address as
   an attendee entry) is not reset to NEEDS-ACTION.
 - delete `this_only` / `this_and_following`: on the series written in place (`replacement`), after `check_only`.
