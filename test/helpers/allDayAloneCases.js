@@ -327,6 +327,12 @@ export function defineAllDayAloneSuite(userTzid) {
       await kindChangeRefused(userTzid, ...timedFrom({ start_iso: iso(NAMED_DAY, 14) }), { toAllDay: false, onlyNamedDiffers: true });
       await kindChangeRefused(userTzid, ...allDayFrom({ start_iso: dayAfter(NAMED_DAY) }), { toAllDay: true, onlyNamedDiffers: true });
     });
+    it('(e) an end alone is refused for both times, nothing written', async () => {
+      await kindChangeRefused(userTzid, ...timedFrom({ end_iso: iso(NAMED_DAY, 12) }), { toAllDay: false, onlyNamedDiffers: true });
+    });
+    it('(e) mirror: an end alone is refused for both times, nothing written', async () => {
+      await kindChangeRefused(userTzid, ...allDayFrom({ end_iso: dayAfter(dayAfter(NAMED_DAY)) }), { toAllDay: true, onlyNamedDiffers: true });
+    });
     it('(c) the series\' own start with another end: the card and the write agree, timed for 2 hours', async () => {
       const run = await kindChangeMade(userTzid, ...timedFrom({ start_iso: iso(NAMED_DAY, 10), end_iso: iso(NAMED_DAY, 12) }), { toAllDay: false, ...from, clock: '10:00:00', length: 2 * HOUR });
       expect(run.changes).toContain('**All-day event:**');

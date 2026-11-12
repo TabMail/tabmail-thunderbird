@@ -191,8 +191,8 @@ same design (tabmail-ios #421).
     occurrence the edit names (`applyEditToNamedOccurrence`). **A change of kind needs both times (#288, #349,
     2026-11-11):** an `all_day` other than the stored kind (the event's, the occurrence's on `this_only`, the
     series' on `all` and on a split) without both `start_iso` and `end_iso` is refused before the card with nothing
-    written, on every scope, by `kindChangeTimesError` (checked first in `editTimesErrorOf`, and in
-    `resolveEditTimes` when no time is left); the message names both fields and says an all-day `end_iso` is the
+    written, on every scope, by `kindChangeTimesError` (checked first in `editTimesErrorOf` for one event, one occurrence and a series given no time, and once in
+    `resolveEditTimes`, before `timesLeft`, against the occurrence read against, for series and split time edits); the message names both fields and says an all-day `end_iso` is the
     day after the last day. The dates are not derived from the stored ones (a timed event made all-day can span
     other days; one made timed needs the time of day and length the user wants). The `changes` answer of the check
     no longer has an `all_day` term: a change of kind is in `times`. A change of the series' kind named at an
@@ -203,8 +203,7 @@ same design (tabmail-ios #421).
     the NAMED occurrence's kind (`changesNamedKind`): then the edit is read against that occurrence, so its old times
     are the card's (an occurrence moved in time and made the other kind shows its own 14:00, not the slot's 10:00,
     as #369 requires). The kind is checked ONCE, before `timesLeft`, against the occurrence read against
-    (`kindChangeTimesError(!!ref.startDate.isDate, patch)`): any change of kind needs both times (owner ruling
-    2026-11-12, "Option 1"). So at an occurrence made the other kind on its own, `all_day` of the series' kind is a
+    (`kindChangeTimesError(!!ref.startDate.isDate, patch)`): any change of kind needs both times (2026-11-12). So at an occurrence made the other kind on its own, `all_day` of the series' kind is a
     change of that occurrence's kind: given alone or with a start alone (the series' time or another) it is refused
     for both times; with both times (the series' own, or another end) it is made from that occurrence on, the card
     and the write agree. Before (2026-11-12 review), the series'-own-start swap read such an edit against the slot:
@@ -220,8 +219,9 @@ same design (tabmail-ios #421).
     time change so they move with the part.
   - **A split at an occurrence that was changed on its own** (X), since 2026-11-11 (ADR-031): X is named by its own
     printed start. A new start resets X and every changed occurrence of the part (Google's "this and following"),
-    so the part starts at the new time with no changed occurrence; X's own start restated, or the series' own start
-    at X, is no change (X keeps its time, `timesLeft` and the rule in `resolveEditTimes`); an end alone is a length
+    so the part starts at the new time with no changed occurrence; X's own start restated, or the series' own start at X, is no change (X keeps its time, `timesLeft` and the rule in
+    `resolveEditTimes`), unless the edit changes X's kind: it is then read against X, made with both times and refused
+    with fewer (#288, #349); an end alone is a length
     `W` measured from X's own start: X ends at the end given and the part starts at its slot and lasts `W` (an end
     before X's start gets the usual "the event would end before it starts" text; the "keeps its own start" and
     "their usual time" prefixes are gone); every field the edit names is written over X and the part's other
@@ -314,9 +314,10 @@ same design (tabmail-ios #421).
     `resolveEditTimes(item, patch, tz, namedRid)`: the edit's times are read against the occurrence it names (or
     the first), as Thunderbird builds it (`info.getOccurrenceFor`/`createProxy`); a time it only restates is
     dropped by the one no-change rule `timesLeft` (every scope; an end is dropped only when no new start is kept;
-    a restated time is compared as the read tools print it, `restates`/`shownNaiveIso`); the series' own start
-    named at an occurrence moved on its own is no change (that occurrence keeps its time) and an end is then
-    measured from the first slot. The length `W` is the end's clock digits minus the start's (`clockSeconds`), or
+    a restated time is compared as the read tools print it, `restates`/`shownNaiveIso`); the series' own start named at an occurrence moved on its own is no change (that occurrence keeps its time) and an
+    end is then measured from the first slot, unless the edit changes that occurrence's kind: it is then read against
+    that occurrence, made with both times and refused with fewer. An edit that changes the series' kind, named at an
+    occurrence already of that kind, is read against the series' plain occurrence there (`slot`) (#288, #349). The length `W` is the end's clock digits minus the start's (`clockSeconds`), or
     the series' own (`seriesLength`); `editTimesErrorOf` refuses on it with main's texts. A new start resets every
     changed occurrence and excluded date (`resetChangedOccurrences`; added dates and EXRULEs stay; the edit's own
     `exdates_add` are added after it; stopping the repeat resets nothing), then `writeSeriesTimes` writes the start
@@ -324,7 +325,8 @@ same design (tabmail-ios #421).
     occurrence, rid plus the stored elapsed length, ends at the end given; null on the first pass of a repeated
     hour, refused), then `shiftSeriesWithStart` moves the rule's days on a move to another day. An end alone
     gives every changed occurrence of the series' kind its own start plus `W` (`applyNewLength`); one made
-    all-day or timed on its own keeps its times, and an end alone named at it is refused (`NAMED_OTHER_KIND_ERROR`).
+    all-day or timed on its own keeps its times, and an end alone named at it is refused (`NAMED_OTHER_KIND_ERROR` when the edit gives no
+    `all_day`; with an `all_day` that changes its kind, the change-of-kind refusal, both times, comes first).
     A time given in another zone reaches the series' frame only through `atInstantInFrameOf` (`intoFrameOf`, used
     by `toCalIDateTimeInFrameOf`; a null result and digits the given zone skips are refusals). The check returns
     `changes`, `times` (`seriesEditTimes`/`shownEditTimes`: the named occurrence as printed, then as written) and
@@ -358,8 +360,9 @@ same design (tabmail-ios #421).
     a time change of a rule with BYHOUR/BYMINUTE/BYSECOND, and a new rule (with `freq`) given with a move to another day (make the move, then
     the rule, in two edits). A change between all-day and timed (`kindChangeError`, one check for the series
     and the split's following part, made before the same-start return, since `compare` takes only the date of a
-    DATE) is refused, on its own day as on another, when the series carries an EXDATE, RDATE (any non-rule item)
-    or changed occurrence ("change it in the calendar app"), or, without a new rule, a rule with UNTIL ("give
+    DATE) is refused, on its own day as on another, when the series still carries a non-rule item once the new start has
+    reset its changed occurrences and excluded dates (`resetChangedOccurrences`): an added date (RDATE) or a date the
+    same edit excludes (`exdates_add`) ("change it in the calendar app"), or, without a new rule, a rule with UNTIL ("give
     the repeat rule again ... in the same edit"; a new rule is written in the start's value type). Thunderbird's
     `onStartDateChange` does compute a UTC amount between a DATE (its digits at UTC midnight) and a time, and
     moves those dates by it in their own value type, so they leave their occurrences: changed occurrences are

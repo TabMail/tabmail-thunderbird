@@ -33,7 +33,9 @@ no change.
   moved on its own, is the time the series already has: no change, and an end is then measured from the
   first slot. Every scope drops a time the edit only restates by one rule, `timesLeft` (an end is
   dropped only when no new start is kept), so a single event, one occurrence, a series and a split
-  agree on "no change".
+  agree on "no change". An edit that changes the series' kind, named at an occurrence already of that
+  kind, is read against the series' plain occurrence there; one that changes the named occurrence's
+  own kind is read against that occurrence; a change of kind needs both times (#288, #349).
 - **One writer.** `writeSeriesTimes(item, start, length)` is the only writer of a series' or a part's
   start and end.
 - **The length is wall-clock.** `W` is the end's clock digits minus the start's, read against the named
