@@ -4,7 +4,7 @@
 
 // helpers.test.js — Tests for chat/modules/helpers.js (pure functions)
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks — helpers.js imports from several modules
@@ -369,6 +369,87 @@ describe('toNaiveIso', () => {
     const localHours = String(d.getHours()).padStart(2, '0');
     const localMinutes = String(d.getMinutes()).padStart(2, '0');
     expect(result).toContain(`${localHours}:${localMinutes}`);
+  });
+});
+
+// A time given with a named zone is that zone's wall clock: its digits are
+// kept, whatever the computer's own clock does at that time (#385).
+describe('toNaiveIso with a named zone', () => {
+  const DAYS_SEARCHED = 800;
+  const HOUR_MS = 60 * 60 * 1000;
+  const COMPUTER = 'America/Los_Angeles';
+  const NAMED = 'Australia/Sydney';
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const digitsOn = (dt) => `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}T${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+
+  function onClock(zone, fn) {
+    const prev = process.env.TZ;
+    process.env.TZ = zone;
+    try { return fn(); } finally {
+      if (prev === undefined) delete process.env.TZ;
+      else process.env.TZ = prev;
+    }
+  }
+
+  // The first wall time from today, at half past an hour, that `zone`'s
+  // clocks skip ('gap') or pass twice ('overlap').
+  function changeWallTime(zone, kind) {
+    return onClock(zone, () => {
+      const today = new Date();
+      for (let i = 0; i < DAYS_SEARCHED; i += 1) {
+        const noon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, 12);
+        for (let h = 0; h < 24; h += 1) {
+          const at = new Date(noon.getFullYear(), noon.getMonth(), noon.getDate(), h, 30);
+          const naive = `${digitsOn(noon).slice(0, 10)}T${pad2(h)}:30:00`;
+          if (kind === 'gap' && at.getHours() !== h) return naive;
+          if (kind === 'overlap' && new Date(at.getTime() + HOUR_MS).getHours() === h) return naive;
+        }
+      }
+      throw new Error(`no ${kind} in ${zone}`);
+    });
+  }
+  const existsIn = (naive, zone) => onClock(zone, () => digitsOn(new Date(naive)) === naive);
+
+  let was;
+  beforeAll(() => { was = process.env.TZ; process.env.TZ = COMPUTER; });
+  afterAll(() => {
+    if (was === undefined) delete process.env.TZ;
+    else process.env.TZ = was;
+  });
+
+  it('keeps a time the computer skips but the named zone has', () => {
+    const naive = changeWallTime(COMPUTER, 'gap');
+    expect(existsIn(naive, COMPUTER)).toBe(false);
+    expect(existsIn(naive, NAMED)).toBe(true);
+    expect(toNaiveIso(naive, NAMED)).toBe(naive);
+    expect(toNaiveIso(`${naive}Z`, NAMED)).toBe(naive);
+    expect(toNaiveIso(naive.slice(0, 16), NAMED)).toBe(naive);
+    expect(toNaiveIso(naive.replace('T', ' '), NAMED)).toBe(naive);
+    expect(toNaiveIso(`${naive}.000`, NAMED)).toBe(naive);
+    expect(toNaiveIso(`${naive}+10:00`, NAMED)).toBe(naive);
+  });
+
+  it('keeps a time in the hour the computer repeats', () => {
+    const naive = changeWallTime(COMPUTER, 'overlap');
+    expect(toNaiveIso(naive, NAMED)).toBe(naive);
+  });
+
+  // The named zone's own skipped time is passed on as given; the calendar
+  // bridge decides about it in that zone (it refuses an edit to it).
+  it('passes on a time the named zone itself skips, as given', () => {
+    const naive = changeWallTime(NAMED, 'gap');
+    expect(existsIn(naive, NAMED)).toBe(false);
+    expect(toNaiveIso(naive, NAMED)).toBe(naive);
+  });
+
+  it('returns null for digits that name no date and time, or input that is not one', () => {
+    expect(toNaiveIso('2099-02-30T10:00:00', NAMED)).toBeNull();
+    expect(toNaiveIso('2099-10-20T25:00:00', NAMED)).toBeNull();
+    expect(toNaiveIso('next tuesday-ish', NAMED)).toBeNull();
+  });
+
+  it('reads a bare date as that date at midnight', () => {
+    expect(toNaiveIso('2099-10-20', NAMED)).toBe('2099-10-20T00:00:00');
   });
 });
 

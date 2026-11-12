@@ -41,9 +41,11 @@ function normalizeArgs(args = {}) {
   
   // Only include properties that have meaningful values
   if (typeof a.title === "string" && a.title) out.title = a.title;
-  // Normalize ISO strings to naive format (remove timezone offsets)
-  if (typeof a.start_iso === "string" && a.start_iso) out.start_iso = toNaiveIso(a.start_iso);
-  if (typeof a.end_iso === "string" && a.end_iso) out.end_iso = toNaiveIso(a.end_iso);
+  // Normalize ISO strings to naive format (remove timezone offsets); a time
+  // given with a timezone keeps its digits, that zone's wall clock.
+  const zone = typeof a.timezone === "string" && a.timezone ? a.timezone : undefined;
+  if (typeof a.start_iso === "string" && a.start_iso) out.start_iso = toNaiveIso(a.start_iso, zone);
+  if (typeof a.end_iso === "string" && a.end_iso) out.end_iso = toNaiveIso(a.end_iso, zone);
   if (typeof a.all_day === "boolean") out.all_day = a.all_day;
   if (typeof a.location === "string" && a.location) out.location = a.location;
   if (typeof a.description === "string" && a.description) out.description = a.description;

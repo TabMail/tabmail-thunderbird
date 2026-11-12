@@ -113,7 +113,13 @@ UNTIL's day, the rewritten one keeps it)
   (`allDayNaiveIso`), the shape `toNaiveIso` round-trips unchanged. `toNaiveIso` reads a bare `YYYY-MM-DD` from the model
   as that date at `T00:00:00` (#313; before, `new Date` read it as UTC midnight, a day early west of
   UTC), and returns null for input that is not a date, which the create and edit tools refuse before
-  the card instead of using the current time.
+  the card instead of using the current time. A `start_iso`/`end_iso` given with a `timezone` is that
+  zone's wall clock: the create and edit tools pass the zone, and `toNaiveIso(iso, timezone)` keeps the
+  string's digits (checked zone-free, `wallClockDigits`), never reading them on the system clock, which
+  moved a time in the computer's own skipped hour by an hour although the named zone has it (#385). A
+  time the named zone itself skips is passed on as given; the bridge decides it in that zone. Without a
+  `timezone` (and for `recurrence_id`, always on the user's clock) the reading is unchanged
+  (`test/calendarToolDates.test.js`, `test/helpers.test.js`).
 - Consumers key an all-day row by `startDay`, never by the epoch: `calendar_search` uses
   `localMidnightOfDay(startDay)` for the day key and ordering; `calendar_event_read` renders
   `start_iso`/`end_iso` as `${day}T00:00:00` and matches a `start_iso` lookup on the day.

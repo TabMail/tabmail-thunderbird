@@ -713,10 +713,16 @@ export function cleanupScrollObservers(container) {
  * Input that is not a date and time returns null; it is never replaced by
  * the current time.
  *
+ * A string given with a named `timezone` is that zone's wall clock: its
+ * digits are kept as given and never read on the system clock, which would
+ * move a time in the system zone's own skipped hour by an hour although the
+ * named zone has it (#385). The calendar bridge places the digits in the zone.
+ *
  * @param {number|string|Date} input - Timestamp in ms, ISO string, or Date object
+ * @param {string} [timezone] - IANA zone the string's wall time is given in
  * @returns {string|null} Naive ISO8601 string (e.g., "2025-01-15T14:00:00"), or null
  */
-export function toNaiveIso(input) {
+export function toNaiveIso(input, timezone) {
   try {
     let date;
     
@@ -727,6 +733,11 @@ export function toNaiveIso(input) {
       if (bareDate && !isNaN(new Date(`${bareDate[1]}T00:00:00`).getTime())) return `${bareDate[1]}T00:00:00`;
       // Parse string - remove timezone offset if present
       const cleaned = input.replace(/[zZ]$/, '').replace(/[+\-]\d{2}:?\d{2}$/, '');
+      if (timezone) {
+        const naive = wallClockDigits(cleaned);
+        log(`[TMDBG Helpers] toNaiveIso: ${input} in ${timezone} -> ${naive}`);
+        return naive;
+      }
       date = new Date(cleaned);
     } else if (input instanceof Date) {
       date = input;
@@ -756,6 +767,20 @@ export function toNaiveIso(input) {
     log(`[TMDBG Helpers] toNaiveIso failed: ${e}`, 'warn');
     return null;
   }
+}
+
+// A string's own wall-clock digits as "YYYY-MM-DDTHH:MM:SS" (no seconds is
+// :00, a fraction is dropped), or null when they name no calendar date and
+// time. Checked zone-free, by reading the digits as UTC and back, so no
+// zone's clock change can move or refuse them.
+const WALL_CLOCK = /^\s*(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*$/;
+function wallClockDigits(s) {
+  const m = WALL_CLOCK.exec(s);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, sec = '00'] = m;
+  const naive = `${y}-${mo}-${d}T${h}:${mi}:${sec}`;
+  const asUtc = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec)));
+  return !isNaN(asUtc.getTime()) && asUtc.toISOString().startsWith(naive) ? naive : null;
 }
 
 /**
