@@ -6,6 +6,7 @@
 // Thunderbird 141+, MV3. No external deps. Best-effort parsing with warnings.
 
 import { log } from "../../agent/modules/utils.js";
+import { formatGregorianDay } from "../../agent/modules/gregorianDate.js";
 import { formatTimestampForAgent, toIsoNoMs } from "./helpers.js";
 
 export const ICS_PARSER_SETTINGS = {
@@ -114,8 +115,8 @@ function parseDateTimeBasic(val) {
     const y = parseInt(s.slice(0,4),10);
     const m = parseInt(s.slice(4,6),10);
     const d = parseInt(s.slice(6,8),10);
-    const utcMs = Date.UTC(y, m-1, d, 0, 0, 0);
-    return { kind: "date", utcMs, components: { y, m, d } };
+    // A DATE has no zone and no instant: only its digits (see the all-day branch).
+    return { kind: "date", utcMs: null, components: { y, m, d } };
   }
   const z = /Z$/i.test(s);
   const mOff = s.match(/([\+\-]\d{2})(\d{2})$/);
@@ -144,6 +145,21 @@ function parseDateTimeBasic(val) {
     return { kind: "date-time", utcMs: null, components: { y, mon, d, hh, mi, ss } };
   }
   return { kind: "date-time", utcMs: null };
+}
+
+// "YYYY-MM-DD" of a DATE's digits, `shift` days on. Day arithmetic in UTC only,
+// so no zone moves the day.
+function dayKeyOf(c, shift = 0) {
+  const t = new Date(Date.UTC(c.y, c.m - 1, c.d + shift));
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${t.getUTCFullYear()}-${p2(t.getUTCMonth() + 1)}-${p2(t.getUTCDate())}`;
+}
+
+// An all-day date as "<Weekday> YYYY/MM/DD", the date shape formatTimestampForAgent
+// uses, with no time and no zone.
+function formatAllDay(dayKey) {
+  const weekday = formatGregorianDay(dayKey, { weekday: "long" });
+  return `${weekday} ${dayKey.replace(/-/g, "/")}`;
 }
 
 function tryMapTzid(tzid, warnings) {
@@ -288,7 +304,9 @@ export function parseIcsToEvents(icsText, icsFilename = "") {
       const m = tryMapTzid(tzidRaw, evWarnings);
       tzidMapped = m.tzidMapped;
       const p = parseDateTimeBasic(ev.__dtstart.value);
-      if (p.utcMs !== null) {
+      if (p.kind === "date") {
+        // all-day: kept as a date below, never resolved to an instant
+      } else if (p.utcMs !== null) {
         startUtcMs = p.utcMs;
       } else if (p.components && tzidMapped) {
         try {
@@ -304,7 +322,9 @@ export function parseIcsToEvents(icsText, icsFilename = "") {
     // DTEND or DURATION
     if (ev.__dtend) {
       const p = parseDateTimeBasic(ev.__dtend.value);
-      if (p.utcMs !== null) {
+      if (p.kind === "date") {
+        // all-day: kept as a date below, never resolved to an instant
+      } else if (p.utcMs !== null) {
         endUtcMs = p.utcMs;
       } else if (p.components && tzidMapped) {
         try {
@@ -336,6 +356,48 @@ export function parseIcsToEvents(icsText, icsFilename = "") {
     const attendees = Array.isArray(ev.attendees) ? ev.attendees : [];
     const attendeesTrunc = attendees.slice(0, ICS_PARSER_SETTINGS.attendeeDisplayLimit);
     const attendeesMoreCount = Math.max(0, attendees.length - attendeesTrunc.length);
+
+    // An all-day value (DTSTART;VALUE=DATE) is a calendar date with no zone and no
+    // instant. It is kept as its date digits and printed as that day: read as an
+    // instant (UTC midnight) and printed in the user's zone, it named the previous
+    // day west of UTC (#412).
+    const startDate = ev.__dtstart ? parseDateTimeBasic(ev.__dtstart.value) : null;
+    if (startDate?.kind === "date") {
+      const startDay = dayKeyOf(startDate.components);
+      const endDate = ev.__dtend ? parseDateTimeBasic(ev.__dtend.value) : null;
+      let lastDay = startDay;
+      if (endDate?.kind === "date") {
+        // DTEND of a date is exclusive (RFC 5545): the last day is the day before it,
+        // never before the start (an end equal to the start is one day).
+        const c = endDate.components;
+        const before = dayKeyOf(c, -1);
+        if (before > startDay) lastDay = before;
+      } else if (ev.__duration) {
+        const m = String(ev.__duration).match(/^P(?:(\d+)W)?(?:(\d+)D)?$/i);
+        const days = m ? parseInt(m[1] || "0", 10) * 7 + parseInt(m[2] || "0", 10) : 0;
+        if (days > 1) lastDay = dayKeyOf(startDate.components, days - 1);
+      }
+      out.push({
+        uid: ev.uid || "",
+        title: ev.title || "",
+        all_day: true,
+        start: { date: startDay },
+        end: { last_date: lastDay },
+        when: lastDay === startDay
+          ? `all day, ${formatAllDay(startDay)}`
+          : `all day, ${formatAllDay(startDay)} to ${formatAllDay(lastDay)}`,
+        location: ev.location || "",
+        join_url: joinUrl || "",
+        organizer: { name: organizer.name || "", email: organizer.email || "" },
+        attendees_truncated: attendeesTrunc.map(a => ({ name: a.name || "", email: a.email || "" })),
+        attendees_more_count: attendeesMoreCount,
+        language: ev.language || "",
+        notes_brief: notesBrief || "",
+        source: { ics_filename: icsFilename || "", prodid: srcProdid, method: srcMethod },
+        parse_warnings: [...warnings, ...evWarnings],
+      });
+      continue;
+    }
 
     const eventOut = {
       uid: ev.uid || "",
@@ -380,7 +442,8 @@ export function formatEventsForDisplay(events) {
   list.forEach((ev, idx) => {
     try {
       lines.push(`Event ${idx + 1}: ${ev.title || "(No title)"}`);
-      if (ev.start?.start_local) lines.push(`When: ${ev.start.start_local}${ev.end?.end_local ? ` → ${ev.end.end_local}` : ""}`);
+      if (ev.all_day) lines.push(`When: ${ev.when}`);
+      else if (ev.start?.start_local) lines.push(`When: ${ev.start.start_local}${ev.end?.end_local ? ` → ${ev.end.end_local}` : ""}`);
       if (Number.isFinite(ev.duration_minutes)) lines.push(`Duration: ${ev.duration_minutes} minutes`);
       if (ev.location) lines.push(`Location: ${ev.location}`);
       if (ev.join_url) lines.push(`Join: ${ev.join_url}`);
