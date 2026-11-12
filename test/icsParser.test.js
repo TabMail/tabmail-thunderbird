@@ -1456,6 +1456,15 @@ describe('Additional branch coverage', () => {
     expect(sameEnd.end).toEqual({ last_date: '2099-12-30' });
   });
 
+  it('all-day DURATION:P1W lasts seven days: the last day is the start + 6', () => {
+    const ev = parseIcsToEvents(wrapIcs(simpleVevent([
+      'UID:allday-week@example.com', 'SUMMARY:Week', 'DTSTART;VALUE=DATE:20991230', 'DURATION:P1W',
+    ])))[0];
+    expect(ev.all_day).toBe(true);
+    expect(ev.start).toEqual({ date: '2099-12-30' });
+    expect(ev.end).toEqual({ last_date: '2100-01-05' });
+  });
+
   it('attendees with non-array value defaults to empty array', () => {
     // This tests the `Array.isArray(ev.attendees) ? ev.attendees : []` branch
     // A normal parse always gives an array, but this confirms robustness
