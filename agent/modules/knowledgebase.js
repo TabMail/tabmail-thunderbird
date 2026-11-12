@@ -5,6 +5,7 @@
 import { formatTimestampForAgent, renderToPlainText } from "../../chat/modules/helpers.js";
 import { addChatToQueue, getUnrememberedSessions, markSessionsAsRemembered } from "./chatHistoryQueue.js";
 import { SETTINGS } from "./config.js";
+import { formatGregorianDate } from "./gregorianDate.js";
 import { sendChat } from "./llm.js";
 import { readBeforeAI, writeAfterRead } from "./promptStore.js";
 import {
@@ -119,7 +120,10 @@ async function _kbUpdateImpl(conversationHistory = []) {
         const chatHistoryParts = [];
         for (const session of unrememberedSessions) {
             // Add session header
-            const sessionDate = new Date(session.timestamp).toLocaleString();
+            const sessionDate = formatGregorianDate(new Date(session.timestamp), {
+                year: "numeric", month: "numeric", day: "numeric",
+                hour: "numeric", minute: "2-digit", second: "2-digit",
+            });
             chatHistoryParts.push(`--- Session from ${sessionDate} ---`);
 
             for (const msg of session.messages || []) {

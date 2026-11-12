@@ -7,6 +7,7 @@ import { processSummaryResponse, sendChat } from "./llm.js";
 // We'll build placeholder messages directly
 import { formatTimestampForAgent, getUserName } from "../../chat/modules/helpers.js";
 import { SETTINGS } from "./config.js";
+import { formatGregorianDate } from "./gregorianDate.js";
 import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { computeRecipientStatus } from "./senderFilter.js";
 import {
@@ -334,7 +335,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
   // Format email date with day of week for LLM context
   const emailDateObj = messageHeader.date ? new Date(messageHeader.date) : new Date();
   const emailDateFormatted = formatTimestampForAgent(emailDateObj);
-  const emailDayOfWeek = emailDateObj.toLocaleDateString("en-US", { weekday: "long" });
+  const emailDayOfWeek = formatGregorianDate(emailDateObj, { weekday: "long" });
 
   // Recipient status: "cc" when none of the user's registered addresses is in the
   // To field (backend injects an explicit cc notice). Omitted when the user IS in

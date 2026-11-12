@@ -15,6 +15,7 @@
  * This provides "mid-term memory" before chats are summarized into the KB.
  */
 
+import { formatGregorianDate } from "./gregorianDate.js";
 import { log } from "./utils.js";
 
 const STORAGE_KEY = "chat_history_queue";
@@ -289,7 +290,7 @@ export async function getRecentChatHistoryForPrompt(maxSessions = null) {
     const parts = [];
     for (const session of recentSessions) {
         const sessionDate = new Date(session.timestamp);
-        const dateStr = sessionDate.toLocaleDateString("en-US", {
+        const dateStr = formatGregorianDate(sessionDate, {
             month: "short",
             day: "numeric",
             hour: "2-digit",

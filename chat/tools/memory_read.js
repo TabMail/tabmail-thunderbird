@@ -5,6 +5,7 @@
 // memory_read.js – Read full conversation around a timestamp
 // TB 145, MV3
 
+import { formatGregorianDate } from "../../agent/modules/gregorianDate.js";
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ftsRequest } from "../../fts/ftsRequest.js";
@@ -158,7 +159,7 @@ export async function run(args = {}, options = {}) {
     const formatted = results
       .map((item) => {
         const date = item.dateMs
-          ? new Date(item.dateMs).toLocaleDateString("en-US", {
+          ? formatGregorianDate(new Date(item.dateMs), {
               month: "short",
               day: "numeric",
               year: "numeric",

@@ -5,6 +5,7 @@
 // memory_search.js – FTS search for user's memory (past conversations)
 // TB 145, MV3
 
+import { formatGregorianDate } from "../../agent/modules/gregorianDate.js";
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ftsRequest } from "../../fts/ftsRequest.js";
@@ -276,7 +277,7 @@ export async function run(args = {}, options = {}) {
           const globalIdx = start + idx + 1;
           const timestamp = item.dateMs || 0;
           const date = timestamp
-            ? new Date(timestamp).toLocaleDateString("en-US", {
+            ? formatGregorianDate(new Date(timestamp), {
                 month: "short",
                 day: "numeric",
                 year: "numeric",

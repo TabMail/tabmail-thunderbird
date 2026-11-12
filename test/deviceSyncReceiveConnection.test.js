@@ -208,7 +208,7 @@ describe('a refine whose model answers after a sign-out (DS-DEVICE)', () => {
   function refineOn(a, whileAsking) {
     const counts = { indexed: 0, remembered: 0 };
     const realm = createRealm({
-      files: ['agent/modules/knowledgebase.js', 'agent/modules/promptStore.js', 'agent/modules/bulletSync.js', 'agent/modules/bullets.js'],
+      files: ['agent/modules/knowledgebase.js', 'agent/modules/gregorianDate.js', 'agent/modules/promptStore.js', 'agent/modules/bulletSync.js', 'agent/modules/bullets.js'],
       stubs: {
         'agent/modules/utils.js': { log() {}, saveChatLog() {}, normalizeUnicode: (t) => t },
         'agent/modules/config.js': { SETTINGS: { promptSemaphore: { acquireWaitMs: 20 }, events: {} } },

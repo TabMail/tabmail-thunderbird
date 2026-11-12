@@ -11,6 +11,7 @@
 //   2. Due date/time approaching → alarm fires X minutes before → notify
 
 import { SETTINGS } from "./config.js";
+import { formatGregorianDate } from "./gregorianDate.js";
 import { isChatWindowOpen, openOrFocusChatWindow } from "../../chat/modules/chatWindowUtils.js";
 import { hashReminder } from "./reminderStateStore.js";
 import { log } from "./utils.js";
@@ -328,7 +329,7 @@ function _formatDueLabel(dueDate, dueTime, timezone) {
     return `Overdue (${daysOverdue} day${daysOverdue > 1 ? "s" : ""})`;
   }
 
-  const formatted = dueMidnight.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const formatted = formatGregorianDate(dueMidnight, { weekday: "short", month: "short", day: "numeric" });
   return `Due ${formatted}${timeSuffix}`;
 }
 
@@ -679,13 +680,13 @@ async function _handleTaskEvaluation() {
  */
 async function _executeTask(task, taskHash) {
   const now = new Date();
-  const timeStr = now.toLocaleTimeString("en-US", {
+  const timeStr = formatGregorianDate(now, {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
     timeZone: task.timezone || undefined,
   });
-  const dateStr = now.toLocaleDateString("en-US", {
+  const dateStr = formatGregorianDate(now, {
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -1285,7 +1286,7 @@ export function cleanupProactiveCheckin() {
  * @returns {Promise<boolean>} True if delivered successfully
  */
 export async function sendTestProactiveNudge() {
-  const testMessage = `🧪 **Test Nudge**\n\nThis is a test proactive message from TabMail.\n\nIf you see this in your chat window (and WhatsApp if connected), the nudge system is working correctly!\n\n_Sent at ${new Date().toLocaleTimeString()}_`;
+  const testMessage = `🧪 **Test Nudge**\n\nThis is a test proactive message from TabMail.\n\nIf you see this in your chat window (and WhatsApp if connected), the nudge system is working correctly!\n\n_Sent at ${formatGregorianDate(new Date(), { hour: "numeric", minute: "2-digit", second: "2-digit" })}_`;
 
   log(`[ProActReach] Sending test nudge`);
 

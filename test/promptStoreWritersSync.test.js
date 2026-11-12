@@ -31,6 +31,7 @@ const TYPED = 'Don’t email “Bob” on weekends.';
 const WRITER_FILES = [
   'agent/modules/patchApplier.js',
   'agent/modules/knowledgebase.js',
+  'agent/modules/gregorianDate.js',
   'agent/modules/autoUpdateUserPrompt.js',
   'chat/tools/kb_add.js',
   'chat/tools/kb_del.js',
