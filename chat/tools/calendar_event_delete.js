@@ -39,10 +39,7 @@ function normalizeArgs(args = {}) {
   // is kept, so it is refused by name rather than dropped.
   if (typeof a.delete_scope === "string" && a.delete_scope.trim()) out.delete_scope = a.delete_scope.toLowerCase().trim();
 
-  // Include invitation properties
-  if (typeof a.send_invitations === "boolean") {
-    out.send_invitations = a.send_invitations;
-  }
+  // The organizer the guests' cancellation comes from
   if (typeof a.organizer_email === "string" && a.organizer_email) {
     out.organizer_email = a.organizer_email;
   }

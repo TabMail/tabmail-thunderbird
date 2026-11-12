@@ -94,15 +94,15 @@ describe('calendar_event_edit against the real bridge, before the confirmation c
     expectCard(await runEdit(allDayEvent(), { all_day: false, start_iso: '2099-10-20T15:00:00', end_iso: '2099-10-20T16:00:00' }), { all_day: false });
   });
 
-  it('a timed event moved, with a guest added and invitations asked for, reaches the card with them', async () => {
+  it('a timed event moved, with a guest added, reaches the card with them', async () => {
     const guests = [{ email: 'sam@example.com' }];
-    expectCard(await runEdit(timedEvent(), { start_iso: '2099-10-20T15:00:00', add_attendees: guests, send_invitations: true }),
-      { start_iso: '2099-10-20T15:00:00', add_attendees: guests, send_invitations: true });
+    expectCard(await runEdit(timedEvent(), { start_iso: '2099-10-20T15:00:00', add_attendees: guests }),
+      { start_iso: '2099-10-20T15:00:00', add_attendees: guests });
   });
 
-  it('an all-day event moved, with a guest added and invitations asked for, reaches the card', async () => {
-    expectCard(await runEdit(allDayEvent(), { start_iso: '2099-10-20T00:00:00', add_attendees: [{ email: 'sam@example.com' }], send_invitations: true }),
-      { send_invitations: true });
+  it('an all-day event moved, with a guest added, reaches the card', async () => {
+    expectCard(await runEdit(allDayEvent(), { start_iso: '2099-10-20T00:00:00', add_attendees: [{ email: 'sam@example.com' }] }),
+      { add_attendees: [{ email: 'sam@example.com' }] });
   });
 
   it('a new time in a zone the calendar does not know fails, naming the zone, and nothing is written', async () => {

@@ -194,7 +194,6 @@ export async function runStateDeleteCalendarEventExec() {
 
   let eventId = null;
   let organizerEmail = null;
-  let sendInvitations = undefined;
   // The call's arguments as the tool stashed them (scope as routed): the
   // write is the delete the card stated.
   let args = {};
@@ -204,7 +203,6 @@ export async function runStateDeleteCalendarEventExec() {
     args = sess?.deleteEventArgs || {};
     eventId = args.event_id || null;
     organizerEmail = args.organizer_email || null;
-    sendInvitations = args.send_invitations;
   } catch (_) {}
 
   if (!eventId) {
@@ -241,7 +239,6 @@ export async function runStateDeleteCalendarEventExec() {
     const res = await browser.tmCalendar.deleteCalendarEvent({
       ...deleteCallArgs(args),
       organizer_email: organizerEmail,
-      send_invitations: sendInvitations,
     });
     const ok = !!(res && (res.ok === true || res === true));
     if (!ok) {

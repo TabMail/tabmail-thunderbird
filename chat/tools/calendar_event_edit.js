@@ -85,10 +85,7 @@ function normalizeArgs(args = {}) {
       .filter((p) => p.email);
   }
   
-  // Include invitation properties
-  if (typeof a.send_invitations === "boolean") {
-    out.send_invitations = a.send_invitations;
-  }
+  // The organizer the guests' update comes from
   if (typeof a.organizer_email === "string" && a.organizer_email) {
     out.organizer_email = a.organizer_email;
   }

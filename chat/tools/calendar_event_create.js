@@ -36,7 +36,6 @@ function normalizeArgs(args = {}) {
   
   // Include boolean properties
   if (typeof a.all_day === "boolean") out.all_day = a.all_day;
-  if (typeof a.send_invitations === "boolean") out.send_invitations = a.send_invitations;
   
   // Attendees array (include even if empty since it's a valid state)
   if (Array.isArray(a.attendees)) {

@@ -57,7 +57,7 @@ vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ t
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}) }));
 
 const {
-  loadCalendarBridge, fakeAttendee, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem, recurrenceDate,
+  loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem, recurrenceDate,
   fixedZone, FLOATING_ZONE, LOCAL_ZONE,
 } = await import('./helpers/calendarBridgeHarness.js');
 const { run } = await import('../chat/tools/calendar_event_edit.js');
@@ -82,7 +82,6 @@ const startIsoOf = (dt) => {
   const d = dt.timezone === FLOATING_ZONE ? dt : dt.getInTimezone(LOCAL_ZONE);
   return `${d.year}-${pad2(d.month + 1)}-${pad2(d.day)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
 };
-const guest = (name) => fakeAttendee({ id: `mailto:${name}@example.com`, participationStatus: 'ACCEPTED', rsvp: 'FALSE' });
 
 // A one-off event at 17:00 on day 1, or all day on day 6.
 const oneOff = ({ attendees = [] } = {}) => fakeEvent({ id: 'ser', title: 'Sync', startDate: fakeDateTime(DAY(1), 17), endDate: hourAfter(fakeDateTime(DAY(1), 17)), attendees });
@@ -197,9 +196,6 @@ const REFUSALS = [
   ['a move to another day of a series with an EXRULE', () => series({ rules: ['FREQ=WEEKLY;BYDAY=TH,SA;COUNT=6'], items: [exrule()] }),
     { edit_scope: 'all', recurrence_id: isoAt(1), start_iso: isoAt(2) }, null, EXRULE_MOVE],
   ['a move to another day the rule\'s days cannot follow', () => series({ rules: ['FREQ=MONTHLY;BYDAY=1TH;COUNT=6'] }), { edit_scope: 'all', recurrence_id: isoAt(1), start_iso: isoAt(2) }, null, RULE_DAYS],
-  ['invitations for an event with no guests', oneOff, { title: 'Renamed', send_invitations: true }, null, 'send_invitations=true requires at least one attendee'],
-  ['invitations for one occurrence with no guests', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), title: 'Renamed', send_invitations: true }, null, 'send_invitations=true requires at least one attendee'],
-  ['invitations for a whole series once everyone is removed', () => series({ attendees: [guest('ana')] }), { remove_attendees: [{ email: '*' }], send_invitations: true }, null, 'send_invitations=true requires at least one attendee'],
 
   // splitRecurringEvent (edit_scope 'this_and_following')
   ['a split of an event that does not exist', null, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), title: 'Renamed' }, null, EVENT_NOT_FOUND],
@@ -229,9 +225,6 @@ const REFUSALS = [
   ['a split at an occurrence changed on its own, given an end before it starts', () => series({ exceptions: [changed(4, { startOn: [4, 19] })] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(4, 19), end_iso: `${DAY(4)}T18:30:00` }, null, END_BEFORE],
   ['a split with a new rule and a move to another day', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), start_iso: isoAt(5), recurrence: { freq: 'DAILY', count: 3 } }, null, NEW_RULE_MOVE],
-  ['a split asking for invitations once everyone is removed', () => series({ attendees: [guest('ana')] }),
-    { edit_scope: 'this_and_following', recurrence_id: isoAt(4), remove_attendees: [{ email: '*' }], send_invitations: true }, null,
-    'send_invitations=true requires at least one attendee on the new series'],
   // The two refusals that sat after the check before #339.
   ['a split whose new rule cannot be written', () => series({ rules: ['FREQ=DAILY;COUNT=3'], items: [recurrenceItem('RDATE', '20991005T170000')] }),
     { edit_scope: 'this_and_following', recurrence_id: isoAt(5), recurrence: { freq: 'DAILY', count: 2 } }, ruleWriteThrowsAt(1),

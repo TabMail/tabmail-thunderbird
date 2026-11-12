@@ -105,7 +105,6 @@
               },
               "conference_url": { "type": "string", "optional": true },
               "conference_provider": { "type": "string", "optional": true },
-              "send_invitations": { "type": "boolean", "optional": true },
               "organizer_email": { "type": "string", "optional": true },
               "recurrence": {
                 "type": "object",
@@ -195,7 +194,6 @@
               },
               "conference_url": { "type": "string", "optional": true },
               "conference_provider": { "type": "string", "optional": true },
-              "send_invitations": { "type": "boolean", "optional": true },
               "organizer_email": { "type": "string", "optional": true },
               "recurrence": {
                 "type": "object",
@@ -290,7 +288,6 @@
                       }
                     }
                   },
-                  "send_invitations": { "type": "boolean", "optional": true },
                   "recurrence": {
                     "type": "object",
                     "optional": true,
@@ -356,7 +353,6 @@
               },
               "recurrence_id": { "type": "string", "optional": true, "description": "The occurrence to delete, or to delete from: its start as the read tools show it. Required when delete_scope is 'this_only' or 'this_and_following'." },
               "check_only": { "type": "boolean", "optional": true, "description": "Run the delete, every refusal included, up to its first write and write nothing. ok: false carries the refusal." },
-              "send_invitations": { "type": "boolean", "optional": true },
               "organizer_email": { "type": "string", "optional": true }
             },
             "required": ["event_id"]

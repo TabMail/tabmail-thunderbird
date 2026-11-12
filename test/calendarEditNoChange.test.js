@@ -184,14 +184,6 @@ describe('an edit that only restates the event changes nothing', () => {
       expect(loaded.modifications).toHaveLength(0);
     }
   });
-
-  it('send_invitations alone still shows the card', async () => {
-    const guest = fakeAttendee({ id: 'mailto:sam@example.com', commonName: 'Sam' });
-    const loaded = onCalendar([fakeEvent({ id: 'one', title: 'Review', startDate: la('2099-01-10', 15), endDate: la('2099-01-10', 16), attendees: [guest] })], LA);
-    const run = await edit({ event_id: 'one', send_invitations: true }, { confirm: false });
-    expect(run.card).toBeTruthy();
-    expect(loaded.modifications).toHaveLength(0);
-  });
 });
 
 describe('the check\'s answer is what the experiment declares', () => {

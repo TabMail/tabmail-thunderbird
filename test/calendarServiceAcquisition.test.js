@@ -264,14 +264,12 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "getAPI > getCalendarEventDetails :: getCalendarManager",
   "getAPI > getCalendars :: getCalendarManager",
   "getAPI > modifyCalendarEvent :: getCalendarManager",
-  "getAPI > setGoogleInvitePolicy :: getCalendarManager",
   "getAPI > splitRecurringEvent :: getCalendarManager",
   "intoFrameOf :: getTimezoneService",
   "listCalendarsInternal :: getCalendarManager",
   "occurrenceInstantOn :: getTimezoneService",
   "queryCalendarItemsInternal :: getCalendarManager",
   "restates :: getTimezoneService",
-  "sendCalendarInvitations :: getIcsService",
   "toCalIDateTime :: getTimezoneService",
   "toEpochMsUTC :: getTimezoneService",
   "untilDayFromIcs :: getTimezoneService",
@@ -395,37 +393,11 @@ describe("tmCalendar calendar-service acquisition — static census", () => {
     });
   }
 
-  it("no reachable code path resolves a calendar service through XPCOM", () => {
-    // sendCalendarInvitations is unreachable WIP whose iMIP lookups
-    // (calIItipService, calIItipTransport) are dead in Thunderbird for reasons
-    // the source documents; it is exempt only for as long as it stays
-    // unreachable, which the next test enforces.
-    const imip = findFunctionDeclaration(AST, "sendCalendarInvitations");
-    expect(imip, "sendCalendarInvitations declaration not found").not.toBeNull();
-
-    const offenders = calendarGetServiceCalls(AST)
-      .filter(call => call.start < imip.start || call.end > imip.end)
-      .map(call => call.interface);
+  it("no code path resolves a calendar service through XPCOM", () => {
+    // The unreachable iMIP draft that was exempt here is gone (#423): guests
+    // are told through cal.itip.checkAndSend, so there is no exemption.
+    const offenders = calendarGetServiceCalls(AST).map(call => call.interface);
     expect(offenders).toEqual([]);
-  });
-
-  it("the exempt iMIP function is still unreachable", () => {
-    // Counts every reference to the identifier except the declaration's own
-    // name, so an alias (`const send = sendCalendarInvitations;`) is a call
-    // site too. If iMIP is ever revived this fails first, forcing whoever
-    // does it to deal with the dead itip-service/itip-transport contracts.
-    const imip = findFunctionDeclaration(AST, "sendCalendarInvitations");
-    const references = [];
-    walk(AST, node => {
-      if (
-        node.type === "Identifier" &&
-        node.name === "sendCalendarInvitations" &&
-        node !== imip.id
-      ) {
-        references.push(node.start);
-      }
-    });
-    expect(references).toEqual([]);
   });
 
   it("imports calUtils through exactly one call site, inside getCalNamespace", () => {

@@ -28,8 +28,11 @@ it, with one function, to each item the edit covers.
 - Everyone who stays keeps their entry exactly as stored: their answer (`PARTSTAT`), `RSVP`, role, user
   type, name and every other parameter, in their stored order. Thunderbird's own event dialog does the
   same: it keeps the attendee objects it does not change.
-- `send_invitations` is checked AFTER the change is applied: refused only when the edited item ends with
-  no guests. An edit of an event that has guests need not restate them.
+- Guests are always told (#423): `send_invitations` is retired and nothing is refused for having no one
+  to tell. Every write of an item with guests, before or after it, is handed to Thunderbird's scheduling
+  (see [054-calendar-guests-always-notified.md](054-calendar-guests-always-notified.md)). Until #423,
+  `send_invitations` was checked after the change and refused an edited item that ended with no guests.
+  An edit of an event that has guests need not restate them.
 - The experiment's `schema.json` declares `add_attendees` / `remove_attendees` on `modifyCalendarEvent` and
   on the split's patch; a flat `attendees` list is declared only for `createCalendarEvent`. A guest item's
   `name` is `"optional": true` (a schema property is required unless marked optional).

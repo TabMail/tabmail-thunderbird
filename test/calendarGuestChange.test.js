@@ -174,29 +174,6 @@ const ids = (item) => item.getAttendees().map((a) => a.id);
 const add = (...emails) => ({ add_attendees: emails.map((email) => ({ email })) });
 const remove = (...emails) => ({ remove_attendees: emails.map((email) => ({ email })) });
 
-// The tool checks every edit against the bridge before the card, with the
-// guest change and send_invitations in it: what the write would refuse is
-// refused there, with no card and nothing written.
-describe('an edit of the times that would leave no one to invite is refused before the card', () => {
-  for (const scopeName of Object.keys(SCOPES)) {
-    it(`${scopeName}: everyone removed, with invitations asked for`, async () => {
-      const day = (SCOPES[scopeName].args.recurrence_id || isoAt(1)).slice(0, 10);
-      const stored = [guest('ana'), guest('bo')];
-      const own = [guest('cy')];
-      const r = await edit(scopeName, stored, own, { end_iso: `${day}T19:00:00`, ...remove('*'), send_invitations: true });
-      expect(r.schemaErrors).toEqual([]);
-      expect(r.sess.failReason).toMatch(/send_invitations=true requires at least one attendee/);
-      expect(ctx.state).toBe('exec_fail');
-      expect(r.sess.editEventArgs).toBeUndefined();
-      expect(r.loaded.modifications).toHaveLength(0);
-      expect(r.loaded.calendar.items).toHaveLength(1);
-      const series = original(r.loaded.calendar);
-      expect(ids(series)).toEqual([mail('ana'), mail('bo')]);
-      for (const ex of exceptionsOf(series)) expect(ids(ex)).toEqual([mail('cy')]);
-    });
-  }
-});
-
 describe('the schema check refuses what Thunderbird refuses', () => {
   it('takes a declared guest change and refuses an undeclared, missing or mistyped value', () => {
     expect(() => checkAgainst(modifyDetails, { event_id: 'ser', add_attendees: [{ email: 'x@example.com' }], remove_attendees: [{ email: '*' }] }, 'details')).not.toThrow();
@@ -340,69 +317,42 @@ describe('an occurrence with guests of its own keeps its own differences', () =>
   }
 });
 
-describe('sending invitations with an edit', () => {
+// Guests are always told (#423): every edit of an item with guests, before or
+// after the change, is handed to Thunderbird's scheduling with the notify
+// flag, from the tool's `run` through the edit flow, with no argument asking
+// for it. Nothing is refused for having no one to tell.
+describe('every edit tells the guests', () => {
   for (const scopeName of Object.keys(SCOPES)) {
-    it(`an event with guests is edited without the guests restated (${scopeName})`, async () => {
-      const { sess, schemaErrors: errors } = await edit(scopeName, all(), all(), { ...add('dee@example.com'), send_invitations: true });
+    it(`an edit of an event with guests is written and its guests are told (${scopeName})`, async () => {
+      const { sess, loaded, schemaErrors: errors } = await edit(scopeName, all(), all(), add('dee@example.com'));
       expect(errors).toEqual([]);
       expect(sess.failReason).toBeUndefined();
-    });
-  }
-
-  // The list read is the edited item's own, after the change. Here the series
-  // has guests and the occurrence changed before has none of its own left, or
-  // the reverse.
-  for (const scopeName of Object.keys(SCOPES)) {
-    it(`an edit that ends with no guests is refused, and nothing is written (${scopeName})`, async () => {
-      const { sess, loaded } = await edit(scopeName, all(), all(), { ...remove('*'), send_invitations: true });
-      expect(sess.failReason).toMatch(/send_invitations/);
-      expect(loaded.modifications).toHaveLength(0);
-      expect(loaded.calendar.items).toHaveLength(1);
-      expect(ids(loaded.calendar.items[0])).toEqual(START.map(mail));
+      expect(loaded.notices.length).toBeGreaterThan(0);
+      for (const n of loaded.notices) expect(n.sendInvitations).toBe('TRUE');
     });
 
-    it(`an edit that adds the first guest is made (${scopeName})`, async () => {
-      const { sess, items } = await edit(scopeName, [], [], { ...add('dee@example.com'), send_invitations: true });
+    it(`an edit that removes everyone is written, and the removed guests are told (${scopeName})`, async () => {
+      const { sess, items, loaded } = await edit(scopeName, all(), all(), remove('*'));
+      expect(sess.failReason).toBeUndefined();
+      for (const it of [...items.main, ...items.own]) expect(ids(it)).toEqual([]);
+      expect(loaded.notices.length).toBeGreaterThan(0);
+      for (const n of loaded.notices) expect(n.sendInvitations).toBe('TRUE');
+    });
+
+    it(`an edit that adds the first guest is made and told (${scopeName})`, async () => {
+      const { sess, items, loaded } = await edit(scopeName, [], [], add('dee@example.com'));
       expect(sess.failReason).toBeUndefined();
       for (const it of [...items.main, ...items.own]) expect(ids(it)).toEqual([mail('dee')]);
+      expect(loaded.notices.some((n) => n.guests.includes(mail('dee')))).toBe(true);
     });
   }
 
-  it('one occurrence with no guests of its own is refused, though its series has guests', async () => {
-    const { sess, loaded } = await edit('one occurrence, changed before', all(), [], { title: 'Review', send_invitations: true });
-    expect(sess.failReason).toMatch(/send_invitations/);
-    expect(loaded.modifications).toHaveLength(0);
-  });
-
-  it('one occurrence with guests of its own is edited, though its series has none', async () => {
-    const { sess, items } = await edit('one occurrence, changed before', [], all(), { title: 'Review', send_invitations: true });
-    expect(sess.failReason).toBeUndefined();
-    expect(items.own[0].title).toBe('Review');
-  });
-
-  it('an edit that restates no guest is made when the event has guests', async () => {
-    const { sess, items } = await edit('a one-off event', all(), all(), { title: 'Review', send_invitations: true });
+  it('an edit of an event with no guests is written and tells no one', async () => {
+    const { sess, items, loaded } = await edit('a one-off event', [], [], { title: 'Review' });
     expect(sess.failReason).toBeUndefined();
     expect(items.main[0].title).toBe('Review');
+    expect(loaded.notices).toEqual([]);
   });
-
-  it('an edit that adds the first guest is made', async () => {
-    const { sess, items } = await edit('a one-off event', [], [], { ...add('dee@example.com'), send_invitations: true });
-    expect(sess.failReason).toBeUndefined();
-    expect(ids(items.main[0])).toEqual([mail('dee')]);
-  });
-
-  for (const [name, guests, change] of [
-    ['an event with no guests', [], { title: 'Review' }],
-    ['an edit that removes everyone', all(), remove('*')],
-  ]) {
-    it(`${name} is refused, and nothing is written`, async () => {
-      const { sess, loaded } = await edit('a one-off event', guests, guests, { ...change, send_invitations: true });
-      expect(sess.failReason).toMatch(/send_invitations/);
-      expect(loaded.modifications).toHaveLength(0);
-      expect(ids(loaded.calendar.items[0])).toEqual(guests.map((g) => g.id));
-    });
-  }
 });
 
 // The confirmation card is what the user confirms: it names the people added

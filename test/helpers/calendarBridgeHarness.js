@@ -673,10 +673,20 @@ const ITEM_FILTER_INCLUDE_OCCURRENCES = 2;
  * recurring master carries its occurrences). Returns the experiment API, the
  * recorded provider calls (deletions included), and the provider itself for state assertions.
  */
+// calIOperationListener's operation types and calIItipItem's response modes,
+// the operations as Thunderbird numbers them, the modes by name.
+const OPERATIONS = { ADD: 1, MODIFY: 2, DELETE: 3 };
+const OPERATION_NAMES = { 1: 'ADD', 2: 'MODIFY', 3: 'DELETE' };
+const ITIP_RESPONSE_MODES = { AUTO: 'AUTO', USER: 'USER', NONE: 'NONE' };
+
 export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} } } = {}) {
   const getItemsCalls = [];
   const modifications = [];
   const deletions = [];
+  // Each write handed to Thunderbird's scheduling (cal.itip.checkAndSend, as
+  // CalTransactionManager does): the operation, the item with its notify flag
+  // read at the call, the item before, and the response mode.
+  const notices = [];
   const calendar = {
     id: calendarId,
     name: 'Personal',
@@ -755,11 +765,21 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     manager: { getCalendars: () => [calendar] },
     timezoneService: { UTC: UTC_ZONE, floating: FLOATING_ZONE, defaultTimezone: LOCAL_ZONE, getTimezone: () => null },
     icsService: { createIcalProperty: (propertyName) => ({ propertyName, value: '' }) },
+    itip: {
+      checkAndSend(opType, item, oldItem, extResponse) {
+        notices.push({
+          op: OPERATION_NAMES[opType], item, oldItem,
+          sendInvitations: item.getProperty('X-MOZ-SEND-INVITATIONS'),
+          guests: item.getAttendees().map((a) => a.id),
+          responseMode: extResponse?.responseMode,
+        });
+      },
+    },
   };
   const ctx = vm.createContext({
     Date, ReadableStream, Intl,
     console,
-    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIDateTime: {}, calIDuration: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
+    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIOperationListener: OPERATIONS, calIItipItem: ITIP_RESPONSE_MODES, calIDateTime: {}, calIDuration: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
     // The datetime and duration contracts and the recurrence and event ones
     // are the XPCOM lookups the query/details/modify paths need; timers are
     // optional (the bridge resolves without them).
@@ -771,7 +791,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         if (key === '@mozilla.org/calendar/recurrence-info;1') return { createInstance: () => fakeRecurrenceInfo() };
         if (key === '@mozilla.org/calendar/recurrence-date;1') return { createInstance: () => fakeRecurrenceDate() };
         if (key === '@mozilla.org/calendar/event;1') {
-          return { createInstance: () => Object.assign(fakeEvent({ id: null, title: '', startDate: null, endDate: null }), { addAttendee() {} }) };
+          return { createInstance: () => fakeEvent({ id: null, title: '', startDate: null, endDate: null }) };
         }
         if (key === '@mozilla.org/calendar/attendee;1') return { createInstance: () => ({}) };
         throw new Error(`XPCOM Cc[${String(key)}] lookup`);
@@ -788,5 +808,5 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   });
   vm.runInContext(readFileSync(bridgePath, 'utf8'), ctx, { filename: 'tmCalendar.sys.mjs' });
   const api = new ctx.tmCalendar().getAPI({}).tmCalendar;
-  return { api, getItemsCalls, modifications, deletions, calendar, ctx };
+  return { api, getItemsCalls, modifications, deletions, notices, calendar, ctx };
 }

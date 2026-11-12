@@ -157,42 +157,42 @@ function getIcsService() {
   return calService("icsService");
 }
 
-// -------- Provider detection & invite policy --------
-function isExchangeLike(calendar) {
-  const t = String(calendar?.type || "").toLowerCase();
-  // Extend list if your connector reports a different type string
-  return /^(exchangecalendar|ews|owl|m365|graph)$/.test(t);
+// -------- Guest notification --------
+// Guests are always told of a write to an event they are on: what Thunderbird's
+// own event dialog does with "Notify attendees" ticked, through the same entry
+// point its transactions use (CalTransactionManager -> cal.itip.checkAndSend).
+// X-MOZ-SEND-INVITATIONS is the flag CalItipMessageSender reads before it
+// builds any REQUEST or CANCEL; checkAndSend then leaves the message to a
+// calendar that schedules itself (calISchedulingSupport.canNotify: CalDAV
+// server scheduling, Exchange/Graph providers) and otherwise sends it through
+// the calendar's iMIP transport. AUTO: the chat's confirmation card is the
+// user's yes, so Thunderbird does not ask a second time.
+function hasGuests(item) {
+  try { return !!item?.getAttendees && item.getAttendees().length > 0; } catch { return false; }
 }
 
-function isGoogleCalDAV(calendar) {
-  const t = String(calendar?.type || "").toLowerCase();
-  const u = String(calendar?.uri?.spec || "").toLowerCase();
-  // Matches Google CalDAV endpoints seen in the wild
-  return t === "caldav" &&
-    /(google\.com|googleapis\.com|apidata\.googleusercontent\.com)/.test(u);
+// Marks the item about to be written so its guests are told: set before the
+// write, on the item written, as the event dialog does. An item without
+// guests before or after the write is left alone.
+function markGuestsNotified(item, oldItem = null) {
+  if (!hasGuests(item) && !hasGuests(oldItem)) return;
+  item.setProperty("X-MOZ-SEND-INVITATIONS", "TRUE");
 }
 
-/**
- * Returns "server" (provider-side scheduling) or "mail" (TB iMIP).
- * Default policy:
- *   - Exchange-like: "server"
- *   - Google CalDAV: "server" (can be overridden per-calendar)
- *   - Other providers: "mail"
- *
- * Per-calendar override (string): calendar.getProperty("tabmail.google_invites")
- *   - "server" => rely on Google notifications / provider
- *   - "mail"   => send iMIP via Thunderbird
- */
-function getInvitePolicy(calendar) {
+// Tells the guests of one write. opType is "ADD", "MODIFY" or "DELETE"
+// (calIOperationListener). Returns { ok: true } or { ok: false, error }; the
+// write itself has already happened.
+function notifyGuests(opType, item, oldItem = null) {
+  if (!hasGuests(item) && !hasGuests(oldItem)) return null;
   try {
-    if (isExchangeLike(calendar)) return "server";
-    if (isGoogleCalDAV(calendar)) {
-      const override = calendar?.getProperty?.("tabmail.google_invites");
-      if (override === "mail" || override === "server") return override;
-      return "server"; // DEFAULT for Google as it seems to work?
-    }
-  } catch {}
-  return "mail"; // default for everything else
+    const Ci = globalThis.Ci;
+    getCalNamespace().itip.checkAndSend(Ci.calIOperationListener[opType], item, oldItem, { responseMode: Ci.calIItipItem.AUTO });
+    tmCalendarDebugLog(`[tmCalendar] notifyGuests: ${opType} handed to Thunderbird scheduling`);
+    return { ok: true };
+  } catch (e) {
+    console.error(`[tmCalendar] notifyGuests: ${opType} failed:`, e);
+    return { ok: false, error: String(e) };
+  }
 }
 
 // Optional fallback for UID matching without ICS parsing
@@ -2055,135 +2055,6 @@ function wireEventEditorCallbacks(onAccept, onCancel) {
   return false;
 }
 
-// UNREACHABLE WIP: every call site is commented out ("does not work yet and
-// fails to find iMIP transport"). Two of its XPCOM lookups are dead in current
-// Thunderbird and are deliberately left as-is rather than half-fixed here:
-//   @mozilla.org/calendar/itip-service;1    contract AND the calIItipService
-//                                           interface are gone; the
-//                                           calIItipItem construction below is
-//                                           already the live path
-//   @mozilla.org/calendar/itip-transport;1  never registered bare — Thunderbird
-//                                           only registers the
-//                                           "?type=email" form, which is why
-//                                           this function could never resolve a
-//                                           transport
-// Reviving iMIP send means starting from those two facts.
-async function sendCalendarInvitations(event, calendar, method = "REQUEST", organizerEmail = null) {
-  try {
-    const Ci = globalThis.Ci, Cc = globalThis.Cc;
-
-    // 0) Make a mutable working copy
-    let work = event?.clone ? event.clone() : event;
-    if (!work) return { ok: false, error: "no event/clone to send" };
-
-    // 1) Gather attendees
-    const attendees = work.getAttendees ? work.getAttendees() : [];
-    if (!attendees.length) return { ok: true, message: "no attendees to invite" };
-
-    // 2) Ensure ORGANIZER is set on the clone (optional but nice)
-    if (!work.organizer && organizerEmail) {
-      const org = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-      org.id = organizerEmail.startsWith("mailto:") ? organizerEmail : `mailto:${organizerEmail}`;
-      try { org.commonName = organizerEmail; } catch {}
-      try { org.isOrganizer = true; } catch {}
-      try { work.organizer = org; } catch {}
-    }
-
-    // 3) Build ICS with METHOD using the serializer
-    const icsService = getIcsService();
-    const serializer = Cc["@mozilla.org/calendar/ics-serializer;1"].createInstance(Ci.calIIcsSerializer);
-    serializer.addItems([work]);
-
-    const methodProp = icsService.createIcalProperty("METHOD");
-    methodProp.value = method;
-    serializer.addProperty(methodProp);
-
-    const ics = serializer.serializeToString();
-
-    // 4) Create a real calIItipItem via the service (preferred), with fallback.
-    let itip;
-    try {
-      const itipSvc = Cc["@mozilla.org/calendar/itip-service;1"].getService(Ci.calIItipService);
-      itip = itipSvc.createItipItem(ics, null);
-    } catch (_) {}
-    if (!itip) {
-      itip = Cc["@mozilla.org/calendar/itip-item;1"].createInstance(Ci.calIItipItem);
-      itip.init(ics);
-    }
-    // Sanity check: ensure we really have the interface (and its native method)
-    try { itip.QueryInterface(Ci.calIItipItem); } catch (e) {
-      return { ok: false, error: "failed to construct calIItipItem" };
-    }
-    if (typeof itip.getItemList !== "function") {
-      return { ok: false, error: "calIItipItem missing getItemList()" };
-    }
-
-    // 5) Hint flags (safe assignments that exist on the interface)
-    try { itip.isSend = true; } catch {}
-    try { itip.targetCalendar = calendar; } catch {}
-
-    // Debug logging to verify the iTIP item is properly constructed
-    tmCalendarDebugLog("[tmCalendar] iTIP QI ok?", (() => { try { itip.QueryInterface(Ci.calIItipItem); return true; } catch { return false; } })());
-    tmCalendarDebugLog("[tmCalendar] has getItemList?", typeof itip.getItemList === "function");
-    try {
-      const list = itip.getItemList();
-      tmCalendarDebugLog("[tmCalendar] itemList size:", Array.isArray(list) ? list.length : "(not array)");
-    } catch (e) {
-      console.warn("[tmCalendar] getItemList threw:", e);
-    }
-
-    // 6) Resolve identity & FORCE the global mail (iMIP) transport.
-    let identity = null;
-    try { identity = calendar?.getProperty?.("imip.identity") || null; } catch {}
-    let transport = null;
-    try {
-      transport = Cc["@mozilla.org/calendar/itip-transport;1"]
-        .getService(Ci.calIItipTransport);
-      tmCalendarDebugLog("[tmCalendar] Using MAIL iTIP transport");
-    } catch (e) {
-      console.error("[tmCalendar] No mail transport available:", e);
-      return { ok: false, error: "no mail transport available" };
-    }
-
-    // 7) Recipients (exclude organizer)
-    const recipients = attendees.filter(a => !a.isOrganizer).map(a => a.id.replace(/^mailto:/i, ""));
-
-    if (!recipients.length) return { ok: true, message: "no recipients to invite" };
-
-    // 8) Send
-    return await new Promise((resolve) => {
-      const cb = {
-        QueryInterface: ChromeUtils.generateQI([Ci.calIItipTransportCallback]),
-        onResult: (_op, rc, detail) => {
-          if (Components.isSuccessCode(rc)) {
-            tmCalendarDebugLog(`[tmCalendar] sendCalendarInvitations: sent ${method} to ${recipients.length} recipients`);
-            resolve({ ok: true, recipients: recipients.length, method });
-          } else {
-            console.error(`[tmCalendar] sendCalendarInvitations: failed to send ${method}:`, detail || rc);
-            resolve({ ok: false, error: detail || String(rc) });
-          }
-        },
-      };
-      try {
-        transport.sendItems(
-          itip,
-          recipients,
-          work.title || "Calendar Invitation",
-          method,
-          identity || null,
-          cb
-        );
-      } catch (e) {
-        console.error("[tmCalendar] sendCalendarInvitations: transport.sendItems failed:", e);
-        resolve({ ok: false, error: String(e) });
-      }
-    });
-  } catch (e) {
-    console.error("[tmCalendar] sendCalendarInvitations failed (outer):", e);
-    return { ok: false, error: String(e) };
-  }
-}
-
 function pickEditTarget(item, details) {
   // occurrence if it has a recurrenceId
   const isOccurrence = !!item.recurrenceId;
@@ -2363,23 +2234,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             return { ok: false, error: String(e) };
           }
         },
-        async setGoogleInvitePolicy(calendarId, policy) {
-          // policy: "mail" | "server"
-          try {
-            const Ci = globalThis.Ci, Cc = globalThis.Cc;
-            const mgr = getCalendarManager();
-            if (!mgr) return { ok: false, error: "calendar manager unavailable" };
-            const cal = Array.from(mgr.getCalendars({}))
-              .find(c => String(c.id) === String(calendarId));
-            if (!cal) return { ok: false, error: "calendar not found" };
-            if (!isGoogleCalDAV(cal)) return { ok: false, error: "not a Google CalDAV calendar" };
-            if (policy !== "mail" && policy !== "server") return { ok: false, error: "invalid policy" };
-            try { cal.setProperty?.("tabmail.google_invites", policy); } catch {}
-            return { ok: true, policy };
-          } catch (e) {
-            return { ok: false, error: String(e) };
-          }
-        },
         async deleteCalendarEvent(details) {
           try {
             const mgr = getCalendarManager();
@@ -2488,31 +2342,25 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (d.check_only) return { ok: true, scope };
 
             try {
-              // Send cancellation invitations before deleting (if requested)
+              // The guests are told: a CANCEL for a deleted event, or the
+              // series with the occurrences removed (Thunderbird turns an
+              // EXDATE-only change into a CANCEL of that occurrence).
               let invitationResult = null;
-              if (details.send_invitations && targetEvent) {
-                const attendees = targetEvent.getAttendees ? targetEvent.getAttendees() : [];
-                if (attendees.length > 0) {
-                  const policy = getInvitePolicy(targetCalendar);
-                  tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: invite policy=${policy}`);
-                  if (policy === "mail") {
-                    tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: iMIP cancellation invitations not implemented yet");
-                    invitationResult = { ok: false, error: "Email cancellation invitations via Thunderbird are not implemented yet. Please contact the developer or wait for future releases. For now, you can delete events without sending cancellation notices." };
-                    // OLD CODE that was WIP -- does not work yet and fails to find iMIP transport
-                    // invitationResult = await sendCalendarInvitations(targetEvent, targetCalendar, "CANCEL", details.organizer_email);
-                  } else {
-                    tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: relying on provider/server notifications; no cancellation emails sent");
-                    invitationResult = { ok: true, message: "provider/server notifications assumed" };
-                  }
-                }
-              }
-              
               if (replacement) {
                 tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: deleting occurrences (${scope}) of:`, eventId);
+                markGuestsNotified(replacement, series);
                 await targetCalendar.modifyItem(replacement, series);
+                invitationResult = notifyGuests("MODIFY", replacement, series);
               } else {
                 tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: deleting event:", eventId);
                 await targetCalendar.deleteItem(targetEvent);
+                // The stored item is immutable; the CANCEL is built from a copy
+                // that carries the notify flag.
+                if (hasGuests(targetEvent)) {
+                  const cancelled = targetEvent.clone();
+                  markGuestsNotified(cancelled);
+                  invitationResult = notifyGuests("DELETE", cancelled);
+                }
               }
               tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: event deleted successfully");
               // Return the item's own id
@@ -2536,13 +2384,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const Ci = globalThis.Ci; const Cc = globalThis.Cc;
             const mgr = getCalendarManager();
             if (!mgr) return { ok: false, error: "calendar manager unavailable" };
-            
-            // Validate attendees when invitations are requested
-            const sendInvites = !!details.send_invitations;
-            const attendees = Array.isArray(details.attendees) ? details.attendees : [];
-            if (sendInvites && attendees.length === 0) {
-              return { ok: false, error: "send_invitations=true requires at least one attendee" };
-            }
             
             const cal = (() => {
               const all = Array.from(mgr.getCalendars({}));
@@ -2603,8 +2444,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            // Set organizer BEFORE adding to calendar (to avoid immutability issues)
-            if (details.send_invitations && details.organizer_email) {
+            // Set organizer BEFORE adding to calendar (to avoid immutability issues).
+            // An event with guests has one: the invitations come from them.
+            if (hasGuests(ev) && details.organizer_email) {
               try {
                 const org = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
                 org.id = details.organizer_email.startsWith("mailto:") ? details.organizer_email : `mailto:${details.organizer_email}`;
@@ -2622,7 +2464,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] createCalendarEvent: RRULE=", recRes.value); } catch (_) {}
             }
 
-            // Persist (returns the created item)
+            // Persist (returns the created item); its guests are invited.
+            markGuestsNotified(ev);
             const created = await cal.addItem(ev);
             tmCalendarDebugLog("[tmCalendar] createCalendarEvent: created event with id:", created?.id);
             try { const transpSaved = String(created?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: initial TRANSP on created:", transpSaved || "(empty)"); } catch (_) {}
@@ -2641,20 +2484,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               } catch (ve) { console.warn("[tmCalendar] createCalendarEvent: verify fetch failed:", ve); }
             } catch (_) {}
             
-            let invitationResult = null;
-            if (details.send_invitations && (details.attendees?.length > 0)) {
-              const policy = getInvitePolicy(cal);
-              tmCalendarDebugLog(`[tmCalendar] createCalendarEvent: invite policy=${policy}`);
-              if (policy === "mail") {
-                tmCalendarDebugLog("[tmCalendar] createCalendarEvent: iMIP invitations not implemented yet");
-                invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet. Please contact the developer or wait for future releases. For now, you can create events without sending invitations." };
-                // OLD CODE that was WIP -- does not work yet and fails to find iMIP transport
-                // invitationResult = await sendCalendarInvitations(created || ev, cal, "REQUEST", details.organizer_email);
-              } else {
-                tmCalendarDebugLog("[tmCalendar] createCalendarEvent: relying on provider/server notifications; no iMIP sent");
-                invitationResult = { ok: true, message: "provider/server notifications assumed" };
-              }
-            }
+            const invitationResult = notifyGuests("ADD", created || ev);
             
             return { 
               ok: true, 
@@ -2696,7 +2526,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
               const splitPatch = {};
               for (const k of ["title", "location", "description", "transparency",
-                               "add_attendees", "remove_attendees", "send_invitations", "recurrence",
+                               "add_attendees", "remove_attendees", "recurrence",
                                "start_iso", "end_iso", "all_day", "exdates_add"]) {
                 if (details[k] !== undefined) splitPatch[k] = details[k];
               }
@@ -2876,10 +2706,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               if (scope === "series") applyGuestChangeToSeries(clone, guestChange);
               else applyGuestChange(clone, guestChange);
             }
-            // Invitations need someone to invite, once the change is applied.
-            if (details.send_invitations && clone.getAttendees().length === 0) {
-              return { ok: false, error: "send_invitations=true requires at least one attendee" };
-            }
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2970,8 +2796,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // new start resets changed occurrences.
             const changes = !!times || typeof patch.title === "string" || typeof patch.location === "string"
               || typeof patch.transparency === "string" || typeof patch.description === "string" || !!patch.description_html
-              || !!guestChange || exdates.rids.length > 0 || (!!patch.recurrence && typeof patch.recurrence === "object")
-              || details.send_invitations === true;
+              || !!guestChange || exdates.rids.length > 0 || (!!patch.recurrence && typeof patch.recurrence === "object");
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
 
             // EXDATE additions on an edit of one occurrence go to its series.
@@ -2983,7 +2808,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 try { addExdateToItem(parent, rid); added += 1; } catch (xe) { console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe); }
               }
               tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
+              markGuestsNotified(parent, parentOld);
               await parent.calendar.modifyItem(parent, parentOld);
+              // The guests are told of the removed occurrences (a CANCEL).
+              notifyGuests("MODIFY", parent, parentOld);
             }
 
             // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
@@ -2996,7 +2824,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               "ALT.len=",  (clone.getProperty?.("X-ALT-DESC")||"").length,
               "X-MOZ-HTML=", clone.getProperty?.("X-MOZ-HTML") || "");
             
-            // Always modify using the same calendar as BASE
+            // Always modify using the same calendar as BASE; the guests are told.
+            markGuestsNotified(clone, base);
             const modified = await base.calendar.modifyItem(clone, base);
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modifyItem completed");
             tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
@@ -3046,23 +2875,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               } catch (ve) { console.warn("[tmCalendar] modifyCalendarEvent: verify fetch failed:", ve); }
             } catch (_) {}
             
-            let invitationResult = null;
-            if (details.send_invitations && modified) {
-              const attendees = modified.getAttendees ? modified.getAttendees() : [];
-              if (attendees.length > 0) {
-                const policy = getInvitePolicy(cal);
-                tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: invite policy=${policy}`);
-                if (policy === "mail") {
-                  tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: iMIP invitations not implemented yet");
-                  invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet. Please contact the developer or wait for future releases. For now, you can modify events without sending invitations." };
-                  // OLD CODE that was WIP -- does not work yet and fails to find iMIP transport
-                  // invitationResult = await sendCalendarInvitations(created || ev, cal, "REQUEST", details.organizer_email);
-                } else {
-                  tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: relying on provider/server notifications; no iMIP sent");
-                  invitationResult = { ok: true, message: "provider/server notifications assumed" };
-                }
-              }
-            }
+            const invitationResult = notifyGuests("MODIFY", clone, base);
             
             // Return the item's own event_id. An occurrence edit resolves with
             // the PARENT series (CalMemoryCalendar.modifyItem), so the title is
@@ -3094,8 +2907,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         // each rule that carries on (UNTIL kept, COUNT reduced to the occurrences
         // still to come) and the dates and changed occurrences from the split on,
         // with the caller's `patch` applied on top. Together the two parts make
-        // the same occurrences as the series did. Invitations (if
-        // send_invitations=true) fire exactly once, on the new series.
+        // the same occurrences as the series did. The guests are told of both
+        // writes: the earlier part's shortened rule and the new series.
         //
         // Both parts are built before anything is written, and a split that
         // cannot keep the series is refused then. If the new-series creation
@@ -3108,7 +2921,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         //   first; for a changed occurrence that is its own start, not its
         //   RECURRENCE-ID), patch (object with fields to apply to the new
         //   series: title, location, description, transparency, add_attendees,
-        //   remove_attendees, send_invitations, recurrence, start_iso, end_iso, all_day,
+        //   remove_attendees, recurrence, start_iso, end_iso, all_day,
         //   exdates_add), timezone? (for start_iso and end_iso)
         // The new series keeps the series' organizer: an edit names none (the
         // edit tool fills organizer_email with the calendar's own address, and
@@ -3124,7 +2937,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const calendarIdHint = String(details.calendar_id || "");
             const splitIso = String(details.recurrence_id || "");
             const patch = (details && details.patch && typeof details.patch === "object") ? details.patch : {};
-            const sendInvites = !!patch.send_invitations;
             const tzOverride = typeof details.timezone === "string" && details.timezone ? details.timezone : null;
 
             if (!eventId) return { ok: false, error: "event_id is required" };
@@ -3181,8 +2993,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // occurrence's RECURRENCE-ID read in its own zone (`splitDt`), so the
             // following part keeps the series' zone, in which its rule expands.
             // Nothing is written yet.
-            // Note: we don't send any "series-ended" notification here — only the
-            // new series triggers an invitation (controlled by patch.send_invitations).
+            // The guests are told of the earlier part's shortened rule and of
+            // the new series (steps 8 and 10).
             const earlier = earlierPartBefore(master, splitRid);
             if (earlier.error) return { ok: false, error: earlier.error };
             const { part: cappedClone, splitDt, untilValue, plans, fromSplitOn } = earlier;
@@ -3308,10 +3120,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
             const times = resolved.length !== null ? seriesEditTimes(newEv, resolved) : undefined;
-            // Invitations need someone to invite, once the change is applied.
-            if (sendInvites && newEv.getAttendees().length === 0) {
-              return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
-            }
 
             // A new rule for the following part (written in its start's value
             // type, after the time change); `{}` stops it repeating.
@@ -3382,13 +3190,13 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // occurrences.
             const changes = !!times || (typeof patch.title === "string" && !!patch.title) || newRule
               || exdates.rids.length > 0 || !!guestChange || typeof patch.location === "string"
-              || typeof patch.description === "string" || typeof patch.transparency === "string"
-              || patch.send_invitations === true;
+              || typeof patch.description === "string" || typeof patch.transparency === "string";
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
 
             // 8. Write the earlier part.
             let cappedMaster;
             try {
+              markGuestsNotified(cappedClone, master);
               cappedMaster = await cal.modifyItem(cappedClone, master);
               tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
             } catch (e) {
@@ -3398,6 +3206,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // 9. Persist the new series.
             let created;
             try {
+              markGuestsNotified(newEv);
               created = await cal.addItem(newEv);
               tmCalendarDebugLog("[tmCalendar] splitRecurringEvent: created new series with id:", created?.id);
             } catch (e) {
@@ -3412,17 +3221,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               return { ok: false, error: `failed to create new series: ${e}` };
             }
 
-            // 10. Invitations — fire exactly once, on the new series only.
-            let invitationResult = null;
-            if (sendInvites && newEv.getAttendees().length > 0) {
-              const policy = getInvitePolicy(cal);
-              tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: invite policy=${policy}`);
-              if (policy === "mail") {
-                invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet." };
-              } else {
-                invitationResult = { ok: true, message: "provider/server notifications assumed (new series only)" };
-              }
-            }
+            // 10. The guests are told: the earlier part's shortened rule, then
+            // the new series. A failure of either is reported.
+            const notices = [notifyGuests("MODIFY", cappedClone, master), notifyGuests("ADD", created || newEv)].filter(Boolean);
+            const invitationResult = notices.find((n) => !n.ok) || notices[0] || null;
 
             return {
               ok: true,

@@ -384,7 +384,7 @@ describe('calendar_event_edit', () => {
     it('the bridge is asked to check the edit, writing nothing, and its refusal fails the call', async () => {
       const refusal = 'this is an all-day event, and the edit gives a time of day without all_day. Ask the user';
       browser.tmCalendar.modifyCalendarEvent.mockImplementation(async (d) => (d.check_only ? { ok: false, error: refusal } : { ok: true }));
-      const sess = await runEdit({ event_id: 'evt1', calendar_id: 'cal1', start_iso: '2099-10-20T15:00:00', add_attendees: [{ email: 'a@example.com' }], send_invitations: true }, 'pid-chk-1');
+      const sess = await runEdit({ event_id: 'evt1', calendar_id: 'cal1', start_iso: '2099-10-20T15:00:00', add_attendees: [{ email: 'a@example.com' }] }, 'pid-chk-1');
       expect(sess.failReason).toBe(refusal);
       expect(ctx.state).toBe('exec_fail');
       expect(sess.editEventArgs).toBeUndefined();
@@ -393,7 +393,7 @@ describe('calendar_event_edit', () => {
       expect(calls[0]).toMatchObject({ event_id: 'evt1', calendar_id: 'cal1', start_iso: '2099-10-20T15:00:00', check_only: true });
       // The whole edit is checked, so a refusal that depends on the guests
       // reads the guests the edit names.
-      expect(calls[0]).toMatchObject({ add_attendees: [{ email: 'a@example.com' }], send_invitations: true });
+      expect(calls[0]).toMatchObject({ add_attendees: [{ email: 'a@example.com' }] });
     });
 
     it('an edit the check passes reaches the card, and an edit giving no times is checked too', async () => {
@@ -410,9 +410,9 @@ describe('calendar_event_edit', () => {
     });
 
     it('the check\'s refusal of an edit giving no times fails the call before the card', async () => {
-      const refusal = 'send_invitations=true requires at least one attendee';
+      const refusal = 'an all-day event\'s end_iso is the day after its last day';
       browser.tmCalendar.modifyCalendarEvent.mockImplementation(async (d) => (d.check_only ? { ok: false, error: refusal } : { ok: true }));
-      const sess = await runEdit({ event_id: 'evt1', title: 'Renamed', send_invitations: true }, 'pid-chk-5');
+      const sess = await runEdit({ event_id: 'evt1', title: 'Renamed' }, 'pid-chk-5');
       expect(sess.failReason).toBe(refusal);
       expect(ctx.state).toBe('exec_fail');
       expect(sess.editEventArgs).toBeUndefined();
