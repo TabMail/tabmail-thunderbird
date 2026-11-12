@@ -192,6 +192,19 @@ describe('resolveEventDetails', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('passes an all-day event\'s flag and day digits through, and blanks them for a timed event', async () => {
+    browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({
+      ok: true, title: 'Holiday', start: Date.UTC(2099, 10, 12), end: Date.UTC(2099, 10, 13),
+      isAllDay: true, startDay: '2099-11-12', endDay: '2099-11-13',
+    });
+    expect(await resolveEventDetails('event-ad')).toMatchObject({ allDay: true, startDay: '2099-11-12', endDay: '2099-11-13' });
+    browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({
+      ok: true, title: 'Sync', start: Date.UTC(2099, 10, 12, 17), end: Date.UTC(2099, 10, 12, 18),
+      isAllDay: false, startDay: '', endDay: '',
+    });
+    expect(await resolveEventDetails('event-t')).toMatchObject({ allDay: false, startDay: '', endDay: '' });
+  });
+
   it('uses (No title) when title is empty', async () => {
     browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({
       ok: true,

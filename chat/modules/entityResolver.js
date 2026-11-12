@@ -70,7 +70,12 @@ export async function resolveContactDetails(contactId) {
  * Resolve calendar event details from an event ID
  * @param {string} eventId - The event ID (not compound)
  * `start` and `end` are epoch milliseconds, passed through from tmCalendar ("" when the event has none).
- * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
+ * An all-day event (`allDay`) is a date with no zone of its own: its `start` is midnight of its day in
+ * whatever zone the DATE was stored with (UTC midnight for a floating or UTC date), which can name another
+ * day in the user's zone, so its days are `startDay`/`endDay` ("YYYY-MM-DD", the end exclusive),
+ * passed through from tmCalendar ("" for a timed event). `startDate` (the @-mention list's date, in the
+ * user's locale) names an all-day event's `startDay` and a timed event's local day.
+ * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", allDay: boolean, startDay: string, endDay: string, attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
  */
 export async function resolveEventDetails(eventId) {
   try {
@@ -86,7 +91,17 @@ export async function resolveEventDetails(eventId) {
     }
     
     const title = event.title || "";
-    const startDate = event.start ? new Date(event.start).toLocaleDateString() : "";
+    // `startDate` is what the @-mention list shows, in the user's locale. An all-day event's
+    // day comes from its date digits (`startDay`), never its instant: UTC midnight read in the
+    // user's zone names the previous day west of UTC. A timed event's day is its local day.
+    let shownStart = event.start ? new Date(event.start) : null;
+    let shownZone;
+    if (event.isAllDay) {
+      const [y, m, d] = event.startDay.split("-").map(Number);
+      shownStart = new Date(Date.UTC(y, m - 1, d));
+      shownZone = "UTC";
+    }
+    const startDate = shownStart ? shownStart.toLocaleDateString(undefined, { timeZone: shownZone }) : "";
     const location = event.location || "";
     
     return {
@@ -96,6 +111,9 @@ export async function resolveEventDetails(eventId) {
       // Full details for tooltip rendering
       start: event.start || "",
       end: event.end || "",
+      allDay: !!event.isAllDay,
+      startDay: event.startDay || "",
+      endDay: event.endDay || "",
       attendees: event.attendees || 0,
       attendeeList: event.attendeeList || [],
       organizer: event.organizer || "",

@@ -949,6 +949,20 @@ const utcDigits = (dt) =>
   `${String(dt.getUTCFullYear()).padStart(4, "0")}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 
 /**
+ * The last day of an all-day event (`YYYY-MM-DD`): the day before its end,
+ * which is exclusive (RFC 5545 DTEND, the day after the last day), and never a
+ * day before its start (a DTEND equal to DTSTART is one day), as Google
+ * Calendar shows it. Zone-free day arithmetic over the digits (utcDay).
+ * @param {string} endDay - the exclusive end, "YYYY-MM-DD"
+ * @param {string} startDay - the start, "YYYY-MM-DD"
+ * @returns {string}
+ */
+export function allDayLastDay(endDay, startDay) {
+  const last = utcDigits(utcDay(endDay, -1));
+  return last < startDay ? startDay : last;
+}
+
+/**
  * A start or end as a calendar confirmation card prints it.
  *
  * An all-day value is a DATE with no zone (an all-day `naiveIso` is the date at
@@ -967,11 +981,7 @@ const utcDigits = (dt) =>
 export function formatCardTime(naiveIso, { allDay = false, endAfter = null, timezone } = {}) {
   if (!allDay) return formatNaiveIsoInTimezone(naiveIso, timezone);
   let day = String(naiveIso).slice(0, 10);
-  if (endAfter) {
-    const start = String(endAfter).slice(0, 10);
-    const last = utcDigits(utcDay(day, -1));
-    day = last < start ? start : last;
-  }
+  if (endAfter) day = allDayLastDay(day, String(endAfter).slice(0, 10));
   return `${CARD_WEEKDAYS[utcDay(day).getUTCDay()]} ${day.replaceAll("-", "/")}`;
 }
 
