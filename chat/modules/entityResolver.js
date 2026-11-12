@@ -72,7 +72,8 @@ export async function resolveContactDetails(contactId) {
  * `start` and `end` are epoch milliseconds, passed through from tmCalendar ("" when the event has none).
  * An all-day event (`allDay`) is a date with no zone: its `start` is UTC midnight of its day, which names
  * the previous day west of UTC, so its days are `startDay`/`endDay` ("YYYY-MM-DD", the end exclusive),
- * passed through from tmCalendar ("" for a timed event).
+ * passed through from tmCalendar ("" for a timed event). `startDate` (the @-mention list's date, in the
+ * user's locale) names an all-day event's `startDay` and a timed event's local day.
  * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", allDay: boolean, startDay: string, endDay: string, attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
  */
 export async function resolveEventDetails(eventId) {
@@ -89,7 +90,17 @@ export async function resolveEventDetails(eventId) {
     }
     
     const title = event.title || "";
-    const startDate = event.start ? new Date(event.start).toLocaleDateString() : "";
+    // `startDate` is what the @-mention list shows, in the user's locale. An all-day event's
+    // day comes from its date digits (`startDay`), never its instant: UTC midnight read in the
+    // user's zone names the previous day west of UTC. A timed event's day is its local day.
+    let shownStart = event.start ? new Date(event.start) : null;
+    let shownZone;
+    if (event.isAllDay) {
+      const [y, m, d] = event.startDay.split("-").map(Number);
+      shownStart = new Date(Date.UTC(y, m - 1, d));
+      shownZone = "UTC";
+    }
+    const startDate = shownStart ? shownStart.toLocaleDateString(undefined, { timeZone: shownZone }) : "";
     const location = event.location || "";
     
     return {

@@ -143,6 +143,15 @@ UNTIL's day, the rewritten one keeps it)
   the kind from the event read. Pinned by `test/calendarCardAllDayDates.test.js` (Thunderbird's own
   dates, west and east of UTC, plus a four-year sweep from today over every month end, year end and
   leap day against a local-noon oracle).
+- The chat's event links and @-mention list are consumers too (#407). `resolveEventDetails`
+  (`chat/modules/entityResolver.js`) passes `isAllDay`/`startDay`/`endDay` through as `allDay`/`startDay`/`endDay`.
+  The event-link tooltip (`markdown.js` `showTooltip`) prints an all-day event's days through
+  `formatGregorianDay` (last day by `allDayLastDay`, shared with `formatCardTime`), and the @-mention
+  list's `startDate` is built from `startDay` (UTC midnight of the digits, formatted with
+  `timeZone: "UTC"` in the user's locale), never from `start`. Before, both named the previous day
+  west of UTC, and typing the event's own date did not find it in the list. Pinned by
+  `test/eventLinkAllDayTooltip.test.js` (the real bridge, the real markdown and mentionAutocomplete
+  modules, three zones west of UTC and Auckland).
 
 ## The second filter that dropped the item
 
