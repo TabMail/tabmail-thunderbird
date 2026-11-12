@@ -29,7 +29,7 @@ it('keeps a fresh background task separate from saved chat IDs and resolves its 
   const stubs = {
     'agent/modules/utils.js': 'export function log() {}; export const normalizeUnicode = s => s; export async function resolveUniqueMessageKey(id){return id === "synthetic-task-message" ? {weID:42} : null}',
     'chat/modules/entityResolver.js': 'export async function resolveContactDetails(){}; export async function resolveEventDetails(){}',
-    'chat/modules/helpers.js': 'export function getGenericTimezoneAbbr(){return "UTC"}',
+    'chat/modules/helpers.js': 'export function getGenericTimezoneAbbr(){return "UTC"}; export function allDayLastDay(){}',
     'agent/modules/idbStorage.js': 'export async function get(){}; export async function set(){}; export async function remove(){}; export async function getAllKeys(){return []}',
     'agent/modules/taskScheduler.js': 'export async function getExecutionState(){return {}}; export async function consumeMissed(){}',
     'agent/modules/promptGenerator.js': 'export async function getUserKBPrompt(){return ""}',

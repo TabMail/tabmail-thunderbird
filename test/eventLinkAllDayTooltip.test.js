@@ -100,6 +100,12 @@ describe.each(ZONES)('with the process zone %s', (zone) => {
     expect(when).toBe('Thursday, Nov 12 -- Saturday, Nov 14\nAll day');
   });
 
+  it('an all-day event with no end (a DATE start without DTEND) is that one day', async () => {
+    const { link, when } = await tooltipFor(fakeEvent({ id: 'ne', title: 'Holiday', startDate: fakeDate(DAY), endDate: null }));
+    expect(JSON.parse(link.getAttribute('data-tm-tooltip'))).toMatchObject({ allDay: true, startDay: DAY, endDay: '' });
+    expect(when).toBe('Thursday, Nov 12\nAll day');
+  });
+
   it('a timed event keeps its local day and times (unchanged)', async () => {
     const { when } = await tooltipFor(fakeEvent({ id: 't', title: 'Sync', startDate: fakeDateTime(DAY, 10), endDate: fakeDateTime(DAY, 11) }));
     const tz = getGenericTimezoneAbbr(new Date(2099, 10, 12, 10));

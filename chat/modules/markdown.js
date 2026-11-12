@@ -12,7 +12,8 @@
 
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 import { resolveContactDetails, resolveEventDetails } from "./entityResolver.js";
-import { getGenericTimezoneAbbr } from "./helpers.js";
+import { formatGregorianDay } from "../../agent/modules/gregorianDate.js";
+import { allDayLastDay, getGenericTimezoneAbbr } from "./helpers.js";
 
 // Module-local config (avoid magic numbers in logic)
 const MARKDOWN_RENDERER_CONFIG = {
@@ -593,10 +594,15 @@ export async function renderMarkdown(mdText) {
               const startTime = eventDetails.start || "Unknown start time";
               const endTime = eventDetails.end || "Unknown end time";
               
+              // An all-day event is a date with no zone: it carries its days, never an
+              // instant (its start is UTC midnight, the previous day west of UTC).
+              const when = eventDetails.allDay
+                ? { allDay: true, startDay: eventDetails.startDay, endDay: eventDetails.endDay }
+                : { startTime: startTime, endTime: endTime };
+
               tooltipData = {
                 title: displayText,
-                startTime: startTime,
-                endTime: endTime,
+                ...when,
                 attendees: eventDetails.attendees,
                 attendeeList: eventDetails.attendeeList,
                 organizer: eventDetails.organizer,
@@ -1395,7 +1401,17 @@ function showTooltip(link, data, type, isClickTooltip = false) {
     
     // Format the date/time in the user-friendly format
     let formattedDateTime = "Unknown date/time";
-    if (data.startTime && data.endTime && data.startTime !== "Unknown start time" && data.endTime !== "Unknown end time") {
+    if (data.allDay) {
+      // An all-day event: its days as dates, never through an instant or a zone.
+      // Format: "Thursday, Nov 12" (one day) or "Thursday, Nov 12 -- Saturday, Nov 14", then "All day".
+      // No end date (an RFC 5545 DATE start without DTEND) is one day.
+      const dayFields = { weekday: "long", month: "short", day: "numeric" };
+      const lastDay = data.endDay ? allDayLastDay(data.endDay, data.startDay) : data.startDay;
+      const firstStr = formatGregorianDay(data.startDay, dayFields);
+      const days = lastDay === data.startDay ? firstStr : `${firstStr} -- ${formatGregorianDay(lastDay, dayFields)}`;
+      formattedDateTime = `${days}\nAll day`;
+      log(`[TMDBG Markdown] All-day event tooltip: startDay=${data.startDay} endDay=${data.endDay} lastDay=${lastDay}`);
+    } else if (data.startTime && data.endTime && data.startTime !== "Unknown start time" && data.endTime !== "Unknown end time") {
       try {
         const startDate = new Date(data.startTime);
         const endDate = new Date(data.endTime);

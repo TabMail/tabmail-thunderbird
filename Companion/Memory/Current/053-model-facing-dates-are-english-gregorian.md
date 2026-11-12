@@ -55,6 +55,7 @@ sees for a timed occurrence, so a reply or an event it creates or moves could ca
   `timeZone` is overridden), so neither the user's zone nor the process zone can move it. Use it
   for every date-only value the assistant reads; the `timezone` the header reports is unchanged.
   The old `CHAT_SETTINGS.middayHourForDateHeader` is gone.
+  **The event-link tooltip (#407, 2026-11-12):** an all-day event's link carries `allDay`, `startDay` and `endDay` (from `getCalendarEventDetails` through `resolveEventDetails`), never its instant, and `showTooltip` prints `Thursday, Nov 12` (or `Thursday, Nov 12 -- Saturday, Nov 14`, last day by `allDayLastDay` in `helpers.js`, which `formatCardTime` shares) then `All day` through `formatGregorianDay`; before, west of UTC it named the previous day with a time (`test/eventLinkAllDayTooltip.test.js`, the real bridge in four zones). Timed events are unchanged.
   An unknown `timezone` argument (e.g. "NZDT") is refused once, where it enters
   `buildCalendarSummary`, before the range is resolved or the calendar queried: `calendar_search`
   and `calendar_read` return `Unknown time zone "NZDT". Use an IANA zone such as

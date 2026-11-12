@@ -70,7 +70,10 @@ export async function resolveContactDetails(contactId) {
  * Resolve calendar event details from an event ID
  * @param {string} eventId - The event ID (not compound)
  * `start` and `end` are epoch milliseconds, passed through from tmCalendar ("" when the event has none).
- * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
+ * An all-day event (`allDay`) is a date with no zone: its `start` is UTC midnight of its day, which names
+ * the previous day west of UTC, so its days are `startDay`/`endDay` ("YYYY-MM-DD", the end exclusive),
+ * passed through from tmCalendar ("" for a timed event).
+ * @returns {Promise<{title: string, startDate: string, location: string, start: number|"", end: number|"", allDay: boolean, startDay: string, endDay: string, attendees: number, attendeeList: Array, organizer: string, ok: boolean} | null>}
  */
 export async function resolveEventDetails(eventId) {
   try {
@@ -96,6 +99,9 @@ export async function resolveEventDetails(eventId) {
       // Full details for tooltip rendering
       start: event.start || "",
       end: event.end || "",
+      allDay: !!event.isAllDay,
+      startDay: event.startDay || "",
+      endDay: event.endDay || "",
       attendees: event.attendees || 0,
       attendeeList: event.attendeeList || [],
       organizer: event.organizer || "",
