@@ -302,3 +302,23 @@ describe('a create in another zone with no end lasts the default length as the c
     });
   }
 });
+
+// A create given a timezone but no start starts now, an instant (`Z`); its
+// default end is that instant plus the default length, never left out.
+describe('a create in another zone with no start and no end starts now and lasts the default length', () => {
+  it('the end is the default length after the start', async () => {
+    const minutes = CHAT_SETTINGS.createEventDefaultDurationMinutes;
+    const was = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    let sess;
+    try { sess = await runTool(createRun, { title: 'Sync', timezone: 'Europe/London' }); } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+    expect(sess.failReason).toBeUndefined();
+    const args = sess.createEventArgs;
+    expect(args.start_iso).toMatch(/Z$/);
+    expect(args.end_iso).toMatch(/Z$/);
+    expect(Date.parse(args.end_iso) - Date.parse(args.start_iso)).toBe(minutes * 60 * 1000);
+  });
+});
