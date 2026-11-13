@@ -112,7 +112,7 @@ same design (tabmail-ios #421).
     another time, which the edit then could not match). Thunderbird's own expansion decides which occurrence starts
     there: `recurrenceInfo.getOccurrences` over `OCCURRENCE_LOOKUP_REACH_MS` either side (every rule, RDATE and
     EXDATE, and a changed occurrence at its own time), matched by the start the read tools print (`shownNaiveIso`
-    on both sides; when either side is a DATE, `calIDateTime.compare`, by date). Until #387 (2026-11-13) a time was
+    on both sides; when either side is a DATE, `calIDateTime.compare`, by date). Until #387 (2026-11-12) a time was
     matched by instant, and the user's zone reads a printed time inside the hour the clocks repeat as its second
     pass, so an occurrence starting in the first pass (a series stored in UTC at 08:30Z is 01:30 PDT that night in
     Los Angeles) could not be named. A printed time two occurrences share (one in each pass, e.g. an hourly

@@ -10,7 +10,9 @@
 //   I1 an occurrence starting in the first pass (a series stored in UTC at
 //      08:30Z, which is 01:30 before the clocks go back) is named by the
 //      01:30 the tools print: it can be deleted on its own, excluded with
-//      exdates_add and edited on its own, and only it changes;
+//      exdates_add and edited on its own, and only it changes; a split or a
+//      following delete there cuts at its slot, and a whole-series time
+//      change named at it (the first occurrence) moves every occurrence;
 //   I2 an occurrence starting in the second pass (a series stored in the
 //      user's zone at 01:30) is still named by its printed 01:30;
 //   I3 a printed time that two occurrences share (one in each pass) names
@@ -98,6 +100,43 @@ describe('an occurrence in the first pass of the repeated hour is named by its p
     expect(run.failReason).toBeUndefined();
     const titles = occurrencesOf(stored(loaded), FROM, TO).map(({ occ }) => [digits(occ.recurrenceId), occ.title]);
     expect(titles).toEqual(titles.map(([slot]) => [slot, slot === FIRST_PASS_SLOT ? 'Retro' : 'Night shift']));
+  });
+});
+
+describe('a first-pass occurrence names the cut of a split, a following delete and a whole-series change (I1)', () => {
+  const firstPassSeries = () => seriesOf({ tzid: 'UTC', day: '2099-10-30', hour: 8, minute: 30, rule: 'FREQ=DAILY;COUNT=4' });
+  const FIRST_PASS_SLOT = `${NIGHT}T08:30:00`;
+
+  it('this_and_following with a new title: the parts together are the series, the first-pass slot and later in the new part', async () => {
+    const loaded = onCalendar([firstPassSeries()], LA);
+    const before = printed(stored(loaded));
+    const run = await edit({ event_id: 'ser', edit_scope: 'this_and_following', recurrence_id: PRINTED, title: 'Retro' });
+    expect(run.failReason).toBeUndefined();
+    const parts = loaded.calendar.items.map((item) => ({ title: item.title, shown: printed(item).map(([, shown]) => shown) }));
+    expect(parts).toHaveLength(2);
+    const byTitle = Object.fromEntries(parts.map((p) => [p.title, p.shown]));
+    const at = before.findIndex(([slot]) => slot === FIRST_PASS_SLOT);
+    expect(at).toBeGreaterThan(0);
+    expect(byTitle['Night shift']).toEqual(before.slice(0, at).map(([, shown]) => shown));
+    expect(byTitle.Retro).toEqual(before.slice(at).map(([, shown]) => shown));
+  });
+
+  it('a this_and_following delete removes exactly the first-pass slot and every later one', async () => {
+    const loaded = onCalendar([firstPassSeries()], LA);
+    const before = printed(stored(loaded));
+    const run = await remove({ event_id: 'ser', delete_scope: 'this_and_following', recurrence_id: PRINTED });
+    expect(run.failReason).toBeUndefined();
+    const at = before.findIndex(([slot]) => slot === FIRST_PASS_SLOT);
+    expect(at).toBeGreaterThan(0);
+    expect(printed(stored(loaded))).toEqual(before.slice(0, at));
+  });
+
+  it('a whole-series time change named at a first occurrence in the first pass moves every occurrence', async () => {
+    const loaded = onCalendar([seriesOf({ tzid: 'UTC', day: NIGHT, hour: 8, minute: 30, rule: 'FREQ=DAILY;COUNT=3' })], LA);
+    expect(printed(stored(loaded))[0]).toEqual([FIRST_PASS_SLOT, PRINTED]);
+    const run = await edit({ event_id: 'ser', edit_scope: 'all', recurrence_id: PRINTED, start_iso: `${NIGHT}T03:00:00`, end_iso: `${NIGHT}T04:00:00` });
+    expect(run.failReason).toBeUndefined();
+    expect(printed(stored(loaded)).map(([, shown]) => shown)).toEqual(['2099-11-01T03:00:00', '2099-11-02T03:00:00', '2099-11-03T03:00:00']);
   });
 });
 
