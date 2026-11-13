@@ -13,6 +13,7 @@ import { createNewAgentBubble } from "../chat.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso, toIsoNoMs } from "../modules/helpers.js";
+import { offsetMinutesForZoneAt } from "../modules/icsParser.js";
 import { recurrenceArgError } from "../modules/recurrence.js";
 
 function normalizeArgs(args = {}) {
@@ -82,6 +83,36 @@ async function getDefaultEventDurationMinutes() {
   }
 }
 
+const MINUTE_MS = 60 * 1000;
+// Wider than any clock change (an hour or two), narrower than the time
+// between two changes of one zone.
+const DAY_MS = 24 * 60 * MINUTE_MS;
+const NAIVE_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+
+// The instant a naive wall clock names in `zone`, read as Thunderbird's
+// calendar reads it when it places the start there (ical.js
+// Timezone.utcOffset): a time the clocks repeat is the second pass, a time
+// they skip takes the offset after the change. Zone offsets from
+// offsetMinutesForZoneAt, so the calendar math stays in-house.
+function instantOfWallClockInZone(naive, zone) {
+  const wallMs = Date.parse(`${naive}Z`);
+  const offsetMs = (utcMs) => offsetMinutesForZoneAt(zone, utcMs) * MINUTE_MS;
+  const after = offsetMs(wallMs + DAY_MS);
+  const before = offsetMs(wallMs - DAY_MS);
+  const holds = (offset) => offsetMs(wallMs - offset) === offset;
+  return wallMs - (holds(after) || !holds(before) ? after : before);
+}
+
+// The wall clock in `zone`, as "YYYY-MM-DDTHH:MM:SS", `minutes` after the
+// naive `start` on that zone's clock: the start's instant in the zone, plus
+// the minutes, read back on the same clock (#393). Never the computer's
+// clock, which is another zone's.
+function wallClockInZoneAfter(start, zone, minutes) {
+  const endUtcMs = instantOfWallClockInZone(start, zone) + minutes * MINUTE_MS;
+  const endWallMs = endUtcMs + offsetMinutesForZoneAt(zone, endUtcMs) * MINUTE_MS;
+  return new Date(endWallMs).toISOString().slice(0, 19);
+}
+
 async function ensureTimes(details) {
   let { start_iso, end_iso, all_day } = details;
   try {
@@ -91,8 +122,14 @@ async function ensureTimes(details) {
     }
     if (!end_iso && !all_day) {
       const minutes = await getDefaultEventDurationMinutes();
-      const end = new Date(new Date(start_iso).getTime() + minutes * 60 * 1000);
-      end_iso = toIsoNoMs(end);
+      // A start given with a timezone is that zone's wall clock (normalizeArgs),
+      // so its end is too; the current time (no start given) is an instant.
+      if (details.timezone && NAIVE_ISO.test(start_iso)) {
+        end_iso = wallClockInZoneAfter(start_iso, details.timezone, minutes);
+      } else {
+        end_iso = toIsoNoMs(new Date(new Date(start_iso).getTime() + minutes * MINUTE_MS));
+      }
+      log(`[TMDBG Tools] calendar_event_create: default end ${end_iso} (${minutes} min after ${start_iso}${details.timezone ? ` in ${details.timezone}` : ""})`);
     }
   } catch (_) {}
   return { ...details, start_iso, end_iso };

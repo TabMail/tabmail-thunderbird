@@ -120,7 +120,18 @@ UNTIL's day, the rewritten one keeps it)
   moved a time in the computer's own skipped hour by an hour although the named zone has it (#385). A
   time the named zone itself skips is passed on as given; the bridge decides it in that zone. Without a
   `timezone` (and for `recurrence_id`, always on the user's clock) the reading is unchanged
-  (`test/calendarToolDates.test.js`, `test/helpers.test.js`).
+  (`test/calendarToolDates.test.js`, `test/helpers.test.js`). A timed create given with a `timezone`
+  and no end (#393) gets its default end on the named zone's clock too (`ensureTimes`,
+  `wallClockInZoneAfter`): the start's instant in that zone, read as ical.js places it
+  (`Timezone.utcOffset`: a repeated time is the second pass, a skipped one takes the offset after the
+  change; `instantOfWallClockInZone`, offsets from icsParser's `offsetMinutesForZoneAt`), plus the
+  default length, written back as that zone's naive wall clock so the card and the bridge read start
+  and end alike. Before, `new Date(start_iso)` read the digits on the computer's clock and wrote a UTC
+  `Z` end, off by the difference between the zones (an end before the start east of the named zone).
+  The length is elapsed, as without a `timezone` and as iOS does it (`toolInstant` + interval). Known
+  limit: an end that falls in the first pass of the named zone's repeated hour has digits the calendar
+  reads as the second pass, an hour later. Pinned by `test/calendarToolDates.test.js` (Thunderbird's
+  own ical.js as the oracle around New York's clock changes, two computer zones for London).
 - Consumers key an all-day row by `startDay`, never by the epoch: `calendar_search` uses
   `localMidnightOfDay(startDay)` for the day key and ordering; `calendar_event_read` renders
   `start_iso`/`end_iso` as `${day}T00:00:00` and matches a `start_iso` lookup on the day.
