@@ -6,8 +6,8 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
-import { toNaiveIso } from "../modules/helpers.js";
 import { formatRecurrenceLine } from "../modules/recurrence.js";
+import { instantsOnClock, parseShownIso, toShownIso } from "../modules/repeatedHour.js";
 
 export function resetPaginationSessions() {}
 
@@ -71,12 +71,17 @@ export async function run(args = {}, options = {}) {
     const targetCalendars = allCalendars;
     log(`[TMDBG Tools] calendar_event_read: searching ALL calendars (${allCalendars.length} total)`);
 
-    // Build a tight query window around the provided start
-    const start = new Date(startIso);
+    // Build a tight query window around the provided start: every instant it
+    // names (both passes of a repeated hour, instantsNamedBy), or, printed
+    // with its UTC offset, the one moment that names. Any other value with a
+    // note in parentheses is not read (`new Date` may skip the note).
+    const shown = parseShownIso(startIso);
+    const start = shown ? new Date(shown.ms) : /[()]/.test(startIso) ? new Date(NaN) : new Date(startIso);
     if (isNaN(start.getTime())) return { ok: false, error: `invalid start datetime: ${startIso}` };
+    const named = shown ? [shown.ms] : instantsNamedBy(startIso, start);
     const tol = Number(CHAT_SETTINGS.calendarEntryMatchToleranceMs) || 60000;
-    const windowStart = new Date(start.getTime() - tol);
-    const windowEnd = new Date(start.getTime() + tol);
+    const windowStart = new Date(Math.min(...named) - tol);
+    const windowEnd = new Date(Math.max(...named) + tol);
 
     // Query all target calendars
     let allItems = [];
@@ -106,7 +111,7 @@ export async function run(args = {}, options = {}) {
         // All-day items match on their own calendar date (local midnight),
         // not on the UTC-midnight epoch the bridge carries for a DATE (#47).
         const s = it.isAllDay && it.startDay ? new Date(`${it.startDay}T00:00:00`) : normalizeDate(it.startMs);
-        if (!isWithinTolerance(s, start, tol)) continue;
+        if (!named.some((ms) => isWithinTolerance(s, new Date(ms), tol))) continue;
         if (titleFilter && (String(it.title || "").trim() !== titleFilter)) continue;
         // Debug: log raw item shape for filtering
         try {
@@ -147,6 +152,17 @@ function normalizeDate(msOrIso) {
   return new Date(0);
 }
 
+// The instants (epoch ms) a start_iso names: `start`, as JavaScript reads it,
+// and for a time with no zone every instant the user's clock reads those
+// digits at (instantsOnClock). The night the clocks go back, a bare time
+// inside the repeated hour names both passes, and JavaScript reads it as the
+// first, so an occurrence starting in the second pass was never found by its
+// digits (#387).
+export function instantsNamedBy(startIso, start) {
+  const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2}))?$/.exec(String(startIso));
+  return [...new Set([start.getTime(), ...(m ? instantsOnClock(`${m[1]}:${m[2] || "00"}`) : [])])];
+}
+
 function isWithinTolerance(a, b, tolMs) {
   try { return Math.abs(a.getTime() - b.getTime()) <= tolMs; } catch (_) { return false; }
 }
@@ -164,11 +180,12 @@ function formatDetailed(it, cal) {
     `event_id: ${it.id || ""}`,
   ];
   
-  // Use naive ISO format for consistency with LLM input format
+  // Use naive ISO format for consistency with LLM input format, with the UTC
+  // offset only in the hour the clocks repeat (toShownIso).
   // An all-day DATE is frame-free: render its own digits, never the epoch
   // re-expressed in the user's zone (which names the previous day west of UTC).
   const allDayFrame = !!(it.isAllDay && it.startDay);
-  const startIso = allDayFrame ? `${it.startDay}T00:00:00` : toNaiveIso(it.startMs);
+  const startIso = allDayFrame ? `${it.startDay}T00:00:00` : toShownIso(new Date(it.startMs).getTime());
 
   // An occurrence's recurrence_id is its start, the value the edit tools take
   // to name it (they find the occurrence of the series that starts there).
@@ -178,7 +195,7 @@ function formatDetailed(it, cal) {
 
   lines.push(`title: ${it.title || "(No title)"}`,
     `start_iso: ${startIso}`,
-    `end_iso: ${allDayFrame ? `${it.endDay || it.startDay}T00:00:00` : toNaiveIso(it.endMs)}`,
+    `end_iso: ${allDayFrame ? `${it.endDay || it.startDay}T00:00:00` : toShownIso(new Date(it.endMs).getTime())}`,
     `all_day: ${it.isAllDay ? "yes" : "no"}`);
   if (it.isRecurring) lines.push(`recurring: yes`);
   const recurrenceLine = formatRecurrenceLine(it.recurrence);
@@ -272,15 +289,16 @@ function buildAttendeeLines(it) {
 /**
  * An event's start_iso and end_iso as this tool shows them, from
  * getCalendarEventDetails (start/end in ms since epoch): an all-day DATE from
- * its own digits (#47), a timed one in the user's zone.
+ * its own digits (#47), a timed one in the user's zone (with its UTC offset in
+ * the hour the clocks repeat, toShownIso).
  */
 export function shownEventTimesIso(details) {
   if (details?.isAllDay && details.startDay) {
     return { start_iso: `${details.startDay}T00:00:00`, end_iso: `${details.endDay || details.startDay}T00:00:00` };
   }
   return {
-    start_iso: details?.start ? toNaiveIso(details.start) : "",
-    end_iso: details?.end ? toNaiveIso(details.end) : "",
+    start_iso: details?.start ? toShownIso(new Date(details.start).getTime()) : "",
+    end_iso: details?.end ? toShownIso(new Date(details.end).getTime()) : "",
   };
 }
 

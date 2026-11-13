@@ -540,8 +540,21 @@ function setRuleOnItem(item, value) {
 // the series' own RECURRENCE-ID for it, or `{ error }` when no occurrence, or
 // more than one, starts there: nothing is ever written for a time that is not
 // an occurrence (getOccurrenceFor would make one up for any time).
+// A time names the occurrence whose start the read tools print as it
+// (shownNaiveIso on both sides), not the instant the value is read at: the
+// night the clocks go back, a printed time inside the repeated hour stands for
+// either pass, and the zone reads the digits as the later one, so an
+// occurrence starting in the first pass was never named (#387). When either
+// side is a date, it is compared as before (CalDateTime.compare, by the day).
+// A time printed with its UTC offset (the hour the clocks repeat, shownIso)
+// names the occurrence that starts at that moment. A bare time inside that
+// hour that names one occurrence in each pass is answered with both, as the
+// read tools print them, for the user to choose: nothing is written.
 function occurrenceNamedBy(item, iso, field = "recurrence_id") {
-  const at = toCalIDateTime(String(iso || ""));
+  const moment = momentNamedBy(iso);
+  const notAnOccurrence = `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`;
+  if (moment && item?.startDate?.isDate) return { error: notAnOccurrence };
+  const at = moment || toCalIDateTime(String(iso || ""));
   if (!at) return { error: `invalid ${field} format (expected ISO8601)` };
   if (item?.startDate?.isDate) at.isDate = true;
   // A range wide enough for any zone's offset from the user's; only an
@@ -550,13 +563,28 @@ function occurrenceNamedBy(item, iso, field = "recurrence_id") {
   const from = boundFromIcs(toIcsUntil(new Date(ms - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
   const to = boundFromIcs(toIcsUntil(new Date(ms + OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
   if (!from || !to || !item?.recurrenceInfo) return { error: `${field} ${iso} is not the start of an occurrence of this series` };
+  const named = shownNaiveIso(at);
+  const startsThere = moment
+    ? (start) => !start.isDate && asShown(start).subtractDate(moment).inSeconds === 0
+    : (start) => (start.isDate || at.isDate ? start.compare(at) === 0 : shownNaiveIso(start) === named);
   const starting = [...(item.recurrenceInfo.getOccurrences(from, to, 0) || [])]
-    .filter((occ) => occ?.startDate && occ.startDate.compare(at) === 0);
+    .filter((occ) => occ?.startDate && startsThere(occ.startDate));
   if (starting.length === 1) return { occurrence: starting[0] };
+  // getOccurrences gives the occurrences in start order.
+  if (!moment && starting.length === 2) {
+    const [first, second] = starting.map((occ) => shownIso(occ.startDate));
+    if (first !== second) {
+      return {
+        error: `${field} ${iso} names two occurrences of this series: the clocks go back that night, so ${named.slice(11, 16)} happens twice. `
+          + `One starts at ${first}, before the clocks go back, and one at ${second}, after. Nothing was changed. `
+          + `Ask the user which one they mean, then pass that value, offset included, ${field === "exdates_add" ? "in exdates_add" : `as ${field}`}.`,
+      };
+    }
+  }
   return {
     error: starting.length
       ? `${field} ${iso} is the start of more than one occurrence of this series; change it in the calendar app`
-      : `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`,
+      : notAnOccurrence,
   };
 }
 
@@ -1174,6 +1202,14 @@ function toCalIDateTime(iso, tzId) {
     const Cc = globalThis.Cc;
     const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
 
+    // A note in parentheses (a UTC offset, "(UTC-4)") is read only where a
+    // value names one moment (momentNamedBy); `new Date` may skip the note and
+    // read the digits as another moment.
+    if (/[()]/.test(String(iso))) {
+      tmCalendarDebugLog(`[tmCalendar] toCalIDateTime: '${iso}' has a note in parentheses; not read`);
+      return null;
+    }
+
     const d = new Date(iso);
     if (isNaN(d.getTime())) {
       console.warn(`[tmCalendar] toCalIDateTime: Invalid date string '${iso}'`);
@@ -1628,6 +1664,74 @@ function asShown(calDt) {
   return shown;
 }
 
+// -------- The hour the clocks repeat --------
+// The night the clocks go back, the digits of one hour name two moments. The
+// read tools print such a time with its UTC offset, "2026-11-01T01:30:00
+// (UTC-4)" then "2026-11-01T01:30:00 (UTC-5)", and every other time without
+// one; the edit and delete tools take that form back as the moment it names.
+// The tool layer's twins are in chat/modules/repeatedHour.js (toShownIso,
+// parseShownIso); test/calendarRepeatedHourOffset.test.js pins that both print
+// and read alike. Each function here stands alone (constants in its body).
+
+// The label of a UTC offset (minutes east): "UTC-4", "UTC+5:30", "UTC+0".
+function utcOffsetLabel(offsetMinutes) {
+  const abs = Math.abs(offsetMinutes);
+  const minutes = abs % 60;
+  return `UTC${offsetMinutes < 0 ? "-" : "+"}${Math.floor(abs / 60)}${minutes ? `:${pad2(minutes)}` : ""}`;
+}
+
+// Every moment (epoch ms) the user's clock (the digits shownNaiveIso prints)
+// reads `naive` ("YYYY-MM-DDTHH:MM:SS") at: two inside the hour the clocks
+// repeat. The offsets the clock has a day either side are every offset the
+// digits can be read with.
+function momentsOnUserClock(naive) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(String(naive));
+  if (!m) return [];
+  const MINUTE_MS = 60000;
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  const found = new Set();
+  for (const day of [d - 1, d + 1]) {
+    const ms = Date.UTC(y, mo - 1, d, h, mi, s) + new Date(y, mo - 1, day, h, mi, s).getTimezoneOffset() * MINUTE_MS;
+    const at = new Date(ms);
+    if (`${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}T${pad2(at.getHours())}:${pad2(at.getMinutes())}:${pad2(at.getSeconds())}` === naive) found.add(ms);
+  }
+  return [...found];
+}
+
+// A value as the read tools print a start_iso (shownNaiveIso), followed by its
+// UTC offset, " (UTC-4)", only when those digits name two moments.
+function shownIso(calDt) {
+  const naive = shownNaiveIso(calDt);
+  if (calDt.isDate || momentsOnUserClock(naive).length < 2) return naive;
+  return `${naive} (${utcOffsetLabel(-new Date(asShown(calDt).nativeTime / 1000).getTimezoneOffset())})`;
+}
+
+// A value printed with its UTC offset, read back: its digits (seconds added),
+// the offset (minutes east) and the moment it names (epoch ms), or null for
+// any other string.
+function parseShownIso(s) {
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\s*\(UTC([+-])(0|[1-9]|1[0-4])(?::([0-5]\d))?\)\s*$/.exec(String(s ?? ""));
+  if (!m) return null;
+  const MINUTE_MS = 60000;
+  // The largest UTC offset a clock has (UTC+14).
+  const MAX_UTC_OFFSET_MINUTES = 14 * 60;
+  const [y, mo, d, h, mi] = m.slice(1, 6).map(Number);
+  const sec = Number(m[6] || 0);
+  const wallAsUtc = Date.UTC(y, mo - 1, d, h, mi, sec);
+  const digits = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${pad2(sec)}`;
+  if (isNaN(wallAsUtc) || new Date(wallAsUtc).toISOString().slice(0, 19) !== digits) return null;
+  const offsetMinutes = (m[7] === "-" ? -1 : 1) * (Number(m[8]) * 60 + Number(m[9] || 0));
+  if (Math.abs(offsetMinutes) > MAX_UTC_OFFSET_MINUTES) return null;
+  return { digits, offsetMinutes, ms: wallAsUtc - offsetMinutes * MINUTE_MS };
+}
+
+// The moment a value printed with its UTC offset names, as a UTC value
+// (toCalIDateTime of its UTC ISO string), or null for any other string.
+function momentNamedBy(iso) {
+  const shown = parseShownIso(iso);
+  return shown ? toCalIDateTime(new Date(shown.ms).toISOString()) : null;
+}
+
 // `dt`'s date as an all-day value, written as Thunderbird's event dialog writes
 // one: a DATE with no zone (floating). A DATE that carries a zone has its epoch
 // time at midnight in that zone, and ical.js compares a rule's UNTIL with each
@@ -1785,6 +1889,14 @@ function toCalIDateTimeInFrameOf(item, patch) {
   const start = item && item.startDate;
   const allDay = typeof patch.all_day === "boolean" ? patch.all_day : !!start?.isDate;
   return (iso, tzId) => {
+    // A time printed with its UTC offset is that moment, whatever zone the
+    // edit names, in the frame of the stored start (or, for an event that
+    // has none or is all-day, the zone its digits are read in otherwise).
+    const shown = parseShownIso(iso);
+    if (shown) {
+      if (allDay) return asAllDayDate(toCalIDateTime(shown.digits));
+      return intoFrameOf(start && !start.isDate ? start : toCalIDateTime(shown.digits, tzId), momentNamedBy(iso), iso);
+    }
     const dt = toCalIDateTime(iso, tzId);
     if (dt && allDay) return asAllDayDate(dt);
     if (!dt || dt.isDate || !start || start.isDate) return dt;
@@ -1813,8 +1925,8 @@ const NAMED_OTHER_KIND_ERROR = "the occurrence this edit names was made all-day 
 function skippedTimeError(given) {
   return `${digitsOf(given)} does not exist in ${given.timezone.tzid}: the clocks skip that time that day; ask the user for another time`;
 }
-function repeatedHourError(given, tzid) {
-  return `${digitsOf(given)} in ${given.timezone.tzid} falls in the first of the two passes of the hour the clocks repeat in this event's time zone (${tzid}) that night, which the calendar cannot store for this event; ask the user for a time outside that hour`;
+function repeatedHourError(given, tzid, shownAs) {
+  return `${shownAs || `${digitsOf(given)} in ${given.timezone.tzid}`} falls in the first of the two passes of the hour the clocks repeat in this event's time zone (${tzid}) that night, which the calendar cannot store for this event; ask the user for a time outside that hour`;
 }
 
 // A value's own digits, "YYYY-MM-DDTHH:MM:SS", as given.
@@ -1867,20 +1979,22 @@ function atInstantInFrameOf(anchor, target) {
 // in another zone that `anchor`'s zone cannot store at that instant. In
 // `anchor`'s own zone the value is kept as given; a floating anchor takes the
 // digits of the user's clock, kept floating (the inverse of asShown).
-function intoFrameOf(anchor, given) {
+// `shownAs`, the value as the edit gave it, names it in a refusal (a time
+// given with its UTC offset is read as a UTC value).
+function intoFrameOf(anchor, given, shownAs) {
   const back = atInstantInFrameOf(given, given);
   if (!back || clockSeconds(back, given) !== 0) throw new Error(skippedTimeError(given));
   if (anchor.timezone.tzid === given.timezone.tzid) return given;
   if (anchor.timezone.tzid === "floating") {
     const user = getTimezoneService().defaultTimezone;
     const shown = given.timezone.tzid === user.tzid ? given : atInstantInFrameOf(asShown(anchor), given);
-    if (!shown) throw new Error(repeatedHourError(given, user.tzid));
+    if (!shown) throw new Error(repeatedHourError(given, user.tzid, shownAs));
     const kept = shown.clone();
     kept.resetTo(shown.year, shown.month, shown.day, shown.hour, shown.minute, shown.second, anchor.timezone);
     return kept;
   }
   const out = atInstantInFrameOf(anchor, given);
-  if (!out) throw new Error(repeatedHourError(given, anchor.timezone.tzid));
+  if (!out) throw new Error(repeatedHourError(given, anchor.timezone.tzid, shownAs));
   return out;
 }
 
@@ -1888,9 +2002,12 @@ function intoFrameOf(anchor, given) {
 // clock) is the stored value `stored` as the read tools print it. A given
 // all_day other than the stored kind never restates. On the user's clock, and
 // for a date, the strings are compared, never the instants: inside the hour
-// the clocks repeat, the printed string is read back as the later pass.
+// the clocks repeat, the printed string is read back as the later pass. A
+// time printed with its UTC offset restates the stored time at that moment.
 function restates(iso, tz, stored, allDay) {
   if (typeof allDay === "boolean" && allDay !== !!stored.isDate) return false;
+  const moment = momentNamedBy(iso);
+  if (moment) return !stored.isDate && moment.subtractDate(asShown(stored)).inSeconds === 0;
   if (stored.isDate || !tz || tz === getTimezoneService().defaultTimezone?.tzid) return iso === shownNaiveIso(stored);
   return toCalIDateTime(iso, tz).subtractDate(asShown(stored)).inSeconds === 0;
 }
@@ -2042,8 +2159,8 @@ function resetChangedOccurrences(item, patch) {
 // kind), or undefined when neither string nor kind differs.
 function shownEditTimes(from, to) {
   const side = (it) => ({
-    start_iso: it.startDate ? shownNaiveIso(it.startDate) : "",
-    end_iso: it.endDate ? shownNaiveIso(it.endDate) : "",
+    start_iso: it.startDate ? shownIso(it.startDate) : "",
+    end_iso: it.endDate ? shownIso(it.endDate) : "",
     all_day: !!it.startDate?.isDate,
   });
   const a = side(from), b = side(to);
@@ -2449,7 +2566,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (named?.occurrence) {
               const { recurrenceId: slot, startDate } = named.occurrence;
               details.recurrenceIdIsFirst = isFirstOccurrence(series, slot);
-              if (shownNaiveIso(startDate) !== shownNaiveIso(slot)) details.recurrenceIdSlot = shownNaiveIso(slot);
+              if (shownIso(startDate) !== shownIso(slot)) details.recurrenceIdSlot = shownIso(slot);
               Object.assign(details, editableFieldsOf(named.occurrence));
             }
             // Return the event's own id, not re-derived from master
@@ -2560,7 +2677,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               if (scope !== "all") {
                 const recurIdStr = String(d.recurrence_id || "");
                 if (!recurIdStr) {
-                  return { ok: false, error: `delete_scope='${scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.` };
+                  return { ok: false, error: `delete_scope='${scope}' requires recurrence_id (the occurrence's start_iso as calendar_event_read shows it). Retry the call including recurrence_id.` };
                 }
                 const named = occurrenceNamedBy(series, recurIdStr);
                 if (named.error) return { ok: false, error: named.error };
@@ -3194,7 +3311,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               ok: true, 
               calendar_id: cal?.id || null,
               event_id: returnedId, 
-              recurrence_id: isOccurrence ? shownNaiveIso(clone.startDate) : null,
+              recurrence_id: isOccurrence ? shownIso(clone.startDate) : null,
               title: (isOccurrence ? clone.title : modified?.title) || null,
               invitations: invitationResult,
               ...guestNoticeOf(base.calendar, [organizerResult])
@@ -3561,7 +3678,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // series).
               recurrence_id: (() => {
                 const first = firstOccurrenceOf(created);
-                return first ? shownNaiveIso(first.startDate) : null;
+                return first ? shownIso(first.startDate) : null;
               })(),
               old_event_id: eventId,
               title: created?.title || null,

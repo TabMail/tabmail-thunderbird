@@ -9,6 +9,7 @@ import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { toIsoNoMs } from "../modules/helpers.js";
 import { recurrenceMark } from "../modules/recurrence.js";
+import { repeatedHourOffset } from "../modules/repeatedHour.js";
 import { createToolSessions } from "../modules/toolSessions.js";
 
 // ====================================================================
@@ -435,12 +436,14 @@ async function buildCalendarSummary(args) {
       if (it.isRecurring) recurMark = recurrenceMark(it.recurrence) || " (↻)";
       const eventId = it.id || "unknown";
       // All-day entries render as "All day" (iOS parity) — a clock range with
-      // AM/PM cues would be a fabricated time for an item that has none.
+      // AM/PM cues would be a fabricated time for an item that has none. A
+      // time in the hour the clocks repeat carries its UTC offset, as
+      // calendar_event_read prints it.
       const timeRange = it.isAllDay
         ? "All day"
-        : `${formatHour(it.normalizedStart)} - ${formatHour(it.normalizedEnd)}`;
+        : `${formatHour(it.normalizedStart, repeatedHourOffset(new Date(it.startMs).getTime(), userTz))} - ${formatHour(it.normalizedEnd, repeatedHourOffset(new Date(it.endMs).getTime(), userTz))}`;
       const line = `${timeRange}: ${title}${recurMark}\tevent_id: ${eventId}`;
-      const result = insertLine(days[dayKey], calId, line);
+      const result = insertLine(days[dayKey], calId, line, it.isAllDay ? 0 : new Date(it.startMs).getTime());
       days[dayKey] = result;
       
       log(`[TMDBG CalendarSummary] AFTER INSERT: dayKey='${dayKey}' result=${!!result} type=${typeof result}`);
@@ -472,14 +475,16 @@ async function buildCalendarSummary(args) {
       lines.push(`calendar_id: ${calName}`); // calendar id
       lines.push(`date: ${d.prettyDate}`);
       lines.push(`timezone: ${d.timezone}`);
-      // Rows sort by their leading clock token. An all-day row has none: it
-      // renders "All day" and leads its day (iOS parity — the grouped summary
-      // anchors all-day rows at the first instant of their date), so it must
-      // not fall behind "08:00 …" on a character comparison.
+      // Rows sort by the moment they start, then by text. An all-day row has
+      // no time: it renders "All day" and leads its day (iOS parity — the
+      // grouped summary anchors all-day rows at the first instant of their
+      // date). The printed clock is not the order the night the clocks go
+      // back: "02:30 (UTC+1)" comes after "02:30 (UTC+2)", and "01:30 (UTC-8)"
+      // after "01:30 (UTC-7)".
       const allDayFirst = (s) => (s.startsWith("All day:") ? 0 : 1);
-      entries.sort((a, b) => (allDayFirst(a) - allDayFirst(b)) || a.localeCompare(b));
+      entries.sort((a, b) => (allDayFirst(a.line) - allDayFirst(b.line)) || (a.sortMs - b.sortMs) || a.line.localeCompare(b.line));
       for (const entry of entries) {
-        lines.push(entry);
+        lines.push(entry.line);
       }
       lines.push("");
     }
@@ -504,11 +509,12 @@ function formatDayHeader(dayKey, tz) {
 }
 
 
-function insertLine(dayObj, calName, line) {
+// A row and the moment it sorts by (epoch ms; 0 for an all-day row).
+function insertLine(dayObj, calName, line, sortMs) {
   if (!dayObj) return dayObj;
   const map = dayObj.calendars;
   if (!map[calName]) map[calName] = [];
-  map[calName].push(line);
+  map[calName].push({ line, sortMs });
   return dayObj;
 }
 
@@ -526,13 +532,15 @@ function formatTwelveHourCue(hours24, minutes) {
   return `${h12}${mm} ${meridiem}`;
 }
 
-function formatHour(d) {
+// `offsetLabel` ("UTC-4"), given only in the hour the clocks repeat, follows
+// the 24-hour value: "01:30 (UTC-4) (1:30 a.m.)".
+function formatHour(d, offsetLabel) {
   try {
     const hours = d.getHours();
     const minutes = d.getMinutes();
     const hh = hours.toString().padStart(2, "0");
     const mm = minutes.toString().padStart(2, "0");
-    return `${hh}:${mm} (${formatTwelveHourCue(hours, minutes)})`;
+    return `${hh}:${mm}${offsetLabel ? ` (${offsetLabel})` : ""} (${formatTwelveHourCue(hours, minutes)})`;
   } catch (_) { return ""; }
 }
 

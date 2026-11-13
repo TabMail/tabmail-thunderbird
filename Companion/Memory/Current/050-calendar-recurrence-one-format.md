@@ -111,8 +111,43 @@ same design (tabmail-ios #421).
     read paths take its epoch; ical.js gives floating offset 0, so its raw epoch read in the user's zone named
     another time, which the edit then could not match). Thunderbird's own expansion decides which occurrence starts
     there: `recurrenceInfo.getOccurrences` over `OCCURRENCE_LOOKUP_REACH_MS` either side (every rule, RDATE and
-    EXDATE, and a changed occurrence at its own time), matched with `calIDateTime.compare` (by instant; a DATE by
-    date; floating time by its digits). No occurrence, or more than one, is refused and nothing is written:
+    EXDATE, and a changed occurrence at its own time), matched by the start the read tools print (`shownNaiveIso`
+    on both sides; when either side is a DATE, `calIDateTime.compare`, by date). Until #387 (2026-11-12) a time was
+    matched by instant, and the user's zone reads a printed time inside the hour the clocks repeat as its second
+    pass, so an occurrence starting in the first pass (a series stored in UTC at 08:30Z is 01:30 PDT that night in
+    Los Angeles) could not be named. Before #387 a printed time two occurrences share (one in each pass, e.g. an
+    hourly series) named the second pass; for a while after the first #387 fix it named neither and was refused
+    with the "more than one" text (the open question was: refuse, name the second pass, or print a
+    disambiguating offset). **Decided (2026-11-13): print the offset.** A time whose digits name two moments on
+    the clock it is printed on (the hour the clocks repeat) is printed with its UTC offset in parentheses,
+    `2026-11-01T01:30:00 (UTC-4)` and `2026-11-01T01:30:00 (UTC-5)`; every other time is printed without one.
+    Label form `UTC-4`, `UTC+5:30`, `UTC+0`. Printers: the tool layer's `chat/modules/repeatedHour.js`
+    (`toShownIso`, used by `calendar_event_read`'s start_iso/end_iso, `shownEventTimesIso`; `repeatedHourOffset`,
+    used by `calendar_read`'s rows, `01:30 (UTC-4) (1:30 a.m.)`, which now sort by instant, not by text, since
+    `02:30 (UTC+1)` follows `02:30 (UTC+2)`), and the bridge's twin `shownIso` (the card's times, the
+    `recurrence_id` an edit or split returns, the moved occurrence's slot). `calendar_event_edit` and
+    `calendar_event_delete` take the form back (`canonicalShownIso`; the bridge's `parseShownIso` /
+    `momentNamedBy`): as recurrence_id or exdates_add it names the occurrence starting at that moment; as an
+    edit's start_iso/end_iso it is that exact moment, whatever `timezone` the edit names, through the same
+    conversion and refusals as any other time (`intoFrameOf`: a time the event's zone cannot store is refused,
+    naming the value as given). A bare time that names one occurrence in each pass gets an answer naming both,
+    as printed, and asking the model to ask the user; nothing is written. That answer reaches the model word for
+    word (the card's details read falls back to the first occurrence, so it is not wrapped in a read failure).
+    The card prints such a time with its zone name taken from the moment the offset names
+    (`formatCardTime`: `Sunday 2026/11/01 01:30:00 PT (UTC-4)`). Any other value with a note in parentheses is
+    not read (`toNaiveIso`, `toCalIDateTime`: `new Date` may skip the note and read another moment); the parser
+    accepts `UTC-4`, `UTC+0`, `UTC+10:30`, with or without seconds, and refuses `(UTC-04:00)`, `(PDT)`, an
+    offset beyond 14 hours, an impossible date, and a space in place of `T`. Pinned by
+    `test/calendarRepeatedHourOffset.test.js` (printer sweeps per zone against an offset oracle, the listing,
+    the card, the bridge's twins, the accepted and refused forms) and `test/calendarRepeatedHourOccurrence.test.js`
+    (the two-occurrence answer, every edit and delete scope by the printed value, the exact-moment edit times).
+    The read tool's
+    `start_iso` lookup (`calendar_event_read`, `instantsNamedBy`) finds every instant a bare printed time names:
+    the JavaScript reading (the first pass) and the other pass (`instantsOnClock`, from the user's clock's offsets
+    the day before and the day after at the same time of day); a value with its offset finds that moment only;
+    before, a second-pass occurrence answered "No entries matched." Also pinned by
+    the restate sweeps in `test/calendarSeriesTimes{West,East}.test.js`,
+    which now include the first-pass rows. No occurrence, or more than one, is refused and nothing is written:
     `getOccurrenceFor` makes up a proxy for any time, and saving that adds an occurrence the series never had (#285).
     The series divides at the occurrence's RECURRENCE-ID (its slot), read in the series' own zone (a RECURRENCE-ID
     can be stored in another, e.g. UTC, and the following part's rule expands in its start's zone), so a changed
