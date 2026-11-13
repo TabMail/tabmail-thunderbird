@@ -267,6 +267,45 @@ describe('a series time change resets like Google Calendar', () => {
     expect(exdatesOf(b)).toEqual([]);
   });
 
+  // #326: after a whole series is switched between all-day and timed, every
+  // excluded date, added date and changed occurrence's RECURRENCE-ID it still
+  // holds is of the series' new kind, so each still names one of its
+  // occurrences. Whether the edit converts them, resets them or is refused,
+  // none is left in the old kind.
+  it('a series switched between all-day and timed keeps no excluded, added or changed date of the old kind', async () => {
+    const allDaySeries = () => {
+      const ev = fakeEvent({ id: 'ser', title: 'Retreat', startDate: dateOn('2099-01-10'), endDate: dateOn('2099-01-11') });
+      const ex = fakeEvent({ id: 'ser', title: 'Offsite', startDate: dateOn('2099-01-12'), endDate: dateOn('2099-01-14'), recurrenceId: dateOn('2099-01-12') });
+      ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY;COUNT=5'), recurrenceDate('EXDATE', dateOn('2099-01-13')), recurrenceDate('RDATE', dateOn('2099-01-20'))], { exceptions: [ex] });
+      ev.recurrenceInfo.item = ev;
+      return ev;
+    };
+    const timedWithAddedDate = () => {
+      const ev = busySeries();
+      ev.recurrenceInfo.appendRecurrenceItem(recurrenceDate('RDATE', la('2099-01-25', 10)));
+      return ev;
+    };
+    const toAllDay = { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-01-10', 10), start_iso: '2099-01-10', end_iso: '2099-01-11', all_day: true };
+    const toTimed = { event_id: 'ser', edit_scope: 'all', recurrence_id: '2099-01-10', start_iso: iso('2099-01-10', 9), end_iso: iso('2099-01-10', 10), all_day: false };
+    const cases = [
+      ['timed to all-day', busySeries, toAllDay],
+      ['timed to all-day, with an added date', timedWithAddedDate, toAllDay],
+      ['all-day to timed, with an added date', allDaySeries, toTimed],
+    ];
+    for (const [name, make, args] of cases) {
+      const loaded = onCalendar([make()], LA);
+      await loaded.api.modifyCalendarEvent({ calendar_id: 'cal1', ...args });
+      const [stored] = loaded.calendar.items;
+      const kind = !!stored.startDate.isDate;
+      const info = stored.recurrenceInfo;
+      const values = [
+        ...info.getRecurrenceItems().filter((r) => r.date).map((r) => [r.icalProperty?.propertyName || (r.isNegative ? 'EXDATE' : 'RDATE'), r.date]),
+        ...info.getExceptionIds().map((rid) => ['RECURRENCE-ID', rid]),
+      ];
+      expect(values.filter(([, dt]) => !!dt.isDate !== kind).map(([n, dt]) => `${n} ${digits(dt)}`), name).toEqual([]);
+    }
+  });
+
   it('a zero-length series keeps its zero length on a start move (series, #352)', async () => {
     const loaded = onCalendar([seriesOf({ tzid: LA, day: '2099-01-10', hour: 10, hours: 0 })], LA);
     const run = await edit({ event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-01-10', 10), start_iso: iso('2099-01-10', 11) });

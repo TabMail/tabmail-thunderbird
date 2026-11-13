@@ -380,6 +380,23 @@ describe('sending invitations with an edit', () => {
     expect(items.own[0].title).toBe('Review');
   });
 
+  // #302: invitations go to the guests the event already has. An edit that
+  // names no guest at all is made on every scope, and leaves the guests as
+  // they were.
+  it('an edit that names no guest sends invitations to the guests the event has, on every scope', async () => {
+    for (const scopeName of Object.keys(SCOPES)) {
+      const { sess, items, schemaErrors: errors } = await edit(scopeName, all(), all(), { title: 'Review', send_invitations: true });
+      expect(errors, scopeName).toEqual([]);
+      expect(sess.failReason, scopeName).toBeUndefined();
+      const edited = [...items.main, ...items.own];
+      expect(edited.length, scopeName).toBeGreaterThan(0);
+      for (const it of edited) {
+        expect(it.title, scopeName).toBe('Review');
+        expect(ids(it), scopeName).toEqual(START.map(mail));
+      }
+    }
+  });
+
   it('an edit that restates no guest is made when the event has guests', async () => {
     const { sess, items } = await edit('a one-off event', all(), all(), { title: 'Review', send_invitations: true });
     expect(sess.failReason).toBeUndefined();

@@ -814,6 +814,27 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
   });
 
+  // #272: a split never lengthens a series. At a time after the rule's end
+  // (no occurrence, or an added date there), the calendar ends with the
+  // occurrences it had, whether the split is refused or made: the earlier part
+  // is never capped later than its own end, and no part is left empty.
+  it('a split after a COUNT or UNTIL rule has ended leaves the calendar with the occurrences it had', async () => {
+    for (const rule of ['FREQ=DAILY;COUNT=5', `FREQ=DAILY;UNTIL=${utcUntil('2099-10-05', 18)}`]) {
+      for (const [at, extraItems] of [
+        ['no occurrence', []],
+        ['an added date', [recurrenceItem('RDATE', '20991015T170000')]],
+      ]) {
+        const label = `${rule}, at ${at}`;
+        const master = series(rule, { extraItems });
+        const before = occurrenceKeys(master);
+        expect(before, label).toHaveLength(5 + extraItems.length);
+        const { calendar } = await split(master, '2099-10-15T17:00:00');
+        expect(calendar.items.flatMap((it) => occurrenceKeys(it)).sort(), label).toEqual(before);
+        for (const it of calendar.items) expect(occurrenceKeys(it).length, `${label}: every item has an occurrence`).toBeGreaterThan(0);
+      }
+    }
+  });
+
   // 2099-10-01 and 2099-10-15 are Thursdays; 2099-10-22 is a Thursday but not the 15th.
   it('two rules that both make an occurrence at the split are both carried on', async () => {
     const master = series('FREQ=WEEKLY;BYDAY=TH', { extraItems: [recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=15')] });
