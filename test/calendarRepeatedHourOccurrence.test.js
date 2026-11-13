@@ -14,7 +14,9 @@
 //   I2 an occurrence starting in the second pass (a series stored in the
 //      user's zone at 01:30) is still named by its printed 01:30;
 //   I3 a printed time that two occurrences share (one in each pass) names
-//      neither: the edit is refused before the card and nothing is written.
+//      neither: the edit is refused before the card and nothing is written;
+//   I4 calendar_event_read finds an occurrence by the start_iso it prints,
+//      in either pass (and both, when both start at that printed time).
 
 process.env.TZ = 'America/Los_Angeles';
 
@@ -48,9 +50,10 @@ vi.mock('../chat/modules/markdown.js', () => ({ attachSpecialLinkListeners: vi.f
 vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ textContent: '', classList: { add: vi.fn(), remove: vi.fn() } })) }));
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}) }));
 
-const { onCalendar, seriesOf, edit, remove, occurrencesOf } = await import('./helpers/seriesEditFlow.js');
+const { onCalendar, seriesOf, edit, remove, occurrencesOf, readOccurrence } = await import('./helpers/seriesEditFlow.js');
 const { digits } = await import('./helpers/nativeCalendarDates.js');
 const { toNaiveIso } = await import('../chat/modules/helpers.js');
+const { instantsNamedBy } = await import('../chat/tools/calendar_event_read.js');
 
 const LA = 'America/Los_Angeles';
 const NIGHT = '2099-11-01';
@@ -121,5 +124,35 @@ describe('a printed time two occurrences share names neither (I3)', () => {
     expect(String(run.failReason)).toContain(`recurrence_id ${PRINTED} is the start of more than one occurrence of this series`);
     expect(printed(stored(loaded))).toEqual(before);
     expect(stored(loaded).recurrenceInfo.getExceptionIds?.() || []).toHaveLength(0);
+  });
+});
+
+describe('calendar_event_read finds an occurrence by its printed start in either pass (I4)', () => {
+  it('the second pass: a series at 01:30 in the user\'s zone', async () => {
+    onCalendar([seriesOf({ tzid: LA, day: '2099-10-30', hour: 1, minute: 30, rule: 'FREQ=DAILY;COUNT=4' })], LA);
+    const read = await readOccurrence(PRINTED);
+    expect(read.start_iso).toBe(PRINTED);
+    expect(read.text).toContain('Night shift');
+  });
+
+  it('the first pass: a series stored in UTC at 08:30Z', async () => {
+    onCalendar([seriesOf({ tzid: 'UTC', day: '2099-10-30', hour: 8, minute: 30, rule: 'FREQ=DAILY;COUNT=4' })], LA);
+    expect((await readOccurrence(PRINTED)).start_iso).toBe(PRINTED);
+  });
+
+  it('both passes of an hourly series are found by the one printed time', async () => {
+    onCalendar([seriesOf({ tzid: 'UTC', day: NIGHT, hour: 7, minute: 30, rule: 'FREQ=HOURLY;COUNT=4' })], LA);
+    const read = await readOccurrence(PRINTED);
+    expect(read.text.split('\n').filter((l) => l === `start_iso: ${PRINTED}`)).toHaveLength(2);
+  });
+
+  it('instantsNamedBy: both passes inside the repeated hour, one instant elsewhere and for a time with a zone', () => {
+    const passes = (iso) => instantsNamedBy(iso, new Date(iso)).sort((a, b) => a - b).map((ms) => new Date(ms).toISOString());
+    expect(passes(PRINTED)).toEqual([`${NIGHT}T08:30:00.000Z`, `${NIGHT}T09:30:00.000Z`]);
+    expect(passes(`${NIGHT}T02:30:00`)).toEqual([`${NIGHT}T10:30:00.000Z`]);
+    expect(passes(`${NIGHT}T00:30:00`)).toEqual([`${NIGHT}T07:30:00.000Z`]);
+    expect(passes(`${NIGHT}T01:30:00Z`)).toEqual([`${NIGHT}T01:30:00.000Z`]);
+    // The skipped hour of the spring change prints as no instant: JavaScript's reading only.
+    expect(passes('2099-03-08T02:30:00')).toEqual([new Date('2099-03-08T02:30:00').toISOString()]);
   });
 });

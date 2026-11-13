@@ -111,8 +111,18 @@ same design (tabmail-ios #421).
     read paths take its epoch; ical.js gives floating offset 0, so its raw epoch read in the user's zone named
     another time, which the edit then could not match). Thunderbird's own expansion decides which occurrence starts
     there: `recurrenceInfo.getOccurrences` over `OCCURRENCE_LOOKUP_REACH_MS` either side (every rule, RDATE and
-    EXDATE, and a changed occurrence at its own time), matched with `calIDateTime.compare` (by instant; a DATE by
-    date; floating time by its digits). No occurrence, or more than one, is refused and nothing is written:
+    EXDATE, and a changed occurrence at its own time), matched by the start the read tools print (`shownNaiveIso`
+    on both sides; when either side is a DATE, `calIDateTime.compare`, by date). Until #387 (2026-11-13) a time was
+    matched by instant, and the user's zone reads a printed time inside the hour the clocks repeat as its second
+    pass, so an occurrence starting in the first pass (a series stored in UTC at 08:30Z is 01:30 PDT that night in
+    Los Angeles) could not be named. A printed time two occurrences share (one in each pass, e.g. an hourly
+    series) names neither and is refused with the "more than one" text; before #387 it named the second pass
+    (open question: refuse, name the second pass, or print a disambiguating offset). The read tool's
+    `start_iso` lookup (`calendar_event_read`, `instantsNamedBy`) finds every instant a printed time names: the
+    JavaScript reading (the first pass) and the other pass, from the user's clock's offsets the day before and the
+    day after at the same time of day; before, a second-pass occurrence answered "No entries matched." Pinned by
+    `test/calendarRepeatedHourOccurrence.test.js` and the restate sweeps in `test/calendarSeriesTimes{West,East}.test.js`,
+    which now include the first-pass rows. No occurrence, or more than one, is refused and nothing is written:
     `getOccurrenceFor` makes up a proxy for any time, and saving that adds an occurrence the series never had (#285).
     The series divides at the occurrence's RECURRENCE-ID (its slot), read in the series' own zone (a RECURRENCE-ID
     can be stored in another, e.g. UTC, and the following part's rule expands in its start's zone), so a changed

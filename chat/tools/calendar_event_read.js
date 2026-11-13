@@ -71,12 +71,14 @@ export async function run(args = {}, options = {}) {
     const targetCalendars = allCalendars;
     log(`[TMDBG Tools] calendar_event_read: searching ALL calendars (${allCalendars.length} total)`);
 
-    // Build a tight query window around the provided start
+    // Build a tight query window around the provided start: every instant it
+    // names (both passes of a repeated hour, instantsNamedBy).
     const start = new Date(startIso);
     if (isNaN(start.getTime())) return { ok: false, error: `invalid start datetime: ${startIso}` };
+    const named = instantsNamedBy(startIso, start);
     const tol = Number(CHAT_SETTINGS.calendarEntryMatchToleranceMs) || 60000;
-    const windowStart = new Date(start.getTime() - tol);
-    const windowEnd = new Date(start.getTime() + tol);
+    const windowStart = new Date(Math.min(...named) - tol);
+    const windowEnd = new Date(Math.max(...named) + tol);
 
     // Query all target calendars
     let allItems = [];
@@ -106,7 +108,7 @@ export async function run(args = {}, options = {}) {
         // All-day items match on their own calendar date (local midnight),
         // not on the UTC-midnight epoch the bridge carries for a DATE (#47).
         const s = it.isAllDay && it.startDay ? new Date(`${it.startDay}T00:00:00`) : normalizeDate(it.startMs);
-        if (!isWithinTolerance(s, start, tol)) continue;
+        if (!named.some((ms) => isWithinTolerance(s, new Date(ms), tol))) continue;
         if (titleFilter && (String(it.title || "").trim() !== titleFilter)) continue;
         // Debug: log raw item shape for filtering
         try {
@@ -145,6 +147,30 @@ function normalizeDate(msOrIso) {
   if (typeof msOrIso === "string") return new Date(msOrIso);
   if (msOrIso && typeof msOrIso === "object" && typeof msOrIso.toISOString === "function") return new Date(msOrIso.toISOString());
   return new Date(0);
+}
+
+// The instants (epoch ms) a start_iso names: `start`, as JavaScript reads it,
+// and for a time with no zone every other instant the read tools print with
+// those digits (toNaiveIso, the user's clock). The night the clocks go back, a
+// time inside the repeated hour is printed the same for both passes and
+// JavaScript reads it as the first, so an occurrence starting in the second
+// pass was never found by the start printed for it (#387). The zone's offset
+// can differ only across a change, and no zone changes twice within a day, so
+// the offsets the user's clock has the day before and the day after, at the
+// same time of day, are every offset those digits can be read with.
+export function instantsNamedBy(startIso, start) {
+  const named = new Set([start.getTime()]);
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(startIso));
+  if (!m) return [...named];
+  const [y, mo, d, h, mi, s] = m.slice(1).map((v) => Number(v || 0));
+  const digitsAsUtc = Date.UTC(y, mo - 1, d, h, mi, s);
+  const printed = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || "00"}`;
+  for (const day of [d - 1, d + 1]) {
+    const offsetMs = new Date(y, mo - 1, day, h, mi, s).getTimezoneOffset() * 60000;
+    const ms = digitsAsUtc + offsetMs;
+    if (toNaiveIso(ms) === printed) named.add(ms);
+  }
+  return [...named];
 }
 
 function isWithinTolerance(a, b, tolMs) {
