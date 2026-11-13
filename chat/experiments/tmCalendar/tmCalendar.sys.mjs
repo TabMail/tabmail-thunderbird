@@ -753,6 +753,9 @@ const DELETE_SCOPES = ["this_only", "this_and_following", "all"];
 // An edit's event_id that names no event on the user's calendars: the id may
 // be stale or another kind of id, so the assistant looks it up again rather
 // than retrying it.
+// An edit of one occurrence that also removes other occurrences (#298): the two
+// are never made in one save. The assistant makes the edit, then the delete.
+const ONE_OCCURRENCE_EXDATES_ERROR = "an edit of one occurrence (edit_scope 'this_only') cannot also remove other occurrences: retry this edit without exdates_add, then remove each other occurrence with calendar_event_delete (delete_scope 'this_only' and that occurrence's recurrence_id), so the user confirms the edit and the deletion on their own cards";
 const EDIT_EVENT_NOT_FOUND_ERROR = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
 
 // A series' start that changes between all-day and timed. RFC 5545 needs its
@@ -2869,13 +2872,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             if (!item) return { ok: false, error: lookupError || EDIT_EVENT_NOT_FOUND_ERROR };
 
-            // The occurrences exdates_add names, in the series as it is before
-            // the edit; a value that names none is refused before anything is written.
-            const exdates = Array.isArray(details.exdates_add) ? exdatesNamedBy(item.parentItem || item, details.exdates_add) : { rids: [] };
-            if (exdates.error) return { ok: false, error: exdates.error };
-
             // Use proper target selection for editing
             const { base, scope, isOccurrence, hasSeries } = pickEditTarget(item, details);
+
+            // An edit of one occurrence never removes other occurrences
+            // (#298): the assistant makes the edit, then deletes the other
+            // dates with calendar_event_delete, each on its own card.
+            const exdatesGiven = Array.isArray(details.exdates_add) && details.exdates_add.length > 0;
+            if (exdatesGiven && scope !== "series" && hasSeries) return { ok: false, error: ONE_OCCURRENCE_EXDATES_ERROR };
+            // The occurrences exdates_add names, in the series as it is before
+            // the edit; a value that names none is refused before anything is written.
+            const exdates = Array.isArray(details.exdates_add) ? exdatesNamedBy(base, details.exdates_add) : { rids: [] };
+            if (exdates.error) return { ok: false, error: exdates.error };
             // A whole-series time change is made from the series' first
             // occurrence (#287); one named from a later occurrence is a change of
             // it and the following ones (the edit tool routes it there first).
@@ -3076,18 +3084,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               || !!guestChange || exdates.rids.length > 0 || (!!patch.recurrence && typeof patch.recurrence === "object")
               || details.send_invitations === true;
             if (details.check_only) return { ok: true, changes, times, resetsChangedOccurrences: resets };
-
-            // EXDATE additions on an edit of one occurrence go to its series.
-            if (exdates.rids.length && scope !== "series") {
-              const parent = item.parentItem || item;
-              const parentOld = parent.clone();
-              let added = 0;
-              for (const rid of exdates.rids) {
-                try { addExdateToItem(parent, rid); added += 1; } catch (xe) { console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe); }
-              }
-              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
-              await parent.calendar.modifyItem(parent, parentOld);
-            }
 
             // The organizer was set above (setOwnOrganizerIfGuests), only when
             // the item has guests and none; an existing one is never changed.

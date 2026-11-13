@@ -39,7 +39,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({ CHAT_SETTINGS: {} }));
 
 const {
   loadCalendarBridge, fakeCalDateTime, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem,
-  recurrenceDate, seriesOccurrences, fixedZone, FLOATING_ZONE, UTC_ZONE, LOCAL_ZONE,
+  recurrenceDate, seriesOccurrences, fixedZone, FLOATING_ZONE, UTC_ZONE, LOCAL_ZONE, readOnlySeries,
 } = await import('./helpers/calendarBridgeHarness.js');
 const {
   recurrenceArgError, otherPartsRefusal, formatRecurrenceLine, recurrenceMark, recurrenceInWords, OTHER_PARTS_NOTE,
@@ -1528,7 +1528,6 @@ describe('excluded dates name occurrences by their start, as the read tools show
 
   for (const [name, args] of [
     ['the whole series', {}],
-    ['one occurrence', { edit_scope: 'this_only', recurrence_id: '2099-10-15T17:00:00' }],
     ['this and following', { edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00' }],
   ]) {
     it(`an excluded date no occurrence starts at is refused and writes nothing (${name})`, async () => {
@@ -1546,6 +1545,49 @@ describe('excluded dates name occurrences by their start, as the read tools show
       expect(master.recurrenceInfo.getExceptionIds()).toEqual([]);
     });
   }
+  // An edit of one occurrence never removes other occurrences (#298): the
+  // confirmed write refuses it as the check does, and never reports success
+  // for dates it did not remove. The stored series is immutable, as Thunderbird
+  // hands it out.
+  for (const [name, fields] of [
+    ['with a new title', { title: 'Renamed' }],
+    ['with nothing else', {}],
+  ]) {
+    it(`an edit of one occurrence that also excludes others is refused and writes nothing (${name})`, async () => {
+      const master = readOnlySeries(series('FREQ=DAILY'));
+      const before = starts(master);
+      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      for (const check_only of [true, false]) {
+        const res = await api.modifyCalendarEvent({
+          event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: '2099-10-15T17:00:00',
+          ...fields, exdates_add: ['2099-10-20T17:00:00', '2099-10-21T17:00:00'], check_only,
+        });
+        expect(res).toMatchObject({ ok: false });
+        expect(res.error).toMatch(/^an edit of one occurrence \(edit_scope 'this_only'\) cannot also remove other occurrences: retry this edit without exdates_add, then remove each other occurrence with calendar_event_delete/);
+      }
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([master]);
+      expect(starts(calendar.items[0])).toEqual(before);
+      expect(starts(calendar.items[0])).toContain('20991020T170000');
+      expect(master.recurrenceInfo.getExceptionIds()).toEqual([]);
+    });
+  }
+
+  // An empty exdates_add (the tool drops blank entries, so [''] arrives as [])
+  // removes nothing and is no reason to refuse: the edit of the occurrence is made.
+  it('an edit of one occurrence with an empty exdates_add is made', async () => {
+    const master = series('FREQ=DAILY');
+    const before = starts(master);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: '2099-10-15T17:00:00', title: 'Renamed', exdates_add: [],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const saved = calendar.items[0];
+    expect(saved.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-15', 17))?.title).toBe('Renamed');
+    expect(exdates(saved)).toEqual([]);
+    expect(starts(saved).sort()).toEqual(before.sort());
+  });
 });
 
 // Thunderbird's schema layer hands an experiment every optional property the

@@ -85,7 +85,8 @@ part before its cap is written, the following part once its recurrence is attach
 change). `addExdateToItem` writes an all-day RECURRENCE-ID as a plain date. A one-occurrence edit
 (this_only) writes no series dates: the series keeps whatever zone it has, the exception's
 RECURRENCE-ID is the series' slot as stored, and its new dates are plain (`toCalIDateTimeInFrameOf`);
-its `exdates_add` are written plain on the zoned parent (keyed by date, harmless). A rewritten series
+since #298 it refuses `exdates_add` (050; superseded: its `exdates_add` were written plain on the zoned
+parent, keyed by date, a write the immutable stored series never took). A rewritten series
 west of UTC with a date UNTIL regains the day its UNTIL names, which Thunderbird dropped from the
 zoned copy (the date the user and Google read it as); that is the only occurrence change (a
 date-time UNTIL keeps its last day, above), and the split tests

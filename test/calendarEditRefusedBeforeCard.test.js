@@ -123,6 +123,7 @@ const noCalendarManager = (loaded) => {
 
 const EVENT_NOT_FOUND = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
 const SCOPE_NEEDS_RID = (scope) => `edit_scope='${scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.`;
+const ONE_OCCURRENCE_EXDATES = "an edit of one occurrence (edit_scope 'this_only') cannot also remove other occurrences: retry this edit without exdates_add, then remove each other occurrence with calendar_event_delete (delete_scope 'this_only' and that occurrence's recurrence_id), so the user confirms the edit and the deletion on their own cards";
 const NO_OCCURRENCE = (field, iso) => `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`;
 const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates or end date in the other form; change it in the calendar app';
 const KIND_CHANGE_UNTIL = 'changing these occurrences between all-day and timed would leave their end date (UNTIL) in the other form; give the repeat rule again, its end included, in the same edit (a move to another day goes first, in its own edit)';
@@ -159,8 +160,15 @@ const REFUSALS = [
   ['one occurrence named by a time two occurrences start at', () => series({ exceptions: [changed(4, { startOn: [5, 17] })] }),
     { edit_scope: 'this_only', recurrence_id: isoAt(5), title: 'Renamed' }, null,
     `recurrence_id ${isoAt(5)} is the start of more than one occurrence of this series; change it in the calendar app`],
+  // An edit of one occurrence never removes others (#298): the edit, then a
+  // delete, each on its own card.
+  ['an edit of one occurrence that also excludes another', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), title: 'Renamed', exdates_add: [isoAt(5)] }, null, ONE_OCCURRENCE_EXDATES],
+  ['an edit of one occurrence that only excludes another', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(5)] }, null, ONE_OCCURRENCE_EXDATES],
+  ['an edit of one occurrence that excludes itself', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(3)] }, null, ONE_OCCURRENCE_EXDATES],
+  ['an edit of an occurrence changed on its own that excludes another', () => series({ exceptions: [changed(4)] }),
+    { edit_scope: 'this_only', recurrence_id: isoAt(4), location: 'Room B', exdates_add: [isoAt(6)] }, null, ONE_OCCURRENCE_EXDATES],
+  ['an edit of one occurrence with an excluded date that names no occurrence', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(4, 18)] }, null, ONE_OCCURRENCE_EXDATES],
   ['an excluded date that names no occurrence, whole series', series, { exdates_add: [isoAt(4, 18)] }, null, NO_OCCURRENCE('exdates_add', isoAt(4, 18))],
-  ['an excluded date that names no occurrence, one occurrence', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(4, 18)] }, null, NO_OCCURRENCE('exdates_add', isoAt(4, 18))],
   ['an excluded date that is not a date', series, { exdates_add: ['next week'] }, null, 'invalid exdates_add format (expected ISO8601)'],
   ['an excluded date on an event that does not repeat', oneOff, { exdates_add: [isoAt(1)] }, null, `exdates_add ${isoAt(1)} is not the start of an occurrence of this series`],
   ['a whole-series time change named by a time that is no occurrence', series, { edit_scope: 'all', recurrence_id: isoAt(1, 18), start_iso: isoAt(1, 19) }, null, NO_OCCURRENCE('recurrence_id', isoAt(1, 18))],
@@ -393,15 +401,6 @@ describe('an edit the write makes reaches the card and is written', () => {
     const following = loaded.calendar.items.find((it) => it.id !== 'ser');
     expect(following).toBeTruthy();
     expect(following?.recurrenceInfo).toBeFalsy();
-  });
-
-  // An edit of one occurrence writes its excluded date to the series, and only
-  // after the confirmation: the modifications and the snapshot in toCard catch
-  // a check that writes it. This row stops at the card (the confirmed write of
-  // that excluded date to the series is not modelled here).
-  it('a new title for one occurrence that also excludes another, up to the card', async () => {
-    const { sess } = await toCard(series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(5)], title: 'Renamed' });
-    expect(sess.editEventArgs).toMatchObject({ edit_scope: 'this_only', exdates_add: [isoAt(5)], title: 'Renamed' });
   });
 
   it('a new title for the whole series', async () => {
