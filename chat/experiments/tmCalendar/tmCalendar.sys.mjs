@@ -540,6 +540,12 @@ function setRuleOnItem(item, value) {
 // the series' own RECURRENCE-ID for it, or `{ error }` when no occurrence, or
 // more than one, starts there: nothing is ever written for a time that is not
 // an occurrence (getOccurrenceFor would make one up for any time).
+// A time names the occurrence whose start the read tools print as it
+// (shownNaiveIso on both sides), not the instant the value is read at: the
+// night the clocks go back, a printed time inside the repeated hour stands for
+// either pass, and the zone reads the digits as the later one, so an
+// occurrence starting in the first pass was never named (#387). When either
+// side is a date, it is compared as before (CalDateTime.compare, by the day).
 function occurrenceNamedBy(item, iso, field = "recurrence_id") {
   const at = toCalIDateTime(String(iso || ""));
   if (!at) return { error: `invalid ${field} format (expected ISO8601)` };
@@ -550,8 +556,10 @@ function occurrenceNamedBy(item, iso, field = "recurrence_id") {
   const from = boundFromIcs(toIcsUntil(new Date(ms - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
   const to = boundFromIcs(toIcsUntil(new Date(ms + OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
   if (!from || !to || !item?.recurrenceInfo) return { error: `${field} ${iso} is not the start of an occurrence of this series` };
+  const named = shownNaiveIso(at);
+  const startsThere = (start) => (start.isDate || at.isDate ? start.compare(at) === 0 : shownNaiveIso(start) === named);
   const starting = [...(item.recurrenceInfo.getOccurrences(from, to, 0) || [])]
-    .filter((occ) => occ?.startDate && occ.startDate.compare(at) === 0);
+    .filter((occ) => occ?.startDate && startsThere(occ.startDate));
   if (starting.length === 1) return { occurrence: starting[0] };
   return {
     error: starting.length

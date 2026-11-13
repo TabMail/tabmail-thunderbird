@@ -137,15 +137,10 @@ describe('I5: restating the printed times is no change', () => {
     return at(frame, day, h, m);
   };
   const shownTimes = async (api, id, rid) => shownEventTimesIso(await api.getCalendarEventDetails(id, 'cal1', rid));
-  // An occurrence is named by its start as the read tools print it, and a
-  // printed time inside the hour the user's clocks repeat is read as its later
-  // pass (unchanged), so an occurrence starting in the first pass cannot be
-  // named: those are left out of the rows that name one.
-  const nameable = ({ ms }) => !inFirstPass(SYDNEY, ms);
 
   for (const kind of ['series', 'single event', 'one occurrence']) {
     it(`every stored start and end of the sweep, given back as printed with a new title, writes the title only (${kind})`, async () => {
-      const rows = kind === 'one occurrence' ? stored.filter(nameable) : stored;
+      const rows = stored;
       const items = rows.map(({ ms, frame }, i) => {
         const start = valueAt(frame, ms);
         const finish = start.clone();
@@ -184,7 +179,7 @@ describe('I5: restating the printed times is no change', () => {
   }
 
   it('twenty of them through the whole tool: the card shows the title and no time line', async () => {
-    const near = stored.filter((row) => nameable(row) && CHANGES.some((c) => Math.abs(row.ms - c) <= 75 * MINUTE)).slice(0, 20);
+    const near = stored.filter((row) => CHANGES.some((c) => Math.abs(row.ms - c) <= 75 * MINUTE)).slice(0, 20);
     expect(near).toHaveLength(20);
     for (const { ms, frame } of near) {
       const start = valueAt(frame, ms);
