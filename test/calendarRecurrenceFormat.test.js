@@ -1572,6 +1572,22 @@ describe('excluded dates name occurrences by their start, as the read tools show
       expect(master.recurrenceInfo.getExceptionIds()).toEqual([]);
     });
   }
+
+  // An empty exdates_add (the tool drops blank entries, so [''] arrives as [])
+  // removes nothing and is no reason to refuse: the edit of the occurrence is made.
+  it('an edit of one occurrence with an empty exdates_add is made', async () => {
+    const master = series('FREQ=DAILY');
+    const before = starts(master);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: '2099-10-15T17:00:00', title: 'Renamed', exdates_add: [],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const saved = calendar.items[0];
+    expect(saved.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-15', 17))?.title).toBe('Renamed');
+    expect(exdates(saved)).toEqual([]);
+    expect(starts(saved).sort()).toEqual(before.sort());
+  });
 });
 
 // Thunderbird's schema layer hands an experiment every optional property the

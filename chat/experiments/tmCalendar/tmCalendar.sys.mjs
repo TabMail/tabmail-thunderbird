@@ -756,7 +756,7 @@ const DELETE_SCOPES = ["this_only", "this_and_following", "all"];
 // An edit of one occurrence that also removes other occurrences (#298): the two
 // are never made in one save. The assistant makes the edit, then the delete.
 const ONE_OCCURRENCE_EXDATES_ERROR = "an edit of one occurrence (edit_scope 'this_only') cannot also remove other occurrences: retry this edit without exdates_add, then remove each other occurrence with calendar_event_delete (delete_scope 'this_only' and that occurrence's recurrence_id), so the user confirms the edit and the deletion on their own cards";
-const EDIT_EVENT_NOT_FOUND_ERROR ="event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
+const EDIT_EVENT_NOT_FOUND_ERROR = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
 
 // A series' start that changes between all-day and timed. RFC 5545 needs its
 // excluded and added dates, each UNTIL and its changed occurrences'
