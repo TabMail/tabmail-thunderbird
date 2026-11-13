@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso } from "../modules/helpers.js";
+import { canonicalShownIso } from "../modules/repeatedHour.js";
 import { shownEventTimesIso } from "./calendar_event_read.js";
 import { isClearRecurrence, otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
 
@@ -27,8 +28,10 @@ function normalizeArgs(args = {}) {
   if (typeof a.calendar_id === "string" && a.calendar_id) out.calendar_id = a.calendar_id;
   
   // recurrence_id — the start datetime of a specific occurrence (RECURRENCE-ID).
-  // Required when edit_scope is "this_only" or "this_and_following".
-  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = toNaiveIso(a.recurrence_id);
+  // Required when edit_scope is "this_only" or "this_and_following". A time in
+  // the hour the clocks repeat keeps the UTC offset it is printed with
+  // ("2026-11-01T01:30:00 (UTC-4)"), the one moment it names.
+  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = canonicalShownIso(a.recurrence_id) ?? toNaiveIso(a.recurrence_id);
 
   // edit_scope (v1.5.21+) — "all" | "this_only" | "this_and_following".
   // Normalize to the supported set; default is inferred at exec time (see calendarEdit.js).
@@ -43,10 +46,12 @@ function normalizeArgs(args = {}) {
   // given as a string count, "" included; see below)
   if (typeof a.title === "string" && a.title) out.title = a.title;
   // Normalize ISO strings to naive format (remove timezone offsets); a time
-  // given with a timezone keeps its digits, that zone's wall clock.
+  // given with a timezone keeps its digits, that zone's wall clock. A time
+  // printed with its UTC offset ("... (UTC-4)") is that exact moment, kept
+  // as printed for the bridge to read.
   const zone = typeof a.timezone === "string" && a.timezone ? a.timezone : undefined;
-  if (typeof a.start_iso === "string" && a.start_iso) out.start_iso = toNaiveIso(a.start_iso, zone);
-  if (typeof a.end_iso === "string" && a.end_iso) out.end_iso = toNaiveIso(a.end_iso, zone);
+  if (typeof a.start_iso === "string" && a.start_iso) out.start_iso = canonicalShownIso(a.start_iso) ?? toNaiveIso(a.start_iso, zone);
+  if (typeof a.end_iso === "string" && a.end_iso) out.end_iso = canonicalShownIso(a.end_iso) ?? toNaiveIso(a.end_iso, zone);
   if (typeof a.all_day === "boolean") out.all_day = a.all_day;
   // A location or notes the edit gives as a string is named, "" included: "" clears
   // the field (omitting it keeps it), as the bridge and the schema read it.
@@ -197,11 +202,11 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
 
   const norm = normalizeArgs(args);
 
-  // A date the tool cannot read (toNaiveIso gives null) is refused, never
-  // replaced by a guess.
+  // A date the tool cannot read (neither the printed form with a UTC offset
+  // nor toNaiveIso reads it) is refused, never replaced by a guess.
   const badDate = ["start_iso", "end_iso", "recurrence_id"].find((f) => typeof args?.[f] === "string" && args[f].trim() && !norm[f]);
   if (badDate) {
-    await failOut(`${badDate} "${args[badDate]}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS, or YYYY-MM-DD for a date, then retry.`);
+    await failOut(`${badDate} "${args[badDate]}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS (followed by its offset, e.g. " (UTC-4)", only when calendar_event_read shows one), or YYYY-MM-DD for a date, then retry.`);
     return;
   }
 

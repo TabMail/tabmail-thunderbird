@@ -71,7 +71,7 @@ describe('a date the calendar tools cannot read is refused before the card', () 
   for (const field of ['start_iso', 'end_iso', 'recurrence_id']) {
     it(`an edit whose ${field} is not a date fails, naming the field and the value`, async () => {
       const sess = await runTool(editRun, { event_id: 'evt', title: 'Renamed', [field]: 'next tuesday-ish' });
-      expect(sess.failReason).toBe(`${field} "next tuesday-ish" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS, or YYYY-MM-DD for a date, then retry.`);
+      expect(sess.failReason).toBe(`${field} "next tuesday-ish" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS (followed by its offset, e.g. " (UTC-4)", only when calendar_event_read shows one), or YYYY-MM-DD for a date, then retry.`);
       expect(ctx.state).toBe('exec_fail');
       expect(sess.editEventArgs).toBeUndefined();
     });

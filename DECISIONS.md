@@ -65,7 +65,7 @@
 
 ## ADR-013: Tools That Accept Timestamps Must Be Timezone-Aware
 
-- **[Full ADR](Companion/Decisions/Active/adr-013-timezone-aware-timestamp-tools.md)** — naive ISO 8601 stays the LLM ↔ tool wire format (`new Date()` parsing of naive strings is inconsistent across engines); every timestamp-taking tool resolves `Intl.DateTimeFormat().resolvedOptions().timeZone`, SHOULD accept an optional IANA `timezone` param, and MUST return the `timezone` used. Reference impls: `calendar_search.js`, `proactive_schedule_alarm.js`.
+- **[Full ADR](Companion/Decisions/Active/adr-013-timezone-aware-timestamp-tools.md)** — naive ISO 8601 stays the LLM ↔ tool wire format (`new Date()` parsing of naive strings is inconsistent across engines); every timestamp-taking tool resolves `Intl.DateTimeFormat().resolvedOptions().timeZone`, SHOULD accept an optional IANA `timezone` param, and MUST return the `timezone` used. Reference impls: `calendar_search.js`, `proactive_schedule_alarm.js`. Amendment 2026-11-13 (#387): a time in the hour the clocks repeat is printed with its UTC offset, `... (UTC-4)`, and the calendar edit and delete tools take it back as that one moment (`chat/modules/repeatedHour.js`; bridge twins `shownIso`/`parseShownIso`).
 
 ---
 

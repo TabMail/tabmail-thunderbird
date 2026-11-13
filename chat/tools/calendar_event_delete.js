@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso } from "../modules/helpers.js";
+import { canonicalShownIso } from "../modules/repeatedHour.js";
 
 // The scopes a delete of a repeating event takes (delete_scope), as the edit's
 // edit_scope. There is no default: the user is asked when it is unclear.
@@ -32,8 +33,9 @@ function normalizeArgs(args = {}) {
   if (typeof a.calendar_id === "string" && a.calendar_id) out.calendar_id = a.calendar_id;
 
   // recurrence_id — the start of the occurrence to delete, or to delete from,
-  // as the read tools show it (null when it is not a date: refused below).
-  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = toNaiveIso(a.recurrence_id);
+  // as the read tools show it, with its UTC offset in the hour the clocks
+  // repeat (null when it is not a date: refused below).
+  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = canonicalShownIso(a.recurrence_id) ?? toNaiveIso(a.recurrence_id);
 
   // delete_scope — "this_only" | "this_and_following" | "all". Any other value
   // is kept, so it is refused by name rather than dropped.
@@ -114,7 +116,7 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
 
   // A date the tool cannot read is refused, never replaced by a guess.
   if (typeof args?.recurrence_id === "string" && args.recurrence_id.trim() && !norm.recurrence_id) {
-    await failOut(`recurrence_id "${args.recurrence_id}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS, or YYYY-MM-DD for a date, then retry.`);
+    await failOut(`recurrence_id "${args.recurrence_id}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS (followed by its offset, e.g. " (UTC-4)", only when calendar_event_read shows one), or YYYY-MM-DD for a date, then retry.`);
     return;
   }
 
@@ -156,7 +158,7 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
       return;
     }
     if (norm.delete_scope !== "all" && !norm.recurrence_id) {
-      await failOut(`delete_scope '${norm.delete_scope}' needs recurrence_id: the occurrence's start_iso as calendar_event_read or calendar_read shows it (every occurrence of a repeating event has the series' event_id).`);
+      await failOut(`delete_scope '${norm.delete_scope}' needs recurrence_id: the occurrence's start_iso as calendar_event_read shows it (every occurrence of a repeating event has the series' event_id).`);
       return;
     }
     // This and every later occurrence, from the first: the whole series.

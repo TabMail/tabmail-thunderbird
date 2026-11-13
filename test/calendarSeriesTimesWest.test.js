@@ -112,7 +112,7 @@ describe('a whole-series time change, west of UTC: every night ends at the end g
     const series = seriesOf({ tzid: LA, day: '2099-10-27', rule: 'FREQ=WEEKLY;COUNT=8', changed: [moved(end('2099-10-27', 22), end('2099-10-31', 22), end('2099-10-31', 23))] });
     const loaded = onCalendar([series], LA);
     await seriesRow(loaded, { event_id: 'ser', edit_scope: 'all', recurrence_id: iso('2099-10-31', 22), end_iso: iso('2099-11-01', 1, 30) },
-      { W: 3.5 * H, namedStart: iso('2099-10-31', 22), namedEnd: iso('2099-11-01', 1, 30), fromDay: '2099-10-26', toDay: '2099-12-20' });
+      { W: 3.5 * H, namedStart: iso('2099-10-31', 22), namedEnd: `${iso('2099-11-01', 1, 30)} (UTC-8)`, fromDay: '2099-10-26', toDay: '2099-12-20' });
   });
 
   it('a stored series whose first night spans autumn, its printed end restated: nothing changes; end 08:00 is written', async () => {

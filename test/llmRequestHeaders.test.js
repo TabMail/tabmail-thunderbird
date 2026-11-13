@@ -95,4 +95,18 @@ describe("completions request headers", () => {
           : patch >= minPatch;
     expect(atLeast, `protocol ${SETTINGS.protocolVersion}`).toBe(true);
   });
+
+  // The calendar read, edit and delete texts name the form a time in the hour
+  // the clocks repeat is printed and taken back in ("... (UTC-4)") from
+  // protocol 1.11.6. Below it, the model is not told what the offset means.
+  it("asks for the calendar texts that name the repeated hour's offset form (protocol 1.11.6 or later)", () => {
+    const parts = (version) => version.split(".").map(Number);
+    const [major, minor, patch] = parts(SETTINGS.protocolVersion);
+    const [minMajor, minMinor, minPatch] = parts("1.11.6");
+    const atLeast =
+      major !== minMajor ? major > minMajor
+        : minor !== minMinor ? minor > minMinor
+          : patch >= minPatch;
+    expect(atLeast, `protocol ${SETTINGS.protocolVersion}`).toBe(true);
+  });
 });

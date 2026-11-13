@@ -239,18 +239,18 @@ describe('formatDayHeader', () => {
 // ---------------------------------------------------------------------------
 
 describe('insertLine', () => {
-  it('inserts a line into a new calendar in the day object', () => {
+  it('inserts a line, with the moment it sorts by, into a new calendar in the day object', () => {
     const dayObj = { calendars: {} };
-    const result = insertLine(dayObj, 'work', '09:00 - 10:00: Meeting');
+    const result = insertLine(dayObj, 'work', '09:00 - 10:00: Meeting', 1000);
     expect(result).toBe(dayObj);
-    expect(dayObj.calendars.work).toEqual(['09:00 - 10:00: Meeting']);
+    expect(dayObj.calendars.work).toEqual([{ line: '09:00 - 10:00: Meeting', sortMs: 1000 }]);
   });
 
   it('appends to an existing calendar entry', () => {
-    const dayObj = { calendars: { work: ['09:00 - 10:00: Meeting'] } };
-    insertLine(dayObj, 'work', '11:00 - 12:00: Standup');
+    const dayObj = { calendars: { work: [{ line: '09:00 - 10:00: Meeting', sortMs: 1000 }] } };
+    insertLine(dayObj, 'work', '11:00 - 12:00: Standup', 2000);
     expect(dayObj.calendars.work).toHaveLength(2);
-    expect(dayObj.calendars.work[1]).toBe('11:00 - 12:00: Standup');
+    expect(dayObj.calendars.work[1]).toEqual({ line: '11:00 - 12:00: Standup', sortMs: 2000 });
   });
 
   it('handles multiple calendars', () => {
@@ -320,6 +320,13 @@ describe('formatHour', () => {
     const d = new Date();
     d.setHours(23, 59, 0, 0);
     expect(formatHour(d)).toBe('23:59 (11:59 p.m.)');
+  });
+
+  it('puts a UTC offset label, when given, after the 24-hour value', () => {
+    const d = new Date();
+    d.setHours(1, 30, 0, 0);
+    expect(formatHour(d, 'UTC-4')).toBe('01:30 (UTC-4) (1:30 a.m.)');
+    expect(formatHour(d, null)).toBe('01:30 (1:30 a.m.)');
   });
 
   it('returns empty string for invalid input', () => {

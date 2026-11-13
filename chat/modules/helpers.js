@@ -9,6 +9,7 @@ import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "./chatConfig.js";
 import { ctx } from "./context.js";
 import { attachSpecialLinkListeners, renderMarkdown } from "./markdown.js";
+import { parseShownIso, utcOffsetLabel } from "./repeatedHour.js";
 
 /**
  * ISO-8601 timestamp without fractional seconds (saves LLM tokens).
@@ -718,6 +719,11 @@ export function cleanupScrollObservers(container) {
  * move a time in the system zone's own skipped hour by an hour although the
  * named zone has it (#385). The calendar bridge places the digits in the zone.
  *
+ * A string with a note in parentheses returns null: the engine's lenient
+ * parser may skip the note and read the digits as another moment. The form
+ * the tools print a time in the repeated hour with, "<digits> (UTC-4)", is
+ * read by repeatedHour.js, never here.
+ *
  * @param {number|string|Date} input - Timestamp in ms, ISO string, or Date object
  * @param {string} [timezone] - IANA zone the string's wall time is given in
  * @returns {string|null} Naive ISO8601 string (e.g., "2025-01-15T14:00:00"), or null
@@ -729,6 +735,10 @@ export function toNaiveIso(input, timezone) {
     if (typeof input === 'number') {
       date = new Date(input);
     } else if (typeof input === 'string') {
+      if (/[()]/.test(input)) {
+        log(`[TMDBG Helpers] toNaiveIso: ${input} has a note in parentheses; not read`, 'warn');
+        return null;
+      }
       const bareDate = /^\s*(\d{4}-\d{2}-\d{2})\s*$/.exec(input);
       if (bareDate && !isNaN(new Date(`${bareDate[1]}T00:00:00`).getTime())) return `${bareDate[1]}T00:00:00`;
       // Parse string - remove timezone offset if present
@@ -896,10 +906,13 @@ export function formatTimestampForAgent(dateObj = new Date()) {
  * Format a naive ISO datetime string for display in a specific timezone.
  * Used by FSM confirmation dialogs when a timezone override is present.
  * Falls back to formatTimestampForAgent() when no timezone override.
+ * `atMs`, the moment the digits stand for when they alone name two on the
+ * user's clock (the hour the clocks repeat), is the moment printed when no
+ * timezone is named.
  */
-export function formatNaiveIsoInTimezone(naiveIso, timezoneId) {
+export function formatNaiveIsoInTimezone(naiveIso, timezoneId, atMs) {
   try {
-    if (!timezoneId) return formatTimestampForAgent(new Date(naiveIso));
+    if (!timezoneId) return formatTimestampForAgent(new Date(atMs ?? naiveIso));
     // Treat naive ISO as UTC so the digits are preserved as-is when formatted in UTC.
     // Then derive the timezone abbreviation from the target timezone.
     const dateAsUtc = new Date(naiveIso + "Z");
@@ -976,10 +989,17 @@ export function allDayLastDay(endDay, startDay) {
  * end, and never a day before the start (a DTEND equal to DTSTART is one
  * day), as Google Calendar shows it.
  *
- * A timed value is printed by formatNaiveIsoInTimezone, unchanged.
+ * A timed value is printed by formatNaiveIsoInTimezone, unchanged; one in the
+ * hour the clocks repeat, which the read tools print with its UTC offset
+ * ("2026-11-01T01:30:00 (UTC-4)"), is the moment that offset names, followed
+ * by the offset, so the zone's name and the offset agree.
  */
 export function formatCardTime(naiveIso, { allDay = false, endAfter = null, timezone } = {}) {
-  if (!allDay) return formatNaiveIsoInTimezone(naiveIso, timezone);
+  if (!allDay) {
+    const shown = parseShownIso(naiveIso);
+    if (shown) return `${formatNaiveIsoInTimezone(shown.digits, timezone, shown.ms)} (${utcOffsetLabel(shown.offsetMinutes)})`;
+    return formatNaiveIsoInTimezone(naiveIso, timezone);
+  }
   let day = String(naiveIso).slice(0, 10);
   if (endAfter) day = allDayLastDay(day, String(endAfter).slice(0, 10));
   return `${CARD_WEEKDAYS[utcDay(day).getUTCDay()]} ${day.replaceAll("-", "/")}`;
