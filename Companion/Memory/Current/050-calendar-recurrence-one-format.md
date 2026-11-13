@@ -303,7 +303,7 @@ same design (tabmail-ios #421).
   refused before anything is written, for every scope. On the whole series and on a split the EXDATEs are added
   before the time change, so a value names the occurrence the user read and `onStartDateChange` moves the EXDATE
   with the series (the order #295 reported reversed). **An edit of one occurrence (`this_only`) with `exdates_add` is
-  refused** by the bridge before anything is written, the check before the card included (#298, owner option B,
+  refused** by the bridge before anything is written, the check before the card included (#298, decided
   2026-11-12; `ONE_OCCURRENCE_EXDATES_ERROR`): the assistant makes the edit without `exdates_add`, then removes each
   other occurrence with `calendar_event_delete` (`delete_scope` 'this_only'), each on its own card; the two are never
   combined in one save. iOS already refuses the same combination (`exdates_add` is a call of its own there, tabmail-ios
