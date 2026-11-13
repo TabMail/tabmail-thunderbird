@@ -164,6 +164,19 @@ describe('calendar_event_read prints each pass of the repeated hour with its own
       expect(field(text, 'end_iso')).toBe('2099-11-02T00:00:00');
     });
   });
+
+  it('a start_iso with any other note in parentheses names no moment: nothing is read', async () => {
+    await asUserIn('America/Los_Angeles', async () => {
+      const queryCalendarItems = vi.fn(async () => []);
+      browser.tmCalendar = { queryCalendarItems, listCalendars: vi.fn(async () => [{ id: 'cal1' }]) };
+      for (const value of ['2099-11-01T01:30:00 (PDT)', '2099-11-01 01:30:00 (UTC-7)', '2099-11-01 01:30:00 (PDT)']) {
+        const res = await read.run({ start_iso: value, title: 'Night shift' });
+        expect(res.ok, value).toBe(false);
+        expect(String(res.error), value).toContain('invalid start datetime');
+      }
+      expect(queryCalendarItems).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('calendar_read lists both passes with their offsets, in the order they happen (P2)', () => {
