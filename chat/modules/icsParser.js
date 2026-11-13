@@ -175,7 +175,7 @@ function tryMapTzid(tzid, warnings) {
   return { tzidRaw: raw, tzidMapped: mapped };
 }
 
-export function offsetMinutesForZoneAt(timeZone, utcMs) {
+function offsetMinutesForZoneAt(timeZone, utcMs) {
   // Requires ICU support for shortOffset. If unavailable, throw to caller.
   const d = new Date(utcMs);
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "shortOffset", hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });

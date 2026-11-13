@@ -120,18 +120,28 @@ UNTIL's day, the rewritten one keeps it)
   moved a time in the computer's own skipped hour by an hour although the named zone has it (#385). A
   time the named zone itself skips is passed on as given; the bridge decides it in that zone. Without a
   `timezone` (and for `recurrence_id`, always on the user's clock) the reading is unchanged
-  (`test/calendarToolDates.test.js`, `test/helpers.test.js`). A timed create given with a `timezone`
-  and no end (#393) gets its default end on the named zone's clock too (`ensureTimes`,
-  `wallClockInZoneAfter`): the start's instant in that zone, read as ical.js places it
-  (`Timezone.utcOffset`: a repeated time is the second pass, a skipped one takes the offset after the
-  change; `instantOfWallClockInZone`, offsets from icsParser's `offsetMinutesForZoneAt`), plus the
-  default length, written back as that zone's naive wall clock so the card and the bridge read start
-  and end alike. Before, `new Date(start_iso)` read the digits on the computer's clock and wrote a UTC
-  `Z` end, off by the difference between the zones (an end before the start east of the named zone).
-  The length is elapsed, as without a `timezone` and as iOS does it (`toolInstant` + interval). Known
-  limit: an end that falls in the first pass of the named zone's repeated hour has digits the calendar
-  reads as the second pass, an hour later. Pinned by `test/calendarToolDates.test.js` (Thunderbird's
-  own ical.js as the oracle around New York's clock changes, two computer zones for London).
+  (`test/calendarToolDates.test.js`, `test/helpers.test.js`). A timed create given no end (#393) gets
+  its default end from the start AS THE CALENDAR STORES IT (`ensureTimes`): the start's digits placed in
+  the named zone, or with no `timezone` on the user's clock (where `toNaiveIso` read a bare start), as
+  ical.js places them (`instantOfWallClockInZone`; `Timezone.utcOffset`: a repeated time is the second
+  pass, a skipped one takes the offset after the change; offsets from `repeatedHour.js` `wallClockAt`),
+  plus the default length as elapsed time, printed on the same clock by #387's printer `toShownIso`: the
+  plain wall clock, or, inside the hour the clocks repeat, that time with its UTC offset
+  (`2027-11-07T01:15:00 (UTC-4)`). The bridge's create reads such an end as that moment
+  (`momentNamedBy`) and stores it as a UTC value, since in the start's zone its digits would be read as
+  the second pass; the card prints it through `formatCardTime`. A create given its own end still takes
+  bare times only (a value with a note in parentheses is "cannot read"). Before: `new Date(start_iso)`
+  read the digits on the computer's clock and wrote a UTC `Z` end, off by the difference between the
+  zones (an end before the start east of the named zone); after the first fix (2026-11-12) the zoned end
+  was a naive wall clock, which in the first pass of the repeated hour the calendar read an hour later
+  (owner 2026-11-13: write the exact end in the offset form, never refuse); and a bare start in the
+  repeated hour was read as the first pass while the bridge stores the second, so its end came out
+  before its start (accepted: the bridge checks end after start only for all-day events). Which pass a
+  bare create time means is TB #437; the default end follows whatever pass the start is stored at. The
+  length is elapsed, as iOS does it (`toolInstant` + interval). Pinned by `test/calendarToolDates.test.js`
+  (Thunderbird's own ical.js as the oracle around New York's clock changes, two computer zones for
+  London) and `test/calendarCreateDefaultEnd.test.js` (tool to the real bridge's write on Thunderbird's
+  own dates; the fall-back night found from today; the stored start and end compared).
 - Consumers key an all-day row by `startDay`, never by the epoch: `calendar_search` uses
   `localMidnightOfDay(startDay)` for the day key and ordering; `calendar_event_read` renders
   `start_iso`/`end_iso` as `${day}T00:00:00` and matches a `start_iso` lookup on the day.

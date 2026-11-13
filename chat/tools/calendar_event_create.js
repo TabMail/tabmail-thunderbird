@@ -13,8 +13,8 @@ import { createNewAgentBubble } from "../chat.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso, toIsoNoMs } from "../modules/helpers.js";
-import { offsetMinutesForZoneAt } from "../modules/icsParser.js";
 import { recurrenceArgError } from "../modules/recurrence.js";
+import { toShownIso, wallClockAt } from "../modules/repeatedHour.js";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -89,28 +89,19 @@ const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 const NAIVE_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
 
-// The instant a naive wall clock names in `zone`, read as Thunderbird's
-// calendar reads it when it places the start there (ical.js
-// Timezone.utcOffset): a time the clocks repeat is the second pass, a time
-// they skip takes the offset after the change. Zone offsets from
-// offsetMinutesForZoneAt, so the calendar math stays in-house.
+// The instant Thunderbird's calendar stores a naive start at: its digits
+// placed in `zone`, or with no zone on the user's clock (the bridge's
+// toCalIDateTime, after toNaiveIso has read a bare start there), as ical.js
+// places them (Timezone.utcOffset): a time the clocks repeat is the second
+// pass, a time they skip takes the offset after the change. Offsets from
+// repeatedHour's wallClockAt, the clock the tools print times on.
 function instantOfWallClockInZone(naive, zone) {
   const wallMs = Date.parse(`${naive}Z`);
-  const offsetMs = (utcMs) => offsetMinutesForZoneAt(zone, utcMs) * MINUTE_MS;
+  const offsetMs = (utcMs) => wallClockAt(utcMs, zone).offsetMinutes * MINUTE_MS;
   const after = offsetMs(wallMs + DAY_MS);
   const before = offsetMs(wallMs - DAY_MS);
   const holds = (offset) => offsetMs(wallMs - offset) === offset;
   return wallMs - (holds(after) || !holds(before) ? after : before);
-}
-
-// The wall clock in `zone`, as "YYYY-MM-DDTHH:MM:SS", `minutes` after the
-// naive `start` on that zone's clock: the start's instant in the zone, plus
-// the minutes, read back on the same clock (#393). Never the computer's
-// clock, which is another zone's.
-function wallClockInZoneAfter(start, zone, minutes) {
-  const endUtcMs = instantOfWallClockInZone(start, zone) + minutes * MINUTE_MS;
-  const endWallMs = endUtcMs + offsetMinutesForZoneAt(zone, endUtcMs) * MINUTE_MS;
-  return new Date(endWallMs).toISOString().slice(0, 19);
 }
 
 async function ensureTimes(details) {
@@ -122,10 +113,14 @@ async function ensureTimes(details) {
     }
     if (!end_iso && !all_day) {
       const minutes = await getDefaultEventDurationMinutes();
-      // A start given with a timezone is that zone's wall clock (normalizeArgs),
-      // so its end is too; the current time (no start given) is an instant.
-      if (details.timezone && NAIVE_ISO.test(start_iso)) {
-        end_iso = wallClockInZoneAfter(start_iso, details.timezone, minutes);
+      // A given start is a wall clock, in the named zone or on the user's
+      // clock (normalizeArgs); its end is the default length after the start
+      // as the calendar stores it (#393), on the same clock, printed as the
+      // tools print a time: in the hour the clocks repeat, with its UTC
+      // offset, which the bridge reads as that exact moment. The current time
+      // (no start given) is an instant.
+      if (NAIVE_ISO.test(start_iso)) {
+        end_iso = toShownIso(instantOfWallClockInZone(start_iso, details.timezone) + minutes * MINUTE_MS, details.timezone);
       } else {
         end_iso = toIsoNoMs(new Date(new Date(start_iso).getTime() + minutes * MINUTE_MS));
       }

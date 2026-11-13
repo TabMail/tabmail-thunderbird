@@ -2775,7 +2775,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (details.title) ev.title = String(details.title);
             const tzOverride = typeof details.timezone === "string" && details.timezone ? details.timezone : null;
             const start = toCalIDateTime(String(details.start_iso || ""), tzOverride);
-            const end = toCalIDateTime(String(details.end_iso || ""), tzOverride);
+            // An end printed with its UTC offset (the create tool's default
+            // end when it falls in the hour the clocks repeat, #393) is that
+            // moment, stored as a UTC value: in the start's zone its digits
+            // would be read as the second pass.
+            const end = momentNamedBy(details.end_iso) || toCalIDateTime(String(details.end_iso || ""), tzOverride);
             if (start) { if (details.all_day) asAllDayDate(start); ev.startDate = start; }
             if (end) { if (details.all_day) asAllDayDate(end); ev.endDate = end; }
             // An all-day end is the day after the last day (RFC 5545: DTEND
