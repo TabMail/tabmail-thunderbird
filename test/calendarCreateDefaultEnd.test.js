@@ -9,7 +9,13 @@
 // (ical.js, test/helpers/nativeCalendarDates.js), each bridge call checked
 // against the experiment's schema.json. The calendar stores a time the clocks
 // repeat as its second pass; an end inside the repeated hour is written in the
-// form the tools print it, with its UTC offset, and stored at that moment.
+// form the tools print it, with its UTC offset, and stored at that moment: in
+// the start's zone when the zone can name it (the second pass), as an edit
+// stores such a time, and as a UTC value for the first pass, which the zone
+// cannot name. The tool's copy of the calendar's start placement agrees with
+// the bridge's on both passes of the repeated hour and in the skipped hour. A
+// repeating event read back through the bridge lasts the default length on
+// its later occurrences too.
 //
 // The fall-back night is found from today on the process clock, which reads
 // the same rules as the test zones. The expected values come from that clock
@@ -41,7 +47,7 @@ vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}
 
 const { nativeLoaded } = await import('./helpers/nativeCalendarDates.js');
 const { checked } = await import('./helpers/calendarSchemaCheck.js');
-const { run } = await import('../chat/tools/calendar_event_create.js');
+const { run, instantOfWallClockInZone } = await import('../chat/tools/calendar_event_create.js');
 const { ctx } = await import('../chat/modules/context.js');
 const { CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js');
 
@@ -74,19 +80,24 @@ const label = (m) => `UTC${m < 0 ? '-' : '+'}${Math.floor(Math.abs(m) / 60)}${Ma
 // The next time `zone`'s clocks go back, from now: the first moment at the
 // later offset (`at`), and how far they go back (`back`). The moments
 // [at - back, at) and [at, at + back) show the same digits.
-function nextFallBack(zone) {
+// The next clock change of `zone` from now in one direction (`sign` 1: the
+// clocks go back, -1: forward): the first moment at the new offset (`at`) and
+// how far they move (`back`, `forward`).
+function nextChange(zone, sign) {
   const now = Date.now() - (Date.now() % QUARTER_MS);
   const found = onClock(zone, () => {
     const offset = (ms) => -new Date(ms).getTimezoneOffset();
     for (let ms = now; ms < now + DAYS_SEARCHED * DAY_MS; ms += QUARTER_MS) {
-      const back = offset(ms - QUARTER_MS) - offset(ms);
-      if (back > 0) return { at: ms, back: back * MINUTE_MS };
+      const moved = sign * (offset(ms - QUARTER_MS) - offset(ms));
+      if (moved > 0) return { at: ms, back: moved * MINUTE_MS, forward: moved * MINUTE_MS };
     }
     return null;
   });
-  if (!found) throw new Error(`no fall-back night in ${zone}`);
+  if (!found) throw new Error(`no clock change in ${zone}`);
   return found;
 }
+const nextFallBack = (zone) => nextChange(zone, 1);
+const nextSpringForward = (zone) => nextChange(zone, -1);
 // A moment as the tools print it on `zone`'s clock: with its offset only when
 // it is in that night's repeated hour.
 const shownOn = (zone, fb, ms) => {
@@ -98,7 +109,7 @@ let nextPid = 0;
 // Runs the tool on a computer in `computer` (Thunderbird's zone too) to the
 // card, then writes what the card holds through the real bridge, as the
 // confirmed create does. Returns the card's values and the stored moments.
-async function createAndStore(computer, args) {
+async function createAndStore(computer, args, { readFrom, readTo } = {}) {
   return onClockAsync(computer, async () => {
     const loaded = nativeLoaded([], computer);
     const schemaErrors = [];
@@ -115,10 +126,17 @@ async function createAndStore(computer, args) {
     expect(schemaErrors).toEqual([]);
     expect(loaded.calendar.items).toHaveLength(1);
     const item = loaded.calendar.items[0];
+    // Read back through the bridge, as the read tools list a range.
+    const rows = readFrom === undefined ? null
+      : (await globalThis.browser.tmCalendar.queryCalendarItems(new Date(readFrom).toISOString(), new Date(readTo).toISOString(), ['cal1']))
+        .slice().sort((a, b) => a.startMs - b.startMs);
     return {
       card: sess.createEventArgs,
       storedStart: item?.startDate ? item.startDate.nativeTime / 1000 : null,
       storedEnd: item?.endDate ? item.endDate.nativeTime / 1000 : null,
+      startZone: item?.startDate?.timezone?.tzid ?? null,
+      endZone: item?.endDate?.timezone?.tzid ?? null,
+      rows,
     };
   });
 }
@@ -139,9 +157,12 @@ describe('a create with no end whose default end falls in the first pass of the 
       it(`${label_} (${computer}): the end is written with its UTC offset and stored at the start plus the default length`, async () => {
         expect(endAt).toBeLessThan(fb.at);
         expect(shownOn(zone, fb, startAt)).toBe(startIso);
-        const { card, storedStart, storedEnd } = await createAndStore(computer, { start_iso: startIso, ...(timezone ? { timezone } : {}) });
+        const { card, storedStart, storedEnd, startZone, endZone } = await createAndStore(computer, { start_iso: startIso, ...(timezone ? { timezone } : {}) });
         expect(card.start_iso).toBe(startIso);
         expect(card.end_iso).toBe(shownOn(zone, fb, endAt));
+        // The start's zone cannot name the first pass: the end is the UTC instant.
+        expect(startZone).toBe(zone);
+        expect(endZone).toBe('UTC');
         expect(card.end_iso).toBe(`${digitsOn(zone, endAt)} (${label(offsetOn(zone, endAt))})`);
         expect(storedStart).toBe(startAt);
         expect(storedEnd).toBe(endAt);
@@ -160,17 +181,27 @@ describe('a create with no end whose start is in the repeated hour', () => {
     ['in New York given on a computer in another zone', 'America/New_York', 'America/New_York', 'America/Los_Angeles'],
   ]) {
     const fb = nextFallBack(zone);
-    for (const [where, secondPassStart] of [
-      ['at the start of the repeated hour', fb.at],
-      ['in the middle of the repeated hour', fb.at + fb.back / 2],
+    // `endRepeated`: whether the end is still in the repeated hour (its second
+    // pass), so printed with its offset. At the start of the hour that holds
+    // only while the configured length is under the hour the clocks repeat.
+    for (const [where, secondPassStart, endRepeated] of [
+      ['at the start of the repeated hour', fb.at, true],
+      ['in the middle of the repeated hour', fb.at + fb.back / 2, false],
     ]) {
       const startIso = digitsOn(zone, secondPassStart);
       it(`${label_}, ${where}: the end is the default length after the stored start`, async () => {
-        const { card, storedStart, storedEnd } = await createAndStore(computer, { start_iso: startIso, ...(timezone ? { timezone } : {}) });
+        expect(secondPassStart + LENGTH_MS < fb.at + fb.back, 'the configured length puts this end where the case expects it').toBe(endRepeated);
+        const { card, storedStart, storedEnd, startZone, endZone } = await createAndStore(computer, { start_iso: startIso, ...(timezone ? { timezone } : {}) });
         expect(card.start_iso).toBe(startIso);
+        // A second-pass end (with its offset) or a plain one is stored in the
+        // start's zone, as an edit stores a time given with its offset.
+        expect(startZone).toBe(zone);
+        expect(endZone).toBe(zone);
         expect(storedEnd - storedStart).toBe(LENGTH_MS);
         expect(storedEnd).toBeGreaterThan(storedStart);
         expect(card.end_iso).toBe(shownOn(zone, fb, storedStart + LENGTH_MS));
+        if (endRepeated) expect(card.end_iso).not.toMatch(NAIVE);
+        else expect(card.end_iso).toMatch(NAIVE);
       });
     }
   }
@@ -195,6 +226,85 @@ describe('a create with no end whose end is outside the repeated hour', () => {
       expect(card.end_iso).toMatch(NAIVE);
       expect(card.end_iso).toBe(digitsOn(zone, storedStart + LENGTH_MS));
       expect(storedEnd - storedStart).toBe(LENGTH_MS);
+    });
+  }
+});
+
+// The tool's copy of the calendar's start placement (instantOfWallClockInZone)
+// and the bridge's (toCalIDateTime, ical.js) place every start at the same
+// moment: before, in and after the repeated hour (the second pass), and in the
+// hour the clocks skip, in a named zone on another computer and on the user's
+// own clock (where the tool first reads a bare start with toNaiveIso).
+describe('the create tool places a start where the calendar stores it', () => {
+  for (const [label_, zone, timezone, computer] of [
+    ['in New York given on a computer in another zone', 'America/New_York', 'America/New_York', 'America/Los_Angeles'],
+    ['on the user\'s own clock', 'America/Los_Angeles', undefined, 'America/Los_Angeles'],
+  ]) {
+    const fb = nextFallBack(zone);
+    const sf = nextSpringForward(zone);
+    // The skipped hour's digits: the clock just before the change, moved on by
+    // a quarter and by half the skipped time.
+    const skipped = (by) => new Date(Date.parse(`${digitsOn(zone, sf.at - QUARTER_MS)}Z`) + QUARTER_MS + by).toISOString().slice(0, 19);
+    for (const [where, startIso, secondPass] of [
+      ['before the repeated hour', digitsOn(zone, fb.at - fb.back - QUARTER_MS), fb.at - fb.back - QUARTER_MS],
+      ['at the start of the repeated hour', digitsOn(zone, fb.at), fb.at],
+      ['in the middle of the repeated hour', digitsOn(zone, fb.at + fb.back / 2), fb.at + fb.back / 2],
+      ['at the last quarter of the repeated hour', digitsOn(zone, fb.at + fb.back - QUARTER_MS), fb.at + fb.back - QUARTER_MS],
+      ['at the start of the skipped hour', skipped(0), null],
+      ['in the middle of the skipped hour', skipped(sf.forward / 2), null],
+    ]) {
+      it(`${label_}, ${where}: the tool and the bridge place the start at the same moment`, async () => {
+        const { card, storedStart } = await createAndStore(computer, { start_iso: startIso, ...(timezone ? { timezone } : {}) });
+        const placed = onClock(computer, () => instantOfWallClockInZone(card.start_iso, timezone));
+        // The skipped digits do not exist on the zone's clock.
+        if (secondPass === null) expect(onClock(zone, () => localDigits(new Date(startIso)))).not.toBe(startIso);
+        expect(Number.isFinite(placed)).toBe(true);
+        expect(placed).toBe(storedStart);
+        if (secondPass !== null) expect(storedStart).toBe(secondPass);
+      });
+    }
+  }
+});
+
+// A repeating event whose default end lands in the repeated hour, read back
+// through the bridge: its later occurrences last the default length too, as
+// Thunderbird builds each from the series' start and stored length. With a
+// second-pass end the first occurrence does too. With a first-pass end (stored
+// as the UTC instant) Thunderbird adds the length on the clock, so the first
+// occurrence lasts an hour longer: a known effect left to the owner (Companion
+// memory 034), so its length is not asserted here.
+describe('a repeating create with no end whose default end lands in the repeated hour', () => {
+  const zone = 'America/New_York';
+  const computer = 'America/Los_Angeles';
+  const fb = nextFallBack(zone);
+  for (const [where, startAt, firstAsLong] of [
+    ['the first pass', fb.at - fb.back + QUARTER_MS - LENGTH_MS, false],
+    ['the second pass', fb.at, true],
+  ]) {
+    it(`an end in ${where}: the stored end is exact and the second occurrence lasts the default length`, async () => {
+      // The end lands in the pass the case names (the second pass only while
+      // the configured length is under the hour the clocks repeat).
+      const endAt = startAt + LENGTH_MS;
+      expect(endAt >= fb.at - fb.back && endAt < fb.at + fb.back, 'the configured length puts this end in the repeated hour').toBe(true);
+      expect(endAt >= fb.at).toBe(firstAsLong);
+      const startIso = digitsOn(zone, startAt);
+      const nextDay = onClock(zone, () => {
+        const d = new Date(startAt);
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, d.getHours(), d.getMinutes()).getTime();
+      });
+      const { storedStart, storedEnd, rows } = await createAndStore(computer,
+        { start_iso: startIso, timezone: zone, recurrence: { freq: 'DAILY', count: 3 } },
+        { readFrom: startAt - QUARTER_MS, readTo: nextDay + LENGTH_MS + QUARTER_MS });
+      expect(storedStart).toBe(startAt);
+      expect(storedEnd).toBe(startAt + LENGTH_MS);
+      expect(rows.length).toBe(2);
+      if (rows.length !== 2) return;
+      expect(rows[1].startMs).toBe(nextDay);
+      expect(rows[1].endMs).toBe(nextDay + LENGTH_MS);
+      if (firstAsLong) {
+        expect(rows[0].startMs).toBe(startAt);
+        expect(rows[0].endMs - rows[0].startMs).toBe(LENGTH_MS);
+      }
     });
   }
 });

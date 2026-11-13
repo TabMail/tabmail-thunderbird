@@ -90,12 +90,14 @@ const DAY_MS = 24 * 60 * MINUTE_MS;
 const NAIVE_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
 
 // The instant Thunderbird's calendar stores a naive start at: its digits
-// placed in `zone`, or with no zone on the user's clock (the bridge's
-// toCalIDateTime, after toNaiveIso has read a bare start there), as ical.js
-// places them (Timezone.utcOffset): a time the clocks repeat is the second
-// pass, a time they skip takes the offset after the change. Offsets from
-// repeatedHour's wallClockAt, the clock the tools print times on.
-function instantOfWallClockInZone(naive, zone) {
+// placed in `zone`, or with no zone on the user's clock (after toNaiveIso has
+// read a bare start there), as ical.js places them (Timezone.utcOffset): a
+// time the clocks repeat is the second pass, a time they skip takes the offset
+// after the change. A copy of the bridge's rule (tmCalendar.sys.mjs,
+// toCalIDateTime's resetTo in the zone), since neither side can import the
+// other; test/calendarCreateDefaultEnd.test.js pins that the two agree.
+// Offsets from repeatedHour's wallClockAt, the clock the tools print times on.
+export function instantOfWallClockInZone(naive, zone) {
   const wallMs = Date.parse(`${naive}Z`);
   const offsetMs = (utcMs) => wallClockAt(utcMs, zone).offsetMinutes * MINUTE_MS;
   const after = offsetMs(wallMs + DAY_MS);
