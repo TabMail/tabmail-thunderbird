@@ -231,10 +231,10 @@ describe('an all-day event given a time of day without all_day is refused, askin
     expect(occurrenceDays(loaded.calendar.items[0])).toEqual(daysFrom(START_DAY, LAST_DAY));
   });
 
-  it('one occurrence given a time of day, with an excluded date: nothing is written', async () => {
+  it('one occurrence given a time of day: nothing is written', async () => {
     const loaded = await createdSeries();
     await refused(loaded, {
-      edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00`, start_iso: `${MOVED_DAY}T09:00:00`, exdates_add: ['2099-10-05T00:00:00'],
+      edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00`, start_iso: `${MOVED_DAY}T09:00:00`,
     });
     const [item] = loaded.calendar.items;
     expect(item.recurrenceInfo.getExceptionIds()).toEqual([]);
@@ -322,11 +322,11 @@ describe('an edit that would end an all-day event on or before its start is refu
     expect(loaded.modifications).toEqual([]);
   });
 
-  it('one occurrence given dates of one day, with an excluded date: nothing is written', async () => {
+  it('one occurrence given dates of one day: nothing is written', async () => {
     const loaded = await createdSeries();
     const res = await loaded.api.modifyCalendarEvent({
       event_id: loaded.res.event_id, calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: `${SPLIT_DAY}T00:00:00`,
-      start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${MOVED_DAY}T00:00:00`, exdates_add: ['2099-10-05T00:00:00'],
+      start_iso: `${MOVED_DAY}T00:00:00`, end_iso: `${MOVED_DAY}T00:00:00`,
     });
     expect(res).toMatchObject({ ok: false });
     expect(res.error).toMatch(REFUSAL);

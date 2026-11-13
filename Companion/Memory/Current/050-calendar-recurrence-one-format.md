@@ -302,8 +302,15 @@ same design (tabmail-ios #421).
   duration) holds its date, so a changed occurrence moved to another day still showed on that day. A value that names no occurrence (or more than one) is
   refused before anything is written, for every scope. On the whole series and on a split the EXDATEs are added
   before the time change, so a value names the occurrence the user read and `onStartDateChange` moves the EXDATE
-  with the series (the order #295 reported reversed). An edit of one occurrence still writes them to the series
-  (#298: not saved while the parent item is immutable). Superseded: the values were parsed as raw times and
+  with the series (the order #295 reported reversed). **An edit of one occurrence (`this_only`) with `exdates_add` is
+  refused** by the bridge before anything is written, the check before the card included (#298, owner option B,
+  2026-11-12; `ONE_OCCURRENCE_EXDATES_ERROR`): the assistant makes the edit without `exdates_add`, then removes each
+  other occurrence with `calendar_event_delete` (`delete_scope` 'this_only'), each on its own card; the two are never
+  combined in one save. iOS already refuses the same combination (`exdates_add` is a call of its own there, tabmail-ios
+  #694). An event that does not repeat keeps the "not the start of an occurrence" refusal. Superseded (#298): the
+  excluded dates of one occurrence's edit were written to the stored series in place after the card; Thunderbird's
+  stored items are immutable, so the write threw, was caught, the series was saved unchanged and the edit reported
+  success. Superseded: the values were parsed as raw times and
   written as given after the time change, so a moved occurrence named by its printed start was not removed, and
   on a moved series the value named a time no occurrence had any more.
 - **Restated rules with `other` parts are refused,** for every edit scope: an edit that restates the rule of a
@@ -589,8 +596,8 @@ same design (tabmail-ios #421).
   word and suffix, all month names).
 - **One check before the card (#339):** the edit tool calls `modifyCalendarEvent` with `check_only: true` for every
   edit, after its routing, and fails the call with the bridge's refusal. The bridge returns from the check at its
-  first write, in both paths: in `modifyCalendarEvent` just before the excluded dates of one occurrence go to its
-  series (the first change to a stored item), in `splitRecurringEvent` just before the earlier part is written. So
+  first write, in both paths: in `modifyCalendarEvent` just before the save (until #298, just before the excluded
+  dates of one occurrence went to its series, a write that path no longer makes), in `splitRecurringEvent` just before the earlier part is written. So
   every refusal is made by the check, the split's new-rule write failure and its refusal to stop repeating at an
   occurrence changed on its own included (before #339 these two came after the check, so the card was shown for an
   edit the write then refused). Everything above works on clones. The tool keeps only its own argument checks (a
