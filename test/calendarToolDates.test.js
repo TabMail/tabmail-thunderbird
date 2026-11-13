@@ -8,6 +8,7 @@
 // the confirmation card, never replaced by a guess.
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import ICAL from './fixtures/mozilla/Ical.sys.mjs';
 
 globalThis.browser = {
   tmCalendar: {
@@ -40,6 +41,7 @@ vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn(async () => {}
 const { run: editRun } = await import('../chat/tools/calendar_event_edit.js');
 const { run: createRun } = await import('../chat/tools/calendar_event_create.js');
 const { ctx } = await import('../chat/modules/context.js');
+const { CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js');
 
 let nextPid = 0;
 async function runTool(run, args) {
@@ -168,5 +170,155 @@ describe('a time given in another zone keeps its digits on the computer\'s own c
     const sess = await runTool(createRun, { title: 'Sync', start_iso: inComputersGap, end_iso: endOf(inComputersGap), timezone: NAMED });
     expect(sess.failReason).toBeUndefined();
     expect(sess.createEventArgs).toMatchObject({ start_iso: inComputersGap, end_iso: endOf(inComputersGap), timezone: NAMED });
+  });
+});
+
+// A create given in a named zone with no end lasts the default length from
+// its start in that zone, whatever the computer's own zone (#393). The end is
+// that zone's wall clock, as the start is, so the card and the calendar read
+// both in the same zone. The oracle reads each value on the named zone's own
+// clock (the process zone set to it), not through the tool's zone arithmetic.
+describe('a create in another zone with no end ends the default length after its start in that zone', () => {
+  const NAMED = 'Europe/London';
+  const COMPUTERS = ['America/Los_Angeles', 'Asia/Tokyo'];
+  const DAYS_AHEAD = 30;
+  const DAYS_SEARCHED = 800;
+  const MINUTE_MS = 60 * 1000;
+  const minutes = CHAT_SETTINGS.createEventDefaultDurationMinutes;
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const NAIVE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+
+  async function onClockAsync(zone, fn) {
+    const was = process.env.TZ;
+    process.env.TZ = zone;
+    try { return await fn(); } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+  }
+  function onClock(zone, fn) {
+    const was = process.env.TZ;
+    process.env.TZ = zone;
+    try { return fn(); } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+  }
+  const naiveOf = (dt) => `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}T${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+  // The instant `naive` names on `zone`'s clock.
+  const instantIn = (zone, naive) => onClock(zone, () => new Date(naive).getTime());
+
+  // 10:00 on the named zone's clock, DAYS_AHEAD days from today.
+  const plainStart = onClock(NAMED, () => {
+    const t = new Date();
+    return naiveOf(new Date(t.getFullYear(), t.getMonth(), t.getDate() + DAYS_AHEAD, 10));
+  });
+  // Half an hour before the named zone's next spring-forward: the default
+  // length crosses the skipped hour, so its end on the clock is an hour later
+  // than the start's digits plus the length.
+  const beforeSkippedHour = onClock(NAMED, () => {
+    const t = new Date();
+    for (let i = 0; i < DAYS_SEARCHED; i += 1) {
+      for (let h = 1; h < 24; h += 1) {
+        const at = new Date(t.getFullYear(), t.getMonth(), t.getDate() + i, h, 30);
+        if (at.getHours() !== h) return naiveOf(new Date(t.getFullYear(), t.getMonth(), t.getDate() + i, h - 1, 30));
+      }
+    }
+    throw new Error(`no skipped hour in ${NAMED}`);
+  });
+
+  it('the start before the skipped hour is crossed by the default length', () => {
+    const start = instantIn(NAMED, beforeSkippedHour);
+    const end = onClock(NAMED, () => naiveOf(new Date(start + minutes * MINUTE_MS)));
+    const byDigits = onClock('UTC', () => naiveOf(new Date(new Date(`${beforeSkippedHour}Z`).getTime() + minutes * MINUTE_MS)));
+    expect(end).not.toBe(byDigits);
+  });
+
+  for (const computer of COMPUTERS) {
+    for (const [label, startIso] of [['an ordinary day', plainStart], ['a start just before the zone skips an hour', beforeSkippedHour]]) {
+      it(`on a computer in ${computer}, ${label}: the end is the start in ${NAMED} plus the default length`, async () => {
+        const sess = await onClockAsync(computer, () => runTool(createRun, { title: 'Sync', start_iso: startIso, timezone: NAMED }));
+        expect(sess.failReason).toBeUndefined();
+        const args = sess.createEventArgs;
+        expect(args).toMatchObject({ start_iso: startIso, timezone: NAMED });
+        // The calendar reads an end with Z as that instant, one without as the
+        // named zone's wall clock (toCalIDateTime).
+        const endAt = /Z$/.test(args.end_iso) ? Date.parse(args.end_iso) : instantIn(NAMED, args.end_iso);
+        expect(endAt - instantIn(NAMED, args.start_iso)).toBe(minutes * MINUTE_MS);
+        // The card prints the end on the named zone's clock, as the start.
+        expect(args.end_iso).toMatch(NAIVE);
+      });
+    }
+  }
+});
+
+// Around a clock change of the named zone, the default end is read as
+// Thunderbird's calendar reads the start and the end it is given: through
+// Thunderbird's own ical.js (test/fixtures/mozilla), in a zone with New York's
+// rules (the clocks skip 02:00-03:00 on 8 March 2099 and repeat 01:00-02:00 on
+// 1 November 2099; 2099 is the dated-test exception). A start the clocks
+// repeat is their second pass there, one they skip takes the offset after the
+// change. Each event lasts the default length as the calendar stores it.
+describe('a create in another zone with no end lasts the default length as the calendar reads it, across the zone\'s clock changes', () => {
+  const NAMED = 'America/New_York';
+  const COMPUTER = 'America/Los_Angeles';
+  const minutes = CHAT_SETTINGS.createEventDefaultDurationMinutes;
+  const zone = new ICAL.Timezone({
+    tzid: NAMED,
+    component: new ICAL.Component(ICAL.parse([
+      'BEGIN:VTIMEZONE', `TZID:${NAMED}`,
+      'BEGIN:DAYLIGHT', 'DTSTART:20070311T020000', 'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU', 'TZOFFSETFROM:-0500', 'TZOFFSETTO:-0400', 'END:DAYLIGHT',
+      'BEGIN:STANDARD', 'DTSTART:20071104T020000', 'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU', 'TZOFFSETFROM:-0400', 'TZOFFSETTO:-0500', 'END:STANDARD',
+      'END:VTIMEZONE', '',
+    ].join('\r\n'))),
+  });
+  // The instant the calendar stores for `naive` placed in the zone.
+  const storedAt = (naive) => {
+    const [y, mo, d, h, mi, s] = naive.split(/[-T:]/).map(Number);
+    return new ICAL.Time({ year: y, month: mo, day: d, hour: h, minute: mi, second: s, isDate: false }, zone).toUnixTime() * 1000;
+  };
+
+  const cases = [
+    ['an ordinary day', '2099-06-15T10:00:00'],
+    ['a start before the skipped hour, the length crossing it', '2099-03-08T01:30:00'],
+    ['a start in the skipped hour', '2099-03-08T02:30:00'],
+    ['a start in the repeated hour', '2099-11-01T01:30:00'],
+    ['a start after the repeated hour', '2099-11-01T02:15:00'],
+  ];
+  for (const [label, startIso] of cases) {
+    it(`${label}: the stored event lasts the default length`, async () => {
+      const was = process.env.TZ;
+      process.env.TZ = COMPUTER;
+      let sess;
+      try { sess = await runTool(createRun, { title: 'Sync', start_iso: startIso, timezone: NAMED }); } finally {
+        if (was === undefined) delete process.env.TZ;
+        else process.env.TZ = was;
+      }
+      expect(sess.failReason).toBeUndefined();
+      const args = sess.createEventArgs;
+      expect(args.start_iso).toBe(startIso);
+      expect(args.end_iso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+      expect(storedAt(args.end_iso) - storedAt(args.start_iso)).toBe(minutes * 60 * 1000);
+    });
+  }
+});
+
+// A create given a timezone but no start starts now, an instant (`Z`); its
+// default end is that instant plus the default length, never left out.
+describe('a create in another zone with no start and no end starts now and lasts the default length', () => {
+  it('the end is the default length after the start', async () => {
+    const minutes = CHAT_SETTINGS.createEventDefaultDurationMinutes;
+    const was = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    let sess;
+    try { sess = await runTool(createRun, { title: 'Sync', timezone: 'Europe/London' }); } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+    expect(sess.failReason).toBeUndefined();
+    const args = sess.createEventArgs;
+    expect(args.start_iso).toMatch(/Z$/);
+    expect(args.end_iso).toMatch(/Z$/);
+    expect(Date.parse(args.end_iso) - Date.parse(args.start_iso)).toBe(minutes * 60 * 1000);
   });
 });

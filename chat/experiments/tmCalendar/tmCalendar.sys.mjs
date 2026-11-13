@@ -1244,6 +1244,13 @@ function toCalIDateTime(iso, tzId) {
       timezone = overrideTimezone || tzService.defaultTimezone || tzService.UTC;
       const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(String(iso));
       let year, month, day, hours, minutes, seconds;
+      // Thunderbird places the digits in the zone (resetTo; ical.js
+      // Timezone.utcOffset: a time the clocks repeat is the second pass, one
+      // they skip takes the offset after the change). The create tool computes
+      // a default end from the start placed this way and keeps its own copy of
+      // the rule (calendar_event_create.js, instantOfWallClockInZone), since
+      // neither side can import the other; test/calendarCreateDefaultEnd.test.js
+      // pins that the two agree.
       if (m && overrideTimezone) {
         // Wall-clock parse — bypass JS Date's local-zone reinterpretation so
         // "2026-04-29T22:00:00" with tzId="Asia/Seoul" lands at 22:00 KST
@@ -1996,6 +2003,25 @@ function intoFrameOf(anchor, given, shownAs) {
   const out = atInstantInFrameOf(anchor, given);
   if (!out) throw new Error(repeatedHourError(given, anchor.timezone.tzid, shownAs));
   return out;
+}
+
+// A create's end given with its UTC offset (the create tool's default end in
+// the hour the clocks repeat, #393) at the moment it names (`moment`, a UTC
+// value from momentNamedBy; `shownAs`, the value as given), stored as an edit
+// stores a time given so (toCalIDateTimeInFrameOf, intoFrameOf): in the
+// start's zone whenever that zone can name the moment, the second pass
+// included.
+function createEndAt(start, moment, shownAs) {
+  if (start && atInstantInFrameOf(start, moment)) return intoFrameOf(start, moment, shownAs);
+  // The first pass of the repeated hour, which the start's zone cannot name
+  // (an edit refuses such a time): stored as the UTC instant. A UTC instant is
+  // only wrong for a series START, which would drift an hour across a clock
+  // change; for an END, Thunderbird carries the event's length to every
+  // occurrence (createProxy: each occurrence's start plus DTEND minus DTSTART).
+  // Known effect, not fixed here: in a REPEATING create, createProxy adds that
+  // length on the clock, so the first occurrence lasts an hour longer than the
+  // stored DTEND says (Companion memory 034, #393).
+  return moment;
 }
 
 // Whether an edit's start_iso or end_iso (`iso`, given in `tz` or on the user's
@@ -2775,7 +2801,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (details.title) ev.title = String(details.title);
             const tzOverride = typeof details.timezone === "string" && details.timezone ? details.timezone : null;
             const start = toCalIDateTime(String(details.start_iso || ""), tzOverride);
-            const end = toCalIDateTime(String(details.end_iso || ""), tzOverride);
+            // An end printed with its UTC offset (the create tool's default
+            // end when it falls in the hour the clocks repeat, #393) is the
+            // moment it names (createEndAt).
+            const endMoment = momentNamedBy(details.end_iso);
+            const end = endMoment ? createEndAt(start, endMoment, details.end_iso) : toCalIDateTime(String(details.end_iso || ""), tzOverride);
             if (start) { if (details.all_day) asAllDayDate(start); ev.startDate = start; }
             if (end) { if (details.all_day) asAllDayDate(end); ev.endDate = end; }
             // An all-day end is the day after the last day (RFC 5545: DTEND

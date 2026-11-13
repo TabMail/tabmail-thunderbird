@@ -15,6 +15,8 @@
 // and the read tools print with) and Thunderbird's zone agree:
 //   - America/Los_Angeles: the clocks skip 02:00-03:00 on 8 March 2099 and
 //     repeat 01:00-02:00 on 1 November 2099;
+//   - America/New_York: the same days and hours as Los Angeles, three hours
+//     earlier in UTC;
 //   - Australia/Sydney: the clocks repeat 02:00-03:00 on 5 April 2099 and skip
 //     02:00-03:00 on 4 October 2099;
 //   - Australia/Lord_Howe: the clocks move by 30 minutes, repeating
@@ -72,6 +74,9 @@ export const ZONES = {
   'America/Los_Angeles': vtimezone('America/Los_Angeles',
     ['DTSTART:20070311T020000', 'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU', 'TZOFFSETFROM:-0800', 'TZOFFSETTO:-0700'],
     ['DTSTART:20071104T020000', 'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU', 'TZOFFSETFROM:-0700', 'TZOFFSETTO:-0800']),
+  'America/New_York': vtimezone('America/New_York',
+    ['DTSTART:20070311T020000', 'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU', 'TZOFFSETFROM:-0500', 'TZOFFSETTO:-0400'],
+    ['DTSTART:20071104T020000', 'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU', 'TZOFFSETFROM:-0400', 'TZOFFSETTO:-0500']),
   'Australia/Sydney': vtimezone('Australia/Sydney',
     ['DTSTART:20081005T020000', 'RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU', 'TZOFFSETFROM:+1000', 'TZOFFSETTO:+1100'],
     ['DTSTART:20080406T030000', 'RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU', 'TZOFFSETFROM:+1100', 'TZOFFSETTO:+1000']),
