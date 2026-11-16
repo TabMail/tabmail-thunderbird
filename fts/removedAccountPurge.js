@@ -22,7 +22,7 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { log } from "../agent/modules/utils.js";
-import { acquireFtsExclusiveOperation, runFtsMembershipRead } from "./operationCoordinator.js";
+import { acquireFtsExclusiveOperation } from "./operationCoordinator.js";
 
 const PENDING_KEY = "fts_removed_account_purges";
 
@@ -123,9 +123,11 @@ async function _runPurges() {
   if ((await _readPending()).length === 0 && _unrecorded.size === 0) return;
   const lease = await acquireFtsExclusiveOperation("removed_account_purge");
   try {
-    // Every index write already queued finishes before the range is listed;
-    // later ones see the removal and are refused.
-    await runFtsMembershipRead(() => {});
+    // An empty removal is acknowledged only after every write already in
+    // the helper's writer queue, including one whose RPC timed out here, so
+    // the range is listed after them; later writes see the removal and are
+    // refused. If it fails, nothing is verified and every record stays.
+    await ftsSearch.removeBatch([]);
     // Re-read after the lease wait: removals stored meanwhile are included.
     const accountIds = new Set([...(await _readPending()), ..._unrecorded]);
     for (const accountId of accountIds) {
