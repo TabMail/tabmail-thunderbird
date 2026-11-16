@@ -2077,6 +2077,7 @@ function _newFolderReconRuntimeTelemetry() {
     membershipStatePages: 0,
     membershipStatePageRetries: 0,
     membershipStateRowsRefused: 0,
+    membershipStateRowsCollision: 0,
     membershipStateRestartMutatedReplay: 0,
     membershipStateRestartUnresolvedReplay: 0,
     membershipStateRestartRevoked: 0,
@@ -5265,10 +5266,12 @@ function _assertFolderReconRowCurrent(localScope) {
 /**
  * Total classifier for one NULL-owner native row (row-atomic):
  * - `unloaded`: the row's account is absent from this inventory — kept, no query;
- * - `ghost`: no live interpretation — no candidate folder, or every candidate
- *   globally absent;
+ * - `ghost`: no live interpretation — no account, no candidate folder, or
+ *   every candidate globally absent;
  * - `assign`: exactly one present owner;
- * - `unresolved`: two present owners, a query error, or no account separator;
+ * - `collision`: two present owners (a raw-key collision) — terminal for
+ *   this pass, kept with no owner, never retry debt;
+ * - `unresolved`: a query error — retried;
  * - `deferred`: the slice's global-query budget ran out before this row's
  *   first global query — nothing was decided, the row is retried next slice.
  * A scoped positive is conclusive ownership (ADR-017); only a scoped negative
@@ -5288,12 +5291,17 @@ async function _resolveFolderMembershipAssignment(
   folderURIs,
 ) {
   const accountId = _folderReconAccountIdOfMsgId(msgId);
-  if (!accountId) return { kind: "unresolved" };
+  // A key with no account (`::id`, written by older add-ons for a message
+  // whose header carried no folder) names no folder and opens no message.
+  // The message's own row is (re)indexed under its proper key by its folder's
+  // reconcile, so this row is removed.
+  if (!accountId) return { kind: "ghost" };
   if (!trustedAccountIds.has(accountId)) return { kind: "unloaded" };
   const folders = identities.map(identity => ({
     id: identity.weFolderId,
     accountId: identity.accountId,
     path: identity.folderPath,
+    identity,
   }));
   const candidates = getUniqueMessageKeyCandidates(msgId, folders);
   // The verdict reads only this raw key's messages, so only an event on the
@@ -5349,13 +5357,17 @@ async function _resolveFolderMembershipAssignment(
     present.push(candidate);
   }
   if (present.length === 0) return { kind: "ghost" };
-  if (present.length > 1) return { kind: "unresolved" };
-  const owner = identities.find(identity =>
-    identity.weFolderId === present[0].weFolder.id
-    && identity.accountId === present[0].weFolder.accountId
-    && identity.folderPath === present[0].weFolder.path);
-  if (!owner) return { kind: "unresolved" };
-  return { kind: "assign", assignment: { msgId, folderId: owner.folderId }, localScope };
+  // Two live folders hold this exact raw key (an F / F:suffix collision): no
+  // single owner exists, and replaying cannot change that while both copies
+  // live. The row stays searchable with no owner and is not retry debt; a
+  // later pass classifies it afresh once a copy is gone.
+  if (present.length > 1) return { kind: "collision" };
+  // Each candidate is built from its own inventory identity.
+  return {
+    kind: "assign",
+    assignment: { msgId, folderId: present[0].weFolder.identity.folderId },
+    localScope,
+  };
 }
 
 // Fields of a folder checkpoint that let an unchanged terminal mismatch delay
@@ -5489,7 +5501,8 @@ async function _runFolderMembershipMigrationSlice(
   //
   // The pass certifies property P: every native row has a non-null owner that
   // structurally prefixes its raw msgId, and that owner is in the inventory
-  // or its account is not loaded. Concurrent capable writes preserve P (one
+  // or its account is not loaded; the only exception is a terminal collision
+  // row two live folders share, kept ownerless. Concurrent capable writes preserve P (one
   // derivation site for msgId and owner, the adapter refuses ownerless rows,
   // native never reassigns an owner), so the pass tolerates membership-epoch
   // drift between pages instead of restarting on every indexed message. What
@@ -5674,6 +5687,7 @@ async function _runFolderMembershipMigrationSlice(
       });
     } else if (verdict.kind === "ghost") staleOrphans.push({ msgId, row: processed });
     else if (verdict.kind === "unloaded") unloadedRows.push(processed);
+    else if (verdict.kind === "collision") _bumpFolderReconTelemetry("membershipStateRowsCollision");
     else unresolvedRows.push(processed);
     processed++;
   }
