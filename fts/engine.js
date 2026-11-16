@@ -420,6 +420,13 @@ async function _initFtsEngineOnce() {
     // failed earlier would leave the background's recheck nothing to retry.
     attachCommandInterface();
     await initNativeFts();
+    // Finish removing the rows of every account removed so far, as soon as
+    // the helper is up and before any later startup step that can fail. Runs
+    // in the background under the exclusive FTS lease; a failure keeps the
+    // record.
+    initRemovedAccountPurge(ftsSearch).catch((e) => {
+      log(`[TMDBG FTS] Removed account purge failed: ${e}`, "warn");
+    });
     // A scan status left over from an interrupted session would otherwise show
     // as a live scan until the next one (with incremental indexing off, nothing
     // else clears it).
@@ -510,11 +517,6 @@ async function _initFtsEngineOnce() {
       throw e;
     }
 
-    // Finish removing the rows of every account removed so far. Runs in the
-    // background under the exclusive FTS lease; a failure keeps the record.
-    initRemovedAccountPurge(ftsSearch).catch((e) => {
-      log(`[TMDBG FTS] Removed account purge failed: ${e}`, "warn");
-    });
 
     // Initialize maintenance scheduler for periodic scans
     try {
