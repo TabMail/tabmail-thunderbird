@@ -1468,15 +1468,38 @@ export async function recheckMessageInFolder(headerID, weFolder) {
         }
         // A nullish page (initial query or mid-drain) is an API contract
         // violation, not proof of absence — the verdict stays "error".
-    } catch (_) {
+    } catch (error) {
         // Fixed text: the error may carry the Message-ID.
         log("[TMDBG HeaderResolver] recheckMessageInFolder query failed", "warn");
         verdict = "error";
+        await logRecheckFailureDiagnostic(error, headerID, scopedFolderId);
     }
     if (openListId) {
         await releaseMessageList(openListId);
     }
     return verdict;
+}
+
+/**
+ * Debug-only diagnostic for a failed recheck: the exception's name and message
+ * (Message-ID and anything address-shaped redacted) and whether Thunderbird
+ * still resolves the scoped folder id. A no-op unless debug logging is on, so
+ * the extra folder lookup never runs in production.
+ */
+async function logRecheckFailureDiagnostic(error, headerID, scopedFolderId) {
+    if (!(SETTINGS.verboseLogging && SETTINGS.debugLogging)) return;
+    const redact = text => String(text ?? "")
+        .split(headerID).join("<message-id>")
+        .replace(/[^\s<>"'():;,]+@[^\s<>"'():;,]+/g, "<address>");
+    let inInventory = "unscoped";
+    if (scopedFolderId) {
+        try {
+            inInventory = String(!!(await browser.folders.get(scopedFolderId)));
+        } catch (_) {
+            inInventory = "false";
+        }
+    }
+    log(`[TMDBG HeaderResolver] recheckMessageInFolder error name=${redact(error?.name)} message=${redact(error?.message ?? error)} inInventory=${inInventory}`, "debug");
 }
 
 /**

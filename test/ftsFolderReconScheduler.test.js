@@ -6450,37 +6450,227 @@ describe('ownerless-row classifier (exact helpers)', () => {
     }));
   });
 
-  it('keeps a row with two live owners unresolved and never cuts over', async () => {
-    const { nativeRows, fts } = seedMigratedExactFolders([
+  // INVARIANT (#276): a raw key that two live folders hold (F / F:suffix
+  // collision) is a terminal verdict on the first pass, never retry debt, so
+  // the global membership-state pass always completes and publishes cleanup.
+  // The row stays searchable with no owner, and a later pass classifies it
+  // afresh once one or both copies are gone.
+  it('finishes cleanup with a two-live-owner row kept ownerless, and reclassifies it once a copy is gone', async () => {
+    const { nativeRows, rowsByURI, folders, fts } = seedMigratedExactFolders([
       { folderPath: '/F', headerMessageIds: ['X:m@example.com'] },
       { folderPath: '/F:X', headerMessageIds: ['m@example.com'] },
     ]);
     const shared = 'account1:/F:X:m@example.com';
     nativeRows.set(shared, null);
 
-    await tickUntil(fts, () => false, 12);
+    await tickUntil(fts, () => _testExports._getFolderMembershipCleanupProven(), 12);
 
-    expect(_testExports._getFolderMembershipCleanupProven()).toBe(false);
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
+    expect(nativeRows.has(shared)).toBe(true);
     expect(nativeRows.get(shared)).toBeNull();
     expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(shared);
-    expect(_testExports._getFolderReconRuntimeTelemetry().membershipStateRestartUnresolvedReplay)
-      .toBeGreaterThan(0);
+    const telemetry = _testExports._getFolderReconRuntimeTelemetry();
+    expect(telemetry.membershipStateRestartUnresolvedReplay).toBe(0);
+    expect(telemetry.membershipStateRowsCollision).toBeGreaterThan(0);
+
+    // /F:X's copy goes; the next pass (after the completed one expires)
+    // assigns the row to the remaining owner.
+    rowsByURI.set(folders[1].folderURI, []);
+    vi.setSystemTime(Date.now() + reconConfig.walkPeriodMs + 1000);
+    await tickUntil(fts, () => nativeRows.get(shared) !== null, 20);
+    expect(nativeRows.get(shared)).toBe(makeFolderMembershipId('account1', '/F'));
   });
 
-  it('keeps a row unresolved when a global query errors, and when the key has no account separator', async () => {
+  // INVARIANT (#276): a raw key two live folders share keeps the pass from
+  // nothing: the membership pass completes, the shared row is kept with no
+  // owner, and a real gap in a colliding folder is still repaired. The
+  // colliding folders' exact proofs still owe the shared row, so the session
+  // stays incomplete (accepted limitation, ADR-024).
+  it('completes the pass past a shared raw key, keeps the row and still repairs a real gap', async () => {
+    const { nativeRows, folders, fts } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: ['X:m@example.com', 'gap@example.com'] },
+      { folderPath: '/F:X', headerMessageIds: ['m@example.com'] },
+    ]);
+    const shared = 'account1:/F:X:m@example.com';
+    const gap = 'account1:/F:gap@example.com';
+    nativeRows.set(shared, null);
+    nativeRows.delete(gap);
+    headerIDToWeID.mockImplementation(async id => (id === 'gap@example.com' ? 7 : null));
+    globalThis.browser.messages.get = vi.fn(async id => ({
+      id, headerMessageId: 'gap@example.com', folder: { accountId: 'account1', path: '/F' },
+    }));
+    getUniqueMessageKey.mockImplementation(async h => `account1:/F:${h.headerMessageId}`);
+    buildBatchHeader.mockImplementation(async headers => headers.map(h => ({
+      msgId: `account1:/F:${h.headerMessageId}`, folderId: folders[0].folderId,
+    })));
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    fts.indexBatch = vi.fn(async rows => runFtsMembershipMutation(async () => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    }));
+
+    let settled = false;
+    for (let turn = 0; turn < 60 && !(nativeRows.has(gap) && _testExports._getFolderMembershipCleanupProven()); turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      await settleInFlightFolderRecon();
+      if (_testExports._getPendingUpdates().size > 0) {
+        _testExports._setFtsSearch(fts);
+        await flushPendingUpdates();
+        _testExports._setFtsSearch(null);
+      }
+      vi.setSystemTime(Date.now() + 1000);
+      settled = await sessionSettled();
+    }
+
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
+    expect(nativeRows.get(gap)).toBe(folders[0].folderId);
+    expect(nativeRows.has(shared)).toBe(true);
+    expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(shared);
+    expect(settled).toBe(false);
+  });
+
+  it('removes a two-live-owner row as a ghost on a later pass once both copies are gone', async () => {
+    const { nativeRows, rowsByURI, folders, fts } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: ['X:m@example.com'] },
+      { folderPath: '/F:X', headerMessageIds: ['m@example.com'] },
+    ]);
+    const shared = 'account1:/F:X:m@example.com';
+    nativeRows.set(shared, null);
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCleanupProven(), 12);
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
+    expect(nativeRows.get(shared)).toBeNull();
+
+    rowsByURI.set(folders[0].folderURI, []);
+    rowsByURI.set(folders[1].folderURI, []);
+    recheckMessageInFolder.mockResolvedValue('absent');
+    vi.setSystemTime(Date.now() + reconConfig.walkPeriodMs + 1000);
+    await tickUntil(fts, () => !nativeRows.has(shared), 20);
+    expect(nativeRows.has(shared)).toBe(false);
+  });
+
+  it('keeps a row unresolved when a global query errors', async () => {
     const { nativeRows, fts } = seedMigratedExactFolders([
       { folderPath: '/F', headerMessageIds: [] },
     ]);
     nativeRows.set('account1:/F:flaky@example.com', null);
-    nativeRows.set('no-separator-key', null);
     recheckMessageInFolder.mockResolvedValue('error');
 
     await tickUntil(fts, () => false, 8);
 
     expect(_testExports._getFolderMembershipCleanupProven()).toBe(false);
     expect(nativeRows.has('account1:/F:flaky@example.com')).toBe(true);
-    expect(nativeRows.has('no-separator-key')).toBe(true);
     expect(fts.removeBatch).not.toHaveBeenCalled();
+  });
+
+  // INVARIANT (#276): a row with no account (`::id`, written by older
+  // add-ons for a header without a folder) never stalls cleanup, and the
+  // message stays searchable under its proper key: removing the account-less
+  // row leaves the proper row, or the folder's reconcile re-adds it.
+  describe('account-less legacy rows', () => {
+    const folderKey = 'account1:/F';
+    const proper = `${folderKey}:m@example.com`;
+    const legacy = ':/F:m@example.com';
+
+    function installReindex(fts, folderId) {
+      headerIDToWeID.mockImplementation(async id => (id === 'm@example.com' ? 1 : null));
+      globalThis.browser.messages.get = vi.fn(async id => ({
+        id, headerMessageId: 'm@example.com', folder: { accountId: 'account1', path: '/F' },
+      }));
+      getUniqueMessageKey.mockImplementation(async h => `${folderKey}:${h.headerMessageId}`);
+      buildBatchHeader.mockImplementation(async headers => headers.map(h => ({
+        msgId: `${folderKey}:${h.headerMessageId}`, folderId,
+      })));
+      populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+      fts.indexBatch = vi.fn(async rows => runFtsMembershipMutation(async () => {
+        for (const row of rows) nativeRowsRef.set(row.msgId, row.folderId);
+        return { count: rows.length };
+      }));
+    }
+    let nativeRowsRef;
+
+    async function runUntilSettled(fts) {
+      let settled = false;
+      for (let turn = 0; turn < 100 && !settled; turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        await settleInFlightFolderRecon();
+        if (_testExports._getPendingUpdates().size > 0) {
+          _testExports._setFtsSearch(fts);
+          await flushPendingUpdates();
+          _testExports._setFtsSearch(null);
+        }
+        vi.setSystemTime(Date.now() + 1000);
+        settled = await sessionSettled();
+      }
+      return settled;
+    }
+
+    it('removes the account-less row and keeps the proper row that already exists', async () => {
+      const { nativeRows, folders, fts } = seedMigratedExactFolders([
+        { folderPath: '/F', headerMessageIds: ['m@example.com'] },
+      ]);
+      nativeRowsRef = nativeRows;
+      installReindex(fts, folders[0].folderId);
+      nativeRows.set(legacy, null);
+
+      expect(await runUntilSettled(fts)).toBe(true);
+      expect(nativeRows.has(legacy)).toBe(false);
+      expect(nativeRows.get(proper)).toBe(folders[0].folderId);
+    });
+
+    // #449 probe: a live message whose folder summary reads as empty for a
+    // while (probe error, global recheck "absent") loses its row; once the
+    // summary reads again, the folder's reconcile puts the row back.
+    it('re-adds a live row that a false "absent" verdict removed, once the folder reads again', async () => {
+      const { nativeRows, folders, fts } = seedMigratedExactFolders([
+        { folderPath: '/F', headerMessageIds: ['m@example.com'] },
+      ]);
+      nativeRowsRef = nativeRows;
+      installReindex(fts, folders[0].folderId);
+      nativeRows.set(proper, null);
+      const realProbe = globalThis.browser.tmMsgNotify.probeMessageIds;
+      globalThis.browser.tmMsgNotify.probeMessageIds = vi.fn(async () => ({ error: 'summary out of date' }));
+      recheckMessageInFolder.mockResolvedValue('absent');
+
+      for (let turn = 0; turn < 60 && nativeRows.has(proper); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        await settleInFlightFolderRecon();
+        vi.setSystemTime(Date.now() + 1000);
+      }
+      expect(nativeRows.has(proper)).toBe(false);
+      expect(fts.removeBatch.mock.calls.flat(2)).toContain(proper);
+
+      globalThis.browser.tmMsgNotify.probeMessageIds = realProbe;
+      recheckMessageInFolder.mockResolvedValue('present');
+      const reAdded = async () => nativeRows.get(proper) === folders[0].folderId;
+      for (let turn = 0; turn < 200 && !(await reAdded()); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        await settleInFlightFolderRecon();
+        if (_testExports._getPendingUpdates().size > 0) {
+          _testExports._setFtsSearch(fts);
+          await flushPendingUpdates();
+          _testExports._setFtsSearch(null);
+        }
+        vi.setSystemTime(Date.now() + 60 * 1000);
+      }
+      expect(nativeRows.get(proper)).toBe(folders[0].folderId);
+      expect(fts.indexBatch.mock.calls.flat(2).map(row => row.msgId)).toContain(proper);
+    });
+
+    it('removes the account-less row and re-adds the message under its proper key', async () => {
+      const { nativeRows, folders, fts } = seedMigratedExactFolders([
+        { folderPath: '/F', headerMessageIds: ['m@example.com'] },
+      ]);
+      nativeRowsRef = nativeRows;
+      installReindex(fts, folders[0].folderId);
+      nativeRows.delete(proper);
+      nativeRows.set(legacy, null);
+
+      expect(await runUntilSettled(fts)).toBe(true);
+      expect(nativeRows.has(legacy)).toBe(false);
+      expect(nativeRows.get(proper)).toBe(folders[0].folderId);
+      expect(fts.indexBatch.mock.calls.flat(2).map(row => row.msgId)).toContain(proper);
+    });
   });
 
   it('spends at most 5 + k - 1 global queries on a k-candidate ghost and defers the next row', async () => {
@@ -7258,7 +7448,7 @@ describe('exact state pass progress and cost', () => {
       { folderPath: '/F:X', headerMessageIds: ['a@example.com'] },
     ]);
     const { nativeRows, rowsByURI, folders, fts } = installed;
-    // Two live owners for one native key (colon overlap): unresolved.
+    // Two live owners for one native key (colon overlap): a terminal collision.
     const shared = 'account1:/F:X:a@example.com';
     nativeRows.set(shared, null);
     // Scoped negative and a global error: unresolved.

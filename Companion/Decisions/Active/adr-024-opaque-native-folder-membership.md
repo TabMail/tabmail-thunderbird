@@ -120,6 +120,33 @@ folder's own exact repair still runs, because folder work no longer waits on glo
 that has to migrate many NULL-owner rows pays bounded extra folder sweeps and memo writes. Both fail
 closed, and the owner accepted both.
 
+**Amendment (2026-11-15, #276): completion means no RETRYABLE unresolved row; permanent outcomes are
+terminal.** The classifier's verdict is split at its cause, with no counter and nothing stored.
+(1) A row two live folders hold under the same raw key (an `F` / `F:suffix` collision, two present
+candidates) gets the terminal verdict `collision` on the first pass. It stays searchable with owner NULL,
+is counted only in `membershipStateRowsCollision`, and is not retry debt, so the global membership-state
+pass completes and publishes cleanup. A later pass (after the completed one expires) classifies it afresh:
+`assign` once one copy is gone, `ghost` once both are. Accepted limitation: session completion is still
+held while each colliding folder's exact listing shows the ownerless row as a deficit; those two folders'
+safety-net repair waits on the normal post-verify backoff (6 h, doubling to 7 days). The message stays
+searchable and new mail in those folders still indexes through the drain; a real gap in them is still
+repaired (pinned by tests). (2) A row with no account (`::id`, written by add-on versions from
+`22f46224` until `f06fb02a` for a header without a folder; any key with no account separator) is a
+`ghost` and is removed: it names no folder and a search hit on it does not open. It is removed even under an empty or partial inventory, the one exception to "an empty inventory removes nothing": no inventory can ever claim such a row. Its message keeps its
+proper row, or its folder's reconcile re-adds it under the proper key (pinned by tests). (3)
+`passUnresolved` counts only retryable rows: a query error, a row refused by an event on its own
+key, and an owned row whose in-inventory owner does not prefix its key (no writer produces one). The "owner identity not found" return is deleted: each candidate is built from its own inventory
+identity. This narrows owner-blessed limitation (1) and "Owner-facing costs" item (2) above: a collision
+or account-less row no longer holds cleanup. A failed `recheckMessageInFolder` writes a debug-gated
+diagnostic (exception name and message with the Message-ID and addresses redacted, and whether
+Thunderbird still resolves the scoped folder id). A query that errors on every pass is tracked as its
+own issue.
+History (superseded during review, 2026-11-15/16): an intermediate design published the pass's
+collision keys as a volatile set and left them out of the colliding folders' exact proofs so the session
+would settle. It needed evidence binding, revocation on churn and a UID-checkpoint guard to stay safe,
+which was out of proportion to a case that needs a colon in a Message-ID's local part, so it was deleted
+in favour of the limitation above.
+
 **Amendment (2026-11-06): the update reconnect follows the success response only.** The update
 reconnect used to be armed before `updateRequest` was sent, so any disconnect during an update counted as
 a restart. A helper that exited on a failed update (native-fts #64, released helpers up to 0.12.2) was

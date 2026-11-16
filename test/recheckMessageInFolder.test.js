@@ -443,3 +443,107 @@ describe('recheckMessageInFolder list lifecycle', () => {
     }
   });
 });
+
+describe('recheckMessageInFolder failure diagnostic (debug-gated)', () => {
+  const SCOPED_FOLDER = { ...WE_FOLDER, id: 'folder-bin' };
+
+  beforeEach(() => {
+    browser.folders.get = vi.fn(async () => ({ id: 'folder-bin' }));
+  });
+
+  it('logs the exception name and redacted message plus the in-inventory flag only in debug mode', async () => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    SETTINGS.verboseLogging = true;
+    SETTINGS.debugLogging = true;
+    try {
+      const error = new TypeError('no msgDB for msg-1@example.com from user@domain.com');
+      browser.messages.query.mockRejectedValue(error);
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('error');
+      const lines = consoleLog.mock.calls.map(call => String(call[0]))
+        .filter(line => line.includes('recheckMessageInFolder error'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('name=TypeError');
+      expect(lines[0]).toContain('inInventory=true');
+      expect(lines[0]).not.toContain('msg-1@example.com');
+      expect(lines[0]).not.toContain('user@domain.com');
+      expect(browser.folders.get).toHaveBeenCalledWith('folder-bin');
+    } finally {
+      SETTINGS.verboseLogging = false;
+      SETTINGS.debugLogging = false;
+      consoleLog.mockRestore();
+    }
+  });
+
+  it('reports a folder id Thunderbird no longer resolves as not in the inventory', async () => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    SETTINGS.verboseLogging = true;
+    SETTINGS.debugLogging = true;
+    try {
+      browser.folders.get.mockRejectedValue(new Error('Folder not found'));
+      browser.messages.query.mockRejectedValue(new Error('Folder not found'));
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('error');
+      const line = consoleLog.mock.calls.map(call => String(call[0]))
+        .find(text => text.includes('recheckMessageInFolder error'));
+      expect(line).toContain('inInventory=false');
+    } finally {
+      SETTINGS.verboseLogging = false;
+      SETTINGS.debugLogging = false;
+      consoleLog.mockRestore();
+    }
+  });
+
+  it('does nothing extra in production: no folder lookup', async () => {
+    browser.messages.query.mockRejectedValue(new Error('boom'));
+    expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('error');
+    expect(browser.folders.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('recheckMessageInFolder failure diagnostic redaction and gates', () => {
+  const SCOPED_FOLDER = { ...WE_FOLDER, id: 'folder-bin' };
+
+  beforeEach(() => {
+    browser.folders.get = vi.fn(async () => ({ id: 'folder-bin' }));
+  });
+
+  it('redacts a whole Message-ID that is not address-shaped (IPv6 literal)', async () => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    SETTINGS.verboseLogging = true;
+    SETTINGS.debugLogging = true;
+    try {
+      const id = 'synthetic@[IPv6:2001:db8::1]';
+      browser.messages.query.mockRejectedValue(new Error(`no msgDB for ${id} here`));
+      expect(await recheckMessageInFolder(id, SCOPED_FOLDER)).toBe('error');
+      const line = consoleLog.mock.calls.map(call => String(call[0]))
+        .find(text => text.includes('recheckMessageInFolder error'));
+      expect(line).toContain('message=no msgDB for <message-id> here');
+      expect(line).toContain('inInventory=true');
+      expect(line).not.toContain('2001:db8');
+      expect(line).not.toContain('synthetic');
+    } finally {
+      SETTINGS.verboseLogging = false;
+      SETTINGS.debugLogging = false;
+      consoleLog.mockRestore();
+    }
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+  ])('runs no folder lookup and logs nothing with verbose=%s debug=%s', async (verbose, debug) => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    SETTINGS.verboseLogging = verbose;
+    SETTINGS.debugLogging = debug;
+    try {
+      browser.messages.query.mockRejectedValue(new Error('boom'));
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('error');
+      expect(browser.messages.query).toHaveBeenCalled();
+      expect(browser.folders.get).not.toHaveBeenCalled();
+      expect(consoleLog.mock.calls.some(call => String(call[0]).includes('recheckMessageInFolder error'))).toBe(false);
+    } finally {
+      SETTINGS.verboseLogging = false;
+      SETTINGS.debugLogging = false;
+      consoleLog.mockRestore();
+    }
+  });
+});
