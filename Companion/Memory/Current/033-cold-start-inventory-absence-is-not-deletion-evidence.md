@@ -24,7 +24,7 @@ carry it over, and the recon test suite's `'empty inventory'` case BLESSED the w
   `:`) is in `_folderReconTrustedAccountIds(inventory)`. Otherwise keep it and count
   `unloadedAccountRowsKept`.
 - An empty inventory removes nothing. "Empty inventories still clean orphans" (ADR-022) is revoked.
-- Accepted fail-closed cost: a genuinely removed account keeps ghost rows until an explicit repair scan.
+- Accepted fail-closed cost: a genuinely removed account keeps ghost rows until an explicit repair scan. **Superseded 2026-11-15:** 2026-11-15: a removed account's rows no longer wait for anything. `accounts.onDeleted` is positive deletion evidence (absence never is): `fts/removedAccountPurge.js` records the id in `storage.local` `fts_removed_account_purges`, then removes the key range [`<accountId>:`, `<accountId>;`) page by page under the exclusive FTS lease, verifies `countMsgIdRange` is 0 and only then drops the record; a purge that cannot finish (helper not ready, failure, Thunderbird closing) is finished by the next FTS engine init. `accounts.onCreated` with the same id drops a pending record (the rows are the live account's; normal reconciliation owns them). The manual repair scan still skips accounts it cannot find.
 - Recovery for an affected profile: Full Maintenance Scan / full reindex (FTS is derived; mail is untouched).
   A Thunderbird restart on 1.7.6 or earlier can repeat the wipe.
 

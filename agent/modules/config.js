@@ -431,6 +431,11 @@ export const SETTINGS = {
             // If anything gets dequeued, the counter resets.
             maxConsecutiveNoProgress: 20,
         },
+        // Removed-account purge (fts/removedAccountPurge.js): native keys
+        // listed and removed per page.
+        ftsRemovedAccountPurge: {
+            pageKeys: 500,
+        },
         // Exact startup/live folder reconciliation. These are per-slice
         // limits, not total-work caps: the durable scheduler keeps taking
         // slices until every folder has a fresh equality proof.

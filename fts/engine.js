@@ -509,6 +509,17 @@ async function _initFtsEngineOnce() {
       throw e;
     }
 
+    // Finish removing the rows of every account removed so far. Runs in the
+    // background under the exclusive FTS lease; a failure keeps the record.
+    try {
+      const { initRemovedAccountPurge } = await import("./removedAccountPurge.js");
+      initRemovedAccountPurge(ftsSearch).catch((e) => {
+        log(`[TMDBG FTS] Removed account purge failed: ${e}`, "warn");
+      });
+    } catch (e) {
+      log(`[TMDBG FTS] Failed to start removed account purge: ${e}`, "error");
+    }
+
     // Initialize maintenance scheduler for periodic scans
     try {
       const { initMaintenanceScheduler } = await import("./maintenanceScheduler.js");

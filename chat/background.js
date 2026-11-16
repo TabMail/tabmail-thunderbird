@@ -18,6 +18,7 @@ import {
   writeOwnedFtsScanStatus,
 } from "../fts/operationCoordinator.js";
 import { setupExperimentListeners, setupFolderTopologyListeners } from "../fts/incrementalIndexer.js";
+import { setupRemovedAccountPurgeListeners } from "../fts/removedAccountPurge.js";
 import { setWarning } from "../agent/modules/icon.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
@@ -31,6 +32,8 @@ import { handleMessageSelectionRequest, initMessageSelectionListener } from "./m
 setupExperimentListeners();
 // Folder/account topology changes must wake an idle reconciliation.
 setupFolderTopologyListeners();
+// A removed account's rows leave the index (fts/removedAccountPurge.js).
+setupRemovedAccountPurgeListeners();
 
 // Navigation handlers for special TabMail links
 // --- EMAIL: precise MV3 navigation to a message in thread pane ---
