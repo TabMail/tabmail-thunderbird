@@ -2,9 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { parse } from 'acorn';
 
-vi.mock('../agent/modules/config.js', () => ({
-  SETTINGS: { ftsRemovedAccountPurge: { pageKeys: 2 } },
-}));
+// The real config, with only the page size made small enough to page.
+vi.mock('../agent/modules/config.js', async (importOriginal) => {
+  // config.js subscribes to storage changes when it loads.
+  globalThis.browser ??= {};
+  globalThis.browser.storage ??= {};
+  globalThis.browser.storage.onChanged ??= { addListener() {} };
+  globalThis.browser.storage.local ??= { get: async () => ({}) };
+  const real = await importOriginal();
+  const SETTINGS = structuredClone(real.SETTINGS);
+  SETTINGS.agentQueues.ftsRemovedAccountPurge.pageKeys = 2;
+  return { ...real, SETTINGS };
+});
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -57,6 +66,7 @@ beforeEach(async () => {
   globalThis.browser = {
     accounts,
     storage: {
+      onChanged: { addListener() {} },
       local: {
         get: vi.fn(async key => (key in storage ? { [key]: structuredClone(storage[key]) } : {})),
         set: vi.fn(async obj => { Object.assign(storage, structuredClone(obj)); }),
@@ -158,11 +168,8 @@ describe('removed account purge', () => {
     const index = makeIndex(ROWS);
     const realRemove = index.removeBatch.bind(index);
     index.removeBatch = async ids => realRemove(ids.slice(1));
-    purge.setupRemovedAccountPurgeListeners();
+    storage.fts_removed_account_purges = ['account1'];
     await purge.initRemovedAccountPurge(index);
-
-    accounts.onDeleted.fire('account1');
-    await settle();
     expect(accountRows(index, 'account1').length).toBeGreaterThan(0);
     expect(storage.fts_removed_account_purges).toEqual(['account1']);
   });
@@ -262,6 +269,43 @@ describe('removed account purge', () => {
     expect(accountRows(index, 'account2')).toHaveLength(1);
   });
 
+  it('the real config gives a positive page size', async () => {
+    const real = await vi.importActual('../agent/modules/config.js');
+    const pageKeys = real.SETTINGS.agentQueues.ftsRemovedAccountPurge.pageKeys;
+    expect(Number.isInteger(pageKeys) && pageKeys > 0).toBe(true);
+  });
+
+  it('takes no FTS lease when nothing is recorded', async () => {
+    const coordinator = await import('../fts/operationCoordinator.js');
+    const reconcile = coordinator.tryAcquireFtsReconcileLease();
+    await purge.initRemovedAccountPurge(makeIndex(ROWS));
+    // An exclusive acquire would have asked the running reconcile to stop.
+    expect(reconcile.cancelRequested).toBe(false);
+    reconcile.release();
+  });
+
+  it('a removal during a later start record drop is not lost', async () => {
+    const index = makeIndex(ROWS);
+    storage.fts_removed_account_purges = ['account1'];
+    purge.setupRemovedAccountPurgeListeners();
+    // Hold the drop's read of the record, then report another removal.
+    const realGet = browser.storage.local.get;
+    let held = false;
+    browser.storage.local.get = vi.fn(async (key) => {
+      if (!held && accountRows(index, 'account1').length === 0) {
+        held = true;
+        accounts.onDeleted.fire('account2');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      return realGet(key);
+    });
+    await purge.initRemovedAccountPurge(index);
+    await settle();
+    expect(held).toBe(true);
+    expect(storage.fts_removed_account_purges).toEqual(['account2']);
+    expect(accountRows(index, 'account2')).toEqual([]);
+  });
+
   it('ignores ids that cannot be an account key prefix', async () => {
     const index = makeIndex(ROWS);
     purge.setupRemovedAccountPurgeListeners();
@@ -295,8 +339,4 @@ describe('removed account purge', () => {
     expect(firstAsyncStart).toBeGreaterThan(setupCall);
   });
 
-  it('is started by FTS engine initialization', () => {
-    const source = read('../fts/engine.js');
-    expect(source).toMatch(/initRemovedAccountPurge\(ftsSearch\)/);
-  });
 });

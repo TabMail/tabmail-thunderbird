@@ -13,8 +13,8 @@
 // cannot finish now (helper not connected yet, Thunderbird closing) is
 // finished at the next FTS start. The rows are removed at once; the record
 // is dropped only when a later background-page start finds the range empty.
-// Thunderbird never reuses an account id
-// (its account key counter only grows).
+// Thunderbird does not reuse an account id while its account key counter
+// pref exists (it only grows).
 //
 // Every native key starts with `${accountId}:` and account ids carry no ":",
 // so the account's rows are exactly the half-open key range
@@ -25,7 +25,6 @@ import { log } from "../agent/modules/utils.js";
 import { acquireFtsExclusiveOperation } from "./operationCoordinator.js";
 
 const PENDING_KEY = "fts_removed_account_purges";
-const PURGE_PAGE_KEYS = SETTINGS.ftsRemovedAccountPurge.pageKeys;
 
 let _ftsSearch = null;
 let _recordChain = Promise.resolve();
@@ -71,9 +70,12 @@ function _enqueuePurge(task) {
 
 async function _purgeAccount(ftsSearch, accountId) {
   const { startKey, endKey } = removedAccountKeyRange(accountId);
+  // Read here, not at module load: a bad config fails this purge (kept for
+  // the next start), never the background page that imports the module.
+  const pageKeys = SETTINGS.agentQueues.ftsRemovedAccountPurge.pageKeys;
   let afterKey = null;
   for (;;) {
-    const page = await ftsSearch.listMsgIdRange(startKey, endKey, afterKey, PURGE_PAGE_KEYS);
+    const page = await ftsSearch.listMsgIdRange(startKey, endKey, afterKey, pageKeys);
     const msgIds = page?.msgIds || [];
     if (msgIds.length === 0) break;
     await ftsSearch.removeBatch(msgIds);
