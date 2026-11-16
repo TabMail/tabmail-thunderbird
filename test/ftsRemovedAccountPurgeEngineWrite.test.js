@@ -108,4 +108,18 @@ describe('index writes against a removed account', () => {
     expect(h.store.has('account2:INBOX:c@example.com')).toBe(true);
     purge._resetRemovedAccountPurgeForTests();
   });
+
+  it('a late batch of only the removed account writes nothing', async () => {
+    const { engine, purge } = await load();
+    accounts.onDeleted.fire('account1');
+    await purge._removedAccountPurgeIdleForTests();
+    const result = await engine.ftsSearch.indexBatch([
+      { msgId: 'account1:INBOX:late1@example.com', folderId: 'tm-folder:v1:["account1","INBOX"]', body: 'late' },
+      { msgId: 'account1:INBOX:late2@example.com', folderId: 'tm-folder:v1:["account1","INBOX"]', body: 'late' },
+    ]);
+    expect(result.count).toBe(0);
+    expect(account1Rows()).toEqual([]);
+    expect(h.store.has('account2:INBOX:b@example.com')).toBe(true);
+    purge._resetRemovedAccountPurgeForTests();
+  });
 });
