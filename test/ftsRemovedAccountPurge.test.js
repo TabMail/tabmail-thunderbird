@@ -53,7 +53,7 @@ let purge;
 beforeEach(async () => {
   vi.resetModules();
   storage = {};
-  accounts = { onDeleted: makeEvent(), onCreated: makeEvent() };
+  accounts = { onDeleted: makeEvent() };
   globalThis.browser = {
     accounts,
     storage: {
@@ -90,6 +90,16 @@ async function settle() {
   await purge._removedAccountPurgeIdleForTests();
 }
 
+// A later background-page start: a fresh module reads the durable record.
+async function nextPageStart(index) {
+  purge._resetRemovedAccountPurgeForTests();
+  vi.resetModules();
+  purge = await import('../fts/removedAccountPurge.js');
+  const coordinator = await import('../fts/operationCoordinator.js');
+  coordinator._resetFtsOperationCoordinatorForTests();
+  await purge.initRemovedAccountPurge(index);
+}
+
 describe('removed account purge', () => {
   it('after an account is removed, none of its messages stay indexed or appear in search', async () => {
     const index = makeIndex(ROWS);
@@ -107,6 +117,9 @@ describe('removed account purge', () => {
     expect(accountRows(index, 'account10')).toHaveLength(1);
     expect(accountRows(index, 'account2')).toHaveLength(1);
     expect(accountRows(index, 'account0')).toHaveLength(1);
+    // Kept until a later page start finds the range empty.
+    expect(storage.fts_removed_account_purges).toEqual(['account1']);
+    await nextPageStart(index);
     expect(storage.fts_removed_account_purges).toEqual([]);
   });
 
@@ -118,11 +131,7 @@ describe('removed account purge', () => {
     expect(storage.fts_removed_account_purges).toEqual(['account1']);
     expect(accountRows(index, 'account1')).toHaveLength(4);
 
-    // Next session: a fresh module reads the durable record.
-    purge._resetRemovedAccountPurgeForTests();
-    vi.resetModules();
-    purge = await import('../fts/removedAccountPurge.js');
-    await purge.initRemovedAccountPurge(index);
+    await nextPageStart(index);
 
     expect(accountRows(index, 'account1')).toEqual([]);
     expect(storage.fts_removed_account_purges).toEqual([]);
@@ -140,7 +149,7 @@ describe('removed account purge', () => {
     expect(storage.fts_removed_account_purges).toEqual(['account1']);
     expect(accountRows(index, 'account1')).toHaveLength(4);
 
-    await purge.initRemovedAccountPurge(index);
+    await nextPageStart(index);
     expect(accountRows(index, 'account1')).toEqual([]);
     expect(storage.fts_removed_account_purges).toEqual([]);
   });
@@ -156,18 +165,6 @@ describe('removed account purge', () => {
     await settle();
     expect(accountRows(index, 'account1').length).toBeGreaterThan(0);
     expect(storage.fts_removed_account_purges).toEqual(['account1']);
-  });
-
-  it('an account created again under the same id before the purge ran keeps its rows', async () => {
-    const index = makeIndex(ROWS);
-    purge.setupRemovedAccountPurgeListeners();
-    accounts.onDeleted.fire('account1');
-    accounts.onCreated.fire('account1', { id: 'account1' });
-    await settle();
-    expect(storage.fts_removed_account_purges).toEqual([]);
-
-    await purge.initRemovedAccountPurge(index);
-    expect(accountRows(index, 'account1')).toHaveLength(4);
   });
 
   it('runs under the exclusive FTS lease and invalidates reconciliation proof', async () => {
@@ -193,6 +190,78 @@ describe('removed account purge', () => {
     expect(changes).toEqual(['removed_account_purge']);
   });
 
+  it('a removal is stored at once while another purge waits for the lease', async () => {
+    const coordinator = await import('../fts/operationCoordinator.js');
+    const index = makeIndex(ROWS);
+    purge.setupRemovedAccountPurgeListeners();
+    await purge.initRemovedAccountPurge(index);
+    const scan = await coordinator.acquireFtsExclusiveOperation('initial');
+
+    accounts.onDeleted.fire('account1');
+    await vi.waitFor(() => expect(storage.fts_removed_account_purges).toEqual(['account1']));
+    accounts.onDeleted.fire('account2');
+    await vi.waitFor(() => expect(storage.fts_removed_account_purges).toEqual(['account1', 'account2']));
+    expect(accountRows(index, 'account1')).toHaveLength(4);
+
+    scan.release();
+    await settle();
+    expect(accountRows(index, 'account1')).toEqual([]);
+    expect(accountRows(index, 'account2')).toEqual([]);
+    await nextPageStart(index);
+    expect(storage.fts_removed_account_purges).toEqual([]);
+    expect(index.store.size).toBe(2);
+  });
+
+  it('a row written back after the in-page purge is removed at the next page start', async () => {
+    const index = makeIndex(ROWS);
+    const realCount = index.countMsgIdRange.bind(index);
+    let wroteBack = false;
+    index.countMsgIdRange = async (startKey, endKey) => {
+      const result = await realCount(startKey, endKey);
+      if (!wroteBack && startKey === 'account1:') {
+        wroteBack = true;
+        // An indexer batch read before the removal lands after the check.
+        index.store.set('account1:INBOX:late@example.com', 'late invoice');
+      }
+      return result;
+    };
+    purge.setupRemovedAccountPurgeListeners();
+    await purge.initRemovedAccountPurge(index);
+    accounts.onDeleted.fire('account1');
+    await settle();
+    expect(accountRows(index, 'account1')).toEqual(['account1:INBOX:late@example.com']);
+
+    await nextPageStart(index);
+    expect(accountRows(index, 'account1')).toEqual([]);
+    expect(storage.fts_removed_account_purges).toEqual([]);
+    expect(index.store.size).toBe(3);
+  });
+
+  it('a purge that removes nothing ends, keeps its record and releases the lease', async () => {
+    const coordinator = await import('../fts/operationCoordinator.js');
+    const index = makeIndex(ROWS);
+    index.removeBatch = async () => ({ removed: 0 });
+    storage.fts_removed_account_purges = ['account1'];
+    await purge.initRemovedAccountPurge(index);
+    expect(storage.fts_removed_account_purges).toEqual(['account1']);
+    expect(coordinator.getFtsOperationState().exclusive).toBe(false);
+  });
+
+  it('one failed purge keeps only its own record', async () => {
+    const index = makeIndex(ROWS);
+    const realList = index.listMsgIdRange.bind(index);
+    index.listMsgIdRange = async (startKey, ...rest) => {
+      if (startKey === 'account2:') throw new Error('helper disconnected');
+      return realList(startKey, ...rest);
+    };
+    storage.fts_removed_account_purges = ['account1', 'account2', 'account0'];
+    await purge.initRemovedAccountPurge(index);
+    expect(storage.fts_removed_account_purges).toEqual(['account2']);
+    expect(accountRows(index, 'account1')).toEqual([]);
+    expect(accountRows(index, 'account0')).toEqual([]);
+    expect(accountRows(index, 'account2')).toHaveLength(1);
+  });
+
   it('ignores ids that cannot be an account key prefix', async () => {
     const index = makeIndex(ROWS);
     purge.setupRemovedAccountPurgeListeners();
@@ -209,7 +278,6 @@ describe('removed account purge', () => {
     purge.setupRemovedAccountPurgeListeners();
     purge.setupRemovedAccountPurgeListeners();
     expect(accounts.onDeleted.listeners.size).toBe(1);
-    expect(accounts.onCreated.listeners.size).toBe(1);
   });
 
   it('is registered synchronously in the background entry point', () => {

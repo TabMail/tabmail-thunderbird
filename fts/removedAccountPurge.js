@@ -11,9 +11,10 @@
 // amendment, memory 033). accounts.onDeleted is the one positive signal that
 // an account is gone. Its id is recorded durably first, so a removal that
 // cannot finish now (helper not connected yet, Thunderbird closing) is
-// finished at the next FTS start. An account created again under the same id
-// before the purge finished drops the record: its rows are then the live
-// account's, and normal reconciliation owns them.
+// finished at the next FTS start. The rows are removed at once; the record
+// is dropped only when a later background-page start finds the range empty.
+// Thunderbird never reuses an account id
+// (its account key counter only grows).
 //
 // Every native key starts with `${accountId}:` and account ids carry no ":",
 // so the account's rows are exactly the half-open key range
@@ -24,10 +25,14 @@ import { log } from "../agent/modules/utils.js";
 import { acquireFtsExclusiveOperation } from "./operationCoordinator.js";
 
 const PENDING_KEY = "fts_removed_account_purges";
-const PURGE_PAGE_KEYS = SETTINGS.ftsRemovedAccountPurge?.pageKeys;
+const PURGE_PAGE_KEYS = SETTINGS.ftsRemovedAccountPurge.pageKeys;
 
 let _ftsSearch = null;
-let _chain = Promise.resolve();
+let _recordChain = Promise.resolve();
+let _purgeChain = Promise.resolve();
+// Accounts removed while this background page lives: their records are kept
+// until a later page start (see _runPurges).
+const _removedThisPage = new Set();
 const _listenerOwners = new Map();
 
 export function removedAccountKeyRange(accountId) {
@@ -48,24 +53,30 @@ async function _writePending(ids) {
   await browser.storage.local.set({ [PENDING_KEY]: ids });
 }
 
-// Serialized: every read-modify-write of the record and every purge run in
-// one chain, so a deletion, a re-creation and a purge never interleave.
-function _enqueue(task) {
-  const next = _chain.catch(() => {}).then(task);
-  _chain = next.catch(() => {});
+// Every read-modify-write of the record runs on this short chain, never
+// behind a purge, so a removal is stored at once even while a purge waits
+// for the exclusive lease.
+function _enqueueRecord(task) {
+  const next = _recordChain.catch(() => {}).then(task);
+  _recordChain = next.catch(() => {});
+  return next;
+}
+
+// Purges run one at a time on their own chain.
+function _enqueuePurge(task) {
+  const next = _purgeChain.catch(() => {}).then(task);
+  _purgeChain = next.catch(() => {});
   return next;
 }
 
 async function _purgeAccount(ftsSearch, accountId) {
   const { startKey, endKey } = removedAccountKeyRange(accountId);
-  let removed = 0;
   let afterKey = null;
   for (;;) {
     const page = await ftsSearch.listMsgIdRange(startKey, endKey, afterKey, PURGE_PAGE_KEYS);
     const msgIds = page?.msgIds || [];
     if (msgIds.length === 0) break;
     await ftsSearch.removeBatch(msgIds);
-    removed += msgIds.length;
     if (page.done === true) break;
     afterKey = msgIds[msgIds.length - 1];
   }
@@ -73,24 +84,31 @@ async function _purgeAccount(ftsSearch, accountId) {
   // run retries.
   const remaining = await ftsSearch.countMsgIdRange(startKey, endKey);
   if (remaining?.count !== 0) throw new Error("removed_account_purge_verify_failed");
-  return removed;
 }
 
-// Runs every recorded purge; only called inside the chain. A failed purge
-// keeps its record for the next run. Without a ready index the records wait.
-async function _runPendingInChain() {
+// Purges every recorded account. A verified record is dropped only for an
+// account removed before this background page started: while the page that
+// saw the removal lives, the incremental indexer can still write a batch of
+// the account it read before the removal, and the lease does not stop it. A
+// later page start has no such writer, since the indexer queue is not
+// persisted and the account no longer exists. A failed purge keeps its
+// record. Without a ready index the records wait.
+async function _runPurges() {
   const ftsSearch = _ftsSearch;
   if (!ftsSearch) return;
-  const pending = await _readPending();
-  if (pending.length === 0) return;
+  if ((await _readPending()).length === 0) return;
   const lease = await acquireFtsExclusiveOperation("removed_account_purge");
   try {
-    for (const accountId of pending) {
+    // Re-read after the lease wait: removals stored meanwhile are included.
+    for (const accountId of await _readPending()) {
       try {
-        const removed = await _purgeAccount(ftsSearch, accountId);
-        const now = await _readPending();
-        await _writePending(now.filter(id => id !== accountId));
-        log(`[TMDBG FTS] Removed account purge: ${removed} row(s) removed for a removed account`);
+        await _purgeAccount(ftsSearch, accountId);
+        if (!_removedThisPage.has(accountId)) {
+          await _enqueueRecord(async () => {
+            await _writePending((await _readPending()).filter(id => id !== accountId));
+          });
+        }
+        log("[TMDBG FTS] Removed account purge: rows of a removed account removed");
       } catch (e) {
         log(`[TMDBG FTS] Removed account purge failed, kept for the next FTS start: ${e}`, "warn");
       }
@@ -102,58 +120,47 @@ async function _runPendingInChain() {
 
 function _onAccountDeleted(accountId) {
   if (!_validAccountId(accountId)) return;
-  _enqueue(async () => {
+  _removedThisPage.add(accountId);
+  _enqueueRecord(async () => {
     const pending = await _readPending();
     if (!pending.includes(accountId)) await _writePending([...pending, accountId]);
-    await _runPendingInChain();
-  }).catch((e) => {
+  }).then(() => _enqueuePurge(_runPurges)).catch((e) => {
     log(`[TMDBG FTS] Failed to record or purge a removed account: ${e}`, "warn");
-  });
-}
-
-function _onAccountCreated(accountId) {
-  if (!_validAccountId(accountId)) return;
-  _enqueue(async () => {
-    const pending = await _readPending();
-    if (pending.includes(accountId)) await _writePending(pending.filter(id => id !== accountId));
-  }).catch((e) => {
-    log(`[TMDBG FTS] Failed to update removed account purges: ${e}`, "warn");
   });
 }
 
 // Registered from the background entry point before any await, so Gecko
 // primes the persistent events and an event-page wake still records it.
 export function setupRemovedAccountPurgeListeners() {
-  const events = [
-    ["accounts.onDeleted", browser.accounts?.onDeleted, _onAccountDeleted],
-    ["accounts.onCreated", browser.accounts?.onCreated, _onAccountCreated],
-  ];
-  for (const [name, event, listener] of events) {
-    if (!event || _listenerOwners.has(name)) continue;
-    try {
-      event.addListener(listener);
-      _listenerOwners.set(name, { event, listener });
-    } catch (e) {
-      log(`[TMDBG FTS] Failed to attach ${name} removed-account purge listener: ${e}`, "warn");
-    }
+  const event = browser.accounts?.onDeleted;
+  if (!event || _listenerOwners.has(event)) return;
+  try {
+    event.addListener(_onAccountDeleted);
+    _listenerOwners.set(event, _onAccountDeleted);
+  } catch (e) {
+    log(`[TMDBG FTS] Failed to attach the removed-account purge listener: ${e}`, "warn");
   }
 }
 
 // Called once the native index is ready; finishes every recorded purge.
 export function initRemovedAccountPurge(ftsSearch) {
   _ftsSearch = ftsSearch;
-  return _enqueue(_runPendingInChain);
+  return _enqueuePurge(_runPurges);
 }
 
 export function _resetRemovedAccountPurgeForTests() {
-  for (const { event, listener } of _listenerOwners.values()) {
+  for (const [event, listener] of _listenerOwners) {
     try { event.removeListener(listener); } catch (_) {}
   }
   _listenerOwners.clear();
   _ftsSearch = null;
-  _chain = Promise.resolve();
+  _recordChain = Promise.resolve();
+  _purgeChain = Promise.resolve();
+  _removedThisPage.clear();
 }
 
-export function _removedAccountPurgeIdleForTests() {
-  return _chain;
+export async function _removedAccountPurgeIdleForTests() {
+  await _recordChain;
+  await _purgeChain;
+  await _recordChain;
 }
