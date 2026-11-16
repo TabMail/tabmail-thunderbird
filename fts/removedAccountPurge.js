@@ -59,6 +59,18 @@ async function _readPending() {
   return Array.isArray(ids) ? ids.filter(_validAccountId) : [];
 }
 
+// The durable records, or [] when storage cannot be read now: an id this page
+// saw removed (_unrecorded) is purged regardless, and the records are read
+// again by the next run.
+async function _readPendingForPurge() {
+  try {
+    return await _readPending();
+  } catch (e) {
+    log(`[TMDBG FTS] Reading removed account purge records failed: ${e}`, "warn");
+    return [];
+  }
+}
+
 async function _writePending(ids) {
   await browser.storage.local.set({ [PENDING_KEY]: ids });
 }
@@ -120,7 +132,7 @@ async function _runPurges() {
       log(`[TMDBG FTS] Recording a removed account failed again, purging it anyway: ${e}`, "warn");
     }
   }
-  if ((await _readPending()).length === 0 && _unrecorded.size === 0) return;
+  if ((await _readPendingForPurge()).length === 0 && _unrecorded.size === 0) return;
   const lease = await acquireFtsExclusiveOperation("removed_account_purge");
   try {
     // An empty removal is acknowledged only after every write already in
@@ -129,7 +141,7 @@ async function _runPurges() {
     // refused. If it fails, nothing is verified and every record stays.
     await ftsSearch.removeBatch([]);
     // Re-read after the lease wait: removals stored meanwhile are included.
-    const accountIds = new Set([...(await _readPending()), ..._unrecorded]);
+    const accountIds = new Set([...(await _readPendingForPurge()), ..._unrecorded]);
     for (const accountId of accountIds) {
       try {
         await _purgeAccount(ftsSearch, accountId);

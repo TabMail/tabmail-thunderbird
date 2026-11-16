@@ -327,6 +327,48 @@ describe('removed account purge', () => {
     expect(accountRows(index, 'account1')).toEqual([]);
   });
 
+  it('a removal is purged at once when every record write fails, and recorded once storage recovers', async () => {
+    const index = makeIndex(ROWS);
+    purge.setupRemovedAccountPurgeListeners();
+    await purge.initRemovedAccountPurge(index);
+    const realSet = browser.storage.local.set;
+    let writesFail = true;
+    let failedWrites = 0;
+    browser.storage.local.set = vi.fn(async (obj) => {
+      if (writesFail) { failedWrites++; throw new Error('storage busy'); }
+      return realSet(obj);
+    });
+    accounts.onDeleted.fire('account1');
+    await settle();
+    expect(failedWrites).toBeGreaterThanOrEqual(2);
+    expect(accountRows(index, 'account1')).toEqual([]);
+    expect((await index.search('invoice')).some(h => h.msgId.startsWith('account1:'))).toBe(false);
+    expect(accountRows(index, 'account2')).toHaveLength(1);
+    writesFail = false;
+    await purge.initRemovedAccountPurge(index);
+    expect(storage.fts_removed_account_purges).toEqual([]);
+  });
+
+  it('a removal is purged at once when the records cannot be read', async () => {
+    const index = makeIndex(ROWS);
+    purge.setupRemovedAccountPurgeListeners();
+    await purge.initRemovedAccountPurge(index);
+    const realGet = browser.storage.local.get;
+    let readsFail = true;
+    browser.storage.local.get = vi.fn(async (key) => {
+      if (readsFail) throw new Error('storage unreadable');
+      return realGet(key);
+    });
+    accounts.onDeleted.fire('account1');
+    await settle();
+    expect(accountRows(index, 'account1')).toEqual([]);
+    expect((await index.search('invoice')).some(h => h.msgId.startsWith('account1:'))).toBe(false);
+    expect(accountRows(index, 'account10')).toHaveLength(1);
+    readsFail = false;
+    await nextPageStart(index);
+    expect(accountRows(index, 'account1')).toEqual([]);
+  });
+
   it('ignores ids that cannot be an account key prefix', async () => {
     const index = makeIndex(ROWS);
     purge.setupRemovedAccountPurgeListeners();
