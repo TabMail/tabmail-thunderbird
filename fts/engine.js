@@ -517,7 +517,6 @@ async function _initFtsEngineOnce() {
       throw e;
     }
 
-
     // Initialize maintenance scheduler for periodic scans
     try {
       const { initMaintenanceScheduler } = await import("./maintenanceScheduler.js");
