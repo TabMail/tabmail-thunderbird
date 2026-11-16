@@ -292,12 +292,14 @@ describe('removed account purge', () => {
     const realGet = browser.storage.local.get;
     let held = false;
     browser.storage.local.get = vi.fn(async (key) => {
+      // Read first, then report the removal: the drop now holds a stale read.
+      const value = await realGet(key);
       if (!held && accountRows(index, 'account1').length === 0) {
         held = true;
         accounts.onDeleted.fire('account2');
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      return realGet(key);
+      return value;
     });
     await purge.initRemovedAccountPurge(index);
     await settle();
