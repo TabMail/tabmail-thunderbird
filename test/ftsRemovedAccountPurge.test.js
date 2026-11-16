@@ -14,7 +14,7 @@ vi.mock('../agent/modules/config.js', async (importOriginal) => {
   SETTINGS.agentQueues.ftsRemovedAccountPurge.pageKeys = 2;
   return { ...real, SETTINGS };
 });
-vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
+vi.mock('../agent/modules/utils.js', () => ({ log: (...a) => { if (process.env.DBG) console.error(...a); } }));
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 
@@ -127,10 +127,9 @@ describe('removed account purge', () => {
     expect(accountRows(index, 'account10')).toHaveLength(1);
     expect(accountRows(index, 'account2')).toHaveLength(1);
     expect(accountRows(index, 'account0')).toHaveLength(1);
-    // Kept until a later page start finds the range empty.
-    expect(storage.fts_removed_account_purges).toEqual(['account1']);
-    await nextPageStart(index);
     expect(storage.fts_removed_account_purges).toEqual([]);
+    expect(purge.isRemovedAccountKey('account1:INBOX:new@example.com')).toBe(true);
+    expect(purge.isRemovedAccountKey('account10:INBOX:new@example.com')).toBe(false);
   });
 
   it('a removal seen before the index is ready is finished when the index starts', async () => {
@@ -159,7 +158,7 @@ describe('removed account purge', () => {
     expect(storage.fts_removed_account_purges).toEqual(['account1']);
     expect(accountRows(index, 'account1')).toHaveLength(4);
 
-    await nextPageStart(index);
+    await purge.initRemovedAccountPurge(index);
     expect(accountRows(index, 'account1')).toEqual([]);
     expect(storage.fts_removed_account_purges).toEqual([]);
   });
@@ -214,34 +213,8 @@ describe('removed account purge', () => {
     await settle();
     expect(accountRows(index, 'account1')).toEqual([]);
     expect(accountRows(index, 'account2')).toEqual([]);
-    await nextPageStart(index);
     expect(storage.fts_removed_account_purges).toEqual([]);
     expect(index.store.size).toBe(2);
-  });
-
-  it('a row written back after the in-page purge is removed at the next page start', async () => {
-    const index = makeIndex(ROWS);
-    const realCount = index.countMsgIdRange.bind(index);
-    let wroteBack = false;
-    index.countMsgIdRange = async (startKey, endKey) => {
-      const result = await realCount(startKey, endKey);
-      if (!wroteBack && startKey === 'account1:') {
-        wroteBack = true;
-        // An indexer batch read before the removal lands after the check.
-        index.store.set('account1:INBOX:late@example.com', 'late invoice');
-      }
-      return result;
-    };
-    purge.setupRemovedAccountPurgeListeners();
-    await purge.initRemovedAccountPurge(index);
-    accounts.onDeleted.fire('account1');
-    await settle();
-    expect(accountRows(index, 'account1')).toEqual(['account1:INBOX:late@example.com']);
-
-    await nextPageStart(index);
-    expect(accountRows(index, 'account1')).toEqual([]);
-    expect(storage.fts_removed_account_purges).toEqual([]);
-    expect(index.store.size).toBe(3);
   });
 
   it('a purge that removes nothing ends, keeps its record and releases the lease', async () => {
@@ -304,8 +277,54 @@ describe('removed account purge', () => {
     await purge.initRemovedAccountPurge(index);
     await settle();
     expect(held).toBe(true);
-    expect(storage.fts_removed_account_purges).toEqual(['account2']);
     expect(accountRows(index, 'account2')).toEqual([]);
+    expect(storage.fts_removed_account_purges).toEqual([]);
+  });
+
+  it('a removal whose record write fails is still purged and recorded later', async () => {
+    const index = makeIndex(ROWS);
+    purge.setupRemovedAccountPurgeListeners();
+    await purge.initRemovedAccountPurge(index);
+    const realSet = browser.storage.local.set;
+    let failNext = true;
+    browser.storage.local.set = vi.fn(async (obj) => {
+      if (failNext) { failNext = false; throw new Error('storage busy'); }
+      return realSet(obj);
+    });
+    const realRemove = index.removeBatch.bind(index);
+    let failRemove = true;
+    index.removeBatch = async (ids) => {
+      if (failRemove) { failRemove = false; throw new Error('helper disconnected'); }
+      return realRemove(ids);
+    };
+
+    accounts.onDeleted.fire('account1');
+    await settle();
+    // Not purged (removal failed) and not recorded (write failed): the
+    // removal is still owed in this page.
+    expect(accountRows(index, 'account1')).toHaveLength(4);
+    await purge.initRemovedAccountPurge(index);
+    expect(accountRows(index, 'account1')).toEqual([]);
+    expect(storage.fts_removed_account_purges).toEqual([]);
+  });
+
+  it('a record write failure is retried and kept durable when the purge fails', async () => {
+    const index = makeIndex(ROWS);
+    index.failNextList = true;
+    purge.setupRemovedAccountPurgeListeners();
+    await purge.initRemovedAccountPurge(index);
+    const realSet = browser.storage.local.set;
+    let failNext = true;
+    browser.storage.local.set = vi.fn(async (obj) => {
+      if (failNext) { failNext = false; throw new Error('storage busy'); }
+      return realSet(obj);
+    });
+    accounts.onDeleted.fire('account1');
+    await settle();
+    expect(storage.fts_removed_account_purges).toEqual(['account1']);
+    expect(accountRows(index, 'account1')).toHaveLength(4);
+    await nextPageStart(index);
+    expect(accountRows(index, 'account1')).toEqual([]);
   });
 
   it('ignores ids that cannot be an account key prefix', async () => {

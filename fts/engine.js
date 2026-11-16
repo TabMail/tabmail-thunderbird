@@ -9,6 +9,7 @@
 import { SETTINGS } from "../agent/modules/config.js";
 import { log } from "../agent/modules/utils.js";
 import { initNativeFts, nativeFtsSearch, nativeMemorySearch } from "./nativeEngine.js";
+import { initRemovedAccountPurge, isRemovedAccountKey } from "./removedAccountPurge.js";
 import {
   acquireFtsExclusiveOperation,
   clearOwnedFtsScanStatus,
@@ -511,14 +512,9 @@ async function _initFtsEngineOnce() {
 
     // Finish removing the rows of every account removed so far. Runs in the
     // background under the exclusive FTS lease; a failure keeps the record.
-    try {
-      const { initRemovedAccountPurge } = await import("./removedAccountPurge.js");
-      initRemovedAccountPurge(ftsSearch).catch((e) => {
-        log(`[TMDBG FTS] Removed account purge failed: ${e}`, "warn");
-      });
-    } catch (e) {
-      log(`[TMDBG FTS] Failed to start removed account purge: ${e}`, "error");
-    }
+    initRemovedAccountPurge(ftsSearch).catch((e) => {
+      log(`[TMDBG FTS] Removed account purge failed: ${e}`, "warn");
+    });
 
     // Initialize maintenance scheduler for periodic scans
     try {
@@ -622,7 +618,14 @@ export const ftsSearch = {
     const wire = { withFolderIds: false };
     const msgIds = rows.map(row => row?.msgId);
     return runFtsMembershipMutation(
-      () => nativeFtsSearch.indexBatch(rows, wire),
+      () => {
+        // Decided inside the membership mutex: a batch read before its
+        // account was removed is refused here, so it cannot land after the
+        // removed-account purge (fts/removedAccountPurge.js).
+        const liveRows = rows.filter(row => !isRemovedAccountKey(row?.msgId));
+        if (liveRows.length === 0) return { count: 0 };
+        return nativeFtsSearch.indexBatch(liveRows, wire);
+      },
       membershipFenceToken,
       {
         folderIds: rows.map(row => row?.folderId),

@@ -11,8 +11,8 @@
 // amendment, memory 033). accounts.onDeleted is the one positive signal that
 // an account is gone. Its id is recorded durably first, so a removal that
 // cannot finish now (helper not connected yet, Thunderbird closing) is
-// finished at the next FTS start. The rows are removed at once; the record
-// is dropped only when a later background-page start finds the range empty.
+// finished at the next FTS start; the record is dropped once the range is
+// verified empty.
 // Thunderbird does not reuse an account id while its account key counter
 // pref exists (it only grows).
 //
@@ -22,20 +22,31 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { log } from "../agent/modules/utils.js";
-import { acquireFtsExclusiveOperation } from "./operationCoordinator.js";
+import { acquireFtsExclusiveOperation, runFtsMembershipRead } from "./operationCoordinator.js";
 
 const PENDING_KEY = "fts_removed_account_purges";
 
 let _ftsSearch = null;
 let _recordChain = Promise.resolve();
 let _purgeChain = Promise.resolve();
-// Accounts removed while this background page lives: their records are kept
-// until a later page start (see _runPurges).
-const _removedThisPage = new Set();
+// Accounts removed while this background page lives. The engine's indexBatch
+// refuses their rows inside the membership mutex (isRemovedAccountKey), so a
+// batch the incremental indexer read before the removal cannot land after
+// the purge. A page restart ends every such writer.
+const _removedAccounts = new Set();
+// Removed accounts whose record write failed: still purged, and recording is
+// retried by every later run.
+const _unrecorded = new Set();
 const _listenerOwners = new Map();
 
 export function removedAccountKeyRange(accountId) {
   return { startKey: `${accountId}:`, endKey: `${accountId};` };
+}
+
+export function isRemovedAccountKey(msgId) {
+  if (_removedAccounts.size === 0 || typeof msgId !== "string") return false;
+  const accountEnd = msgId.indexOf(":");
+  return accountEnd > 0 && _removedAccounts.has(msgId.slice(0, accountEnd));
 }
 
 function _validAccountId(accountId) {
@@ -88,31 +99,45 @@ async function _purgeAccount(ftsSearch, accountId) {
   if (remaining?.count !== 0) throw new Error("removed_account_purge_verify_failed");
 }
 
-// Purges every recorded account. A verified record is dropped only for an
-// account removed before this background page started: while the page that
-// saw the removal lives, the incremental indexer can still write a batch of
-// the account it read before the removal, and the lease does not stop it. A
-// later page start has no such writer, since the indexer queue is not
-// persisted and the account no longer exists. A failed purge keeps its
-// record. Without a ready index the records wait.
+function _record(accountId) {
+  return _enqueueRecord(async () => {
+    const pending = await _readPending();
+    if (!pending.includes(accountId)) await _writePending([...pending, accountId]);
+    _unrecorded.delete(accountId);
+  });
+}
+
+// Purges every recorded or unrecorded removed account and drops each record
+// once its range is verified empty. A failed purge keeps its record. Without
+// a ready index the work waits for initRemovedAccountPurge.
 async function _runPurges() {
   const ftsSearch = _ftsSearch;
   if (!ftsSearch) return;
-  if ((await _readPending()).length === 0) return;
+  for (const accountId of [..._unrecorded]) {
+    try {
+      await _record(accountId);
+    } catch (e) {
+      log(`[TMDBG FTS] Recording a removed account failed again, purging it anyway: ${e}`, "warn");
+    }
+  }
+  if ((await _readPending()).length === 0 && _unrecorded.size === 0) return;
   const lease = await acquireFtsExclusiveOperation("removed_account_purge");
   try {
+    // Every index write already queued finishes before the range is listed;
+    // later ones see the removal and are refused.
+    await runFtsMembershipRead(() => {});
     // Re-read after the lease wait: removals stored meanwhile are included.
-    for (const accountId of await _readPending()) {
+    const accountIds = new Set([...(await _readPending()), ..._unrecorded]);
+    for (const accountId of accountIds) {
       try {
         await _purgeAccount(ftsSearch, accountId);
-        if (!_removedThisPage.has(accountId)) {
-          await _enqueueRecord(async () => {
-            await _writePending((await _readPending()).filter(id => id !== accountId));
-          });
-        }
+        await _enqueueRecord(async () => {
+          await _writePending((await _readPending()).filter(id => id !== accountId));
+        });
+        _unrecorded.delete(accountId);
         log("[TMDBG FTS] Removed account purge: rows of a removed account removed");
       } catch (e) {
-        log(`[TMDBG FTS] Removed account purge failed, kept for the next FTS start: ${e}`, "warn");
+        log(`[TMDBG FTS] Removed account purge failed, kept for the next run: ${e}`, "warn");
       }
     }
   } finally {
@@ -122,12 +147,12 @@ async function _runPurges() {
 
 function _onAccountDeleted(accountId) {
   if (!_validAccountId(accountId)) return;
-  _removedThisPage.add(accountId);
-  _enqueueRecord(async () => {
-    const pending = await _readPending();
-    if (!pending.includes(accountId)) await _writePending([...pending, accountId]);
+  _removedAccounts.add(accountId);
+  _unrecorded.add(accountId);
+  _record(accountId).catch((e) => {
+    log(`[TMDBG FTS] Failed to record a removed account, purging it anyway: ${e}`, "warn");
   }).then(() => _enqueuePurge(_runPurges)).catch((e) => {
-    log(`[TMDBG FTS] Failed to record or purge a removed account: ${e}`, "warn");
+    log(`[TMDBG FTS] Removed account purge failed: ${e}`, "warn");
   });
 }
 
@@ -158,11 +183,17 @@ export function _resetRemovedAccountPurgeForTests() {
   _ftsSearch = null;
   _recordChain = Promise.resolve();
   _purgeChain = Promise.resolve();
-  _removedThisPage.clear();
+  _removedAccounts.clear();
+  _unrecorded.clear();
 }
 
 export async function _removedAccountPurgeIdleForTests() {
-  await _recordChain;
-  await _purgeChain;
-  await _recordChain;
+  for (;;) {
+    const record = _recordChain;
+    const purge = _purgeChain;
+    await record;
+    await purge;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (record === _recordChain && purge === _purgeChain) return;
+  }
 }

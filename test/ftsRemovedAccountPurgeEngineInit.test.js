@@ -27,6 +27,7 @@ vi.mock('../fts/memoryIndexer.js', () => ({
 vi.mock('../fts/attachmentFlags.js', () => ({ getAttachmentRepairedAccounts: async () => new Set() }));
 vi.mock('../fts/removedAccountPurge.js', () => ({
   initRemovedAccountPurge: (...args) => h.initPurge(...args),
+  isRemovedAccountKey: () => false,
 }));
 
 describe('FTS engine start finishes recorded removed-account purges', () => {
