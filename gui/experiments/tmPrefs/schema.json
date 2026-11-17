@@ -85,6 +85,16 @@
         "returns": { "type": "boolean" }
       },
       {
+        "name": "getAccountPrefPresence",
+        "type": "function",
+        "description": "Read-only. Return mail.accountmanager.accounts (null when unset) and, per account id, whether any preference exists under mail.account.<id>. ('present' or 'absent'). Rejects on any read error.",
+        "async": true,
+        "parameters": [
+          { "name": "accountIds", "type": "array", "items": { "type": "string" } }
+        ],
+        "returns": { "type": "object", "additionalProperties": { "type": "any" } }
+      },
+      {
         "name": "clearUserPref",
         "type": "function",
         "description": "Clear a user-set preference value.",

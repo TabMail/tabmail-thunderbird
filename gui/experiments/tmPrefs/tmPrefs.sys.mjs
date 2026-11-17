@@ -491,7 +491,41 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
             }
           });
         },
-        clearUserPref(name) { 
+        // Read-only and strict: any read failure rejects, so a caller can never
+        // mistake an error for a missing preference. Returns Thunderbird's
+        // account list (null when the preference is not set) and, per asked
+        // account id, "present" when any preference exists under
+        // `mail.account.<id>.` (the trailing dot keeps account1 apart from
+        // account10) or "absent" when none does. Removing an account in
+        // Thunderbird drops it from the list and clears that whole branch.
+        getAccountPrefPresence(accountIds) {
+          return new Promise((resolve, reject) => {
+            try {
+              const prefs = ServicesTMPrefs.prefs;
+              const listName = "mail.accountmanager.accounts";
+              const listType = prefs.getPrefType(listName);
+              let accountList = null;
+              if (listType === prefs.PREF_STRING) {
+                accountList = prefs.getCharPref(listName);
+              } else if (listType !== prefs.PREF_INVALID) {
+                throw new Error(`unexpected type for ${listName}`);
+              }
+              const accounts = {};
+              for (const id of accountIds) {
+                if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) {
+                  throw new Error("invalid account id");
+                }
+                const children = prefs.getChildList(`mail.account.${id}.`);
+                if (!Array.isArray(children)) throw new Error("child list unavailable");
+                accounts[id] = children.length > 0 ? "present" : "absent";
+              }
+              resolve({ accountList, accounts });
+            } catch (e) {
+              reject(new Error(`getAccountPrefPresence failed: ${e}`));
+            }
+          });
+        },
+        clearUserPref(name) {
           if (ServicesTMPrefs.prefs.prefHasUserValue(name)) 
             ServicesTMPrefs.prefs.clearUserPref(name); 
         },
