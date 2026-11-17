@@ -310,9 +310,9 @@ describe('removed account purge', () => {
 
   it('a record write failure is retried and kept durable when the purge fails', async () => {
     const index = makeIndex(ROWS);
-    index.failNextList = true;
     purge.setupRemovedAccountPurgeListeners();
     await purge.initRemovedAccountPurge(index);
+    index.failNextList = true;
     const realSet = browser.storage.local.set;
     let failNext = true;
     browser.storage.local.set = vi.fn(async (obj) => {

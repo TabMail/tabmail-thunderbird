@@ -16,6 +16,15 @@
 // Thunderbird does not reuse an account id while its account key counter
 // pref exists (it only grows).
 //
+// Removals the add-on never saw (Thunderbird closed, the add-on not running,
+// an account Thunderbird drops itself while loading) send no onDeleted. They
+// are found from Thunderbird's own preferences, never from accounts.list():
+// removing an account drops its key from mail.accountmanager.accounts and
+// clears every preference under mail.account.<id>., and preferences are read
+// from disk before any add-on starts, so unlike the loaded-account list they
+// cannot be partial. Any doubt refuses the whole check (see
+// _findUnwitnessedRemovals).
+//
 // Every native key starts with `${accountId}:` and account ids carry no ":",
 // so the account's rows are exactly the half-open key range
 // [`${accountId}:`, `${accountId};`) (";" is ":" + 1).
@@ -25,6 +34,10 @@ import { log } from "../agent/modules/utils.js";
 import { acquireFtsExclusiveOperation } from "./operationCoordinator.js";
 
 const PENDING_KEY = "fts_removed_account_purges";
+// Above every key the index can hold for an account (account ids are ASCII).
+const KEYSPACE_END = "\uFFFF";
+// The ids Thunderbird gives accounts; anything else is never treated as gone.
+const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 let _ftsSearch = null;
 let _recordChain = Promise.resolve();
@@ -159,6 +172,82 @@ async function _runPurges() {
   }
 }
 
+// The distinct account ids that own rows in the index: one key per account,
+// then a jump past that account's whole range.
+async function _indexedAccountIds(ftsSearch) {
+  const ids = [];
+  let startKey = "";
+  let afterKey = null;
+  for (;;) {
+    const page = await ftsSearch.listMsgIdRange(startKey, KEYSPACE_END, afterKey, 1);
+    const key = page?.msgIds?.[0];
+    if (typeof key !== "string") return ids;
+    const accountEnd = key.indexOf(":");
+    if (accountEnd <= 0) {
+      afterKey = key;
+      continue;
+    }
+    const accountId = key.slice(0, accountEnd);
+    ids.push(accountId);
+    startKey = removedAccountKeyRange(accountId).endKey;
+    afterKey = null;
+  }
+}
+
+// Accounts with rows in the index that Thunderbird's preferences show as
+// removed. Throws (removing nothing) when the evidence cannot be trusted.
+async function _findUnwitnessedRemovals(ftsSearch) {
+  const indexed = (await _indexedAccountIds(ftsSearch)).filter(id => ACCOUNT_ID_PATTERN.test(id));
+  if (indexed.length === 0) return [];
+  // Used only to refuse: every account Thunderbird has loaded must show in
+  // the preferences, or this check is not reading what Thunderbird uses.
+  const loadedIds = (await browser.accounts.list(false)).map(account => account?.id);
+  if (!loadedIds.every(id => typeof id === "string" && ACCOUNT_ID_PATTERN.test(id))) {
+    throw new Error("unwitnessed_removal_refused: loaded account id unreadable");
+  }
+  const askIds = [...new Set([...indexed, ...loadedIds])];
+  const state = await browser.tmPrefs.getAccountPrefPresence(askIds);
+  const listed = new Set(
+    (typeof state?.accountList === "string" ? state.accountList : "")
+      .split(",").map(id => id.trim()).filter(Boolean),
+  );
+  if (listed.size === 0) throw new Error("unwitnessed_removal_refused: account list empty");
+  for (const id of loadedIds) {
+    if (!listed.has(id) || state.accounts?.[id] !== "present") {
+      throw new Error("unwitnessed_removal_refused: loaded account missing from preferences");
+    }
+  }
+  return indexed.filter(id => !listed.has(id)
+    && !loadedIds.includes(id)
+    && state.accounts?.[id] === "absent");
+}
+
+// Records every account found removed without an event, then runs the purge.
+// A refusal or failure here removes nothing and leaves every record as it was.
+async function _sweepAndPurge() {
+  const ftsSearch = _ftsSearch;
+  if (ftsSearch) {
+    try {
+      const removed = await _findUnwitnessedRemovals(ftsSearch);
+      for (const accountId of removed) {
+        _removedAccounts.add(accountId);
+        _unrecorded.add(accountId);
+        try {
+          await _record(accountId);
+        } catch (e) {
+          log(`[TMDBG FTS] Failed to record a removed account, purging it anyway: ${e}`, "warn");
+        }
+      }
+      if (removed.length > 0) {
+        log(`[TMDBG FTS] Removed account purge: ${removed.length} account(s) removed while the add-on was not watching`);
+      }
+    } catch (e) {
+      log(`[TMDBG FTS] Check for accounts removed without an event skipped: ${e}`, "warn");
+    }
+  }
+  await _runPurges();
+}
+
 function _onAccountDeleted(accountId) {
   if (!_validAccountId(accountId)) return;
   _removedAccounts.add(accountId);
@@ -183,10 +272,11 @@ export function setupRemovedAccountPurgeListeners() {
   }
 }
 
-// Called once the native index is ready; finishes every recorded purge.
+// Called once the native index is ready; finds accounts removed without an
+// event and finishes every recorded purge.
 export function initRemovedAccountPurge(ftsSearch) {
   _ftsSearch = ftsSearch;
-  return _enqueuePurge(_runPurges);
+  return _enqueuePurge(_sweepAndPurge);
 }
 
 export function _resetRemovedAccountPurgeForTests() {
