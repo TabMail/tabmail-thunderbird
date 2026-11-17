@@ -217,9 +217,9 @@ async function _findUnwitnessedRemovals(ftsSearch) {
       throw new Error("unwitnessed_removal_refused: loaded account missing from preferences");
     }
   }
-  return indexed.filter(id => !listed.has(id)
-    && !loadedIds.includes(id)
-    && state.accounts?.[id] === "absent");
+  // Every loaded account is in the list (checked above), so a listed-out
+  // account is never one Thunderbird has loaded.
+  return indexed.filter(id => !listed.has(id) && state.accounts?.[id] === "absent");
 }
 
 // Records every account found removed without an event, then runs the purge.
