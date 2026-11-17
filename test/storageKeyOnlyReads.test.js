@@ -22,6 +22,7 @@ it('the checkpoint tools list the keys, then read and remove only the checkpoint
       'agent/modules/utils.js': { log() {} },
       'fts/nativeEngine.js': {},
       'fts/operationCoordinator.js': {},
+      'fts/removedAccountPurge.js': {},
     },
     globals: { browser: { storage: { local: {
       getKeys: async () => Object.keys(values),
