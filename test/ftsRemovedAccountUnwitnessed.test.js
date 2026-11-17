@@ -188,6 +188,21 @@ describe('accounts removed without an onDeleted event', () => {
     expect(index.removed).toEqual([]);
   });
 
+  it('an account still in the list keeps every row even when its settings branch is empty', async () => {
+    const model = makePrefs(['account1', 'account10', 'account2', 'account3']);
+    for (const name of [...model.prefs.keys()]) {
+      if (name.startsWith('mail.account.account3.')) model.prefs.delete(name);
+    }
+    loaded = ['account1', 'account10', 'account2'];
+    const index = makeIndex(ROWS);
+
+    await start(index, tmPrefsOver(model));
+
+    expect(index.removed).toEqual([]);
+    expect(storage.fts_removed_account_purges).toBeUndefined();
+    expect(purge.isRemovedAccountKey('account3:INBOX:x@example.com')).toBe(false);
+  });
+
   it('the settings check is per account: removing account1 never reads account10 settings as account1', async () => {
     const model = makePrefs(['account1', 'account10', 'account2']);
     model.removeAccount('account1');
@@ -265,6 +280,32 @@ describe('accounts removed without an onDeleted event', () => {
     it('a loaded account missing from the preferences', async () => {
       const model = removedModel();
       loaded = ['account1', 'account10', 'account2', 'account7'];
+      const index = makeIndex(ROWS);
+
+      await start(index, tmPrefsOver(model));
+
+      expect(index.removed).toEqual([]);
+      expect(storage.fts_removed_account_purges).toBeUndefined();
+    });
+
+    it('a loaded account in the list but with no settings branch, alongside a really removed account', async () => {
+      const model = removedModel();
+      for (const name of [...model.prefs.keys()]) {
+        if (name.startsWith('mail.account.account2.')) model.prefs.delete(name);
+      }
+      loaded = ['account1', 'account10', 'account2'];
+      const index = makeIndex(ROWS);
+
+      await start(index, tmPrefsOver(model));
+
+      expect(index.removed).toEqual([]);
+      expect(storage.fts_removed_account_purges).toBeUndefined();
+    });
+
+    it('a loaded account with settings but missing from the list, alongside a really removed account', async () => {
+      const model = removedModel();
+      model.prefs.set('mail.accountmanager.accounts', 'account1,account10');
+      loaded = ['account1', 'account10', 'account2'];
       const index = makeIndex(ROWS);
 
       await start(index, tmPrefsOver(model));
