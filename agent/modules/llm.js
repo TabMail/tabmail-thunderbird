@@ -600,7 +600,11 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
   if (!accessToken) {
     throw new Error("Not authenticated. Please sign in.");
   }
-  
+
+  // Every send applies the AI setting as it goes out, after every wait before
+  // it: nothing between this check and the first send below waits.
+  await assertAiBackendAllowed(`llm.sendChatCompletions send endpoint=${endpointType}`);
+
   // Make request
   let response;
 
@@ -658,95 +662,110 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
     // Handle throttling (429) - retry indefinitely with exponential backoff (capped at 5s)
     let throttleRetryCount = 0;
     let throttleBubble = null;
-    let wasThrottled = false; // Track if we encountered throttling
-    
-    while (response.status === 429) {
-      wasThrottled = true; // Mark that we were throttled
-      try {
-        const errorData = await response.json();
-        const retryAfter = errorData.retry_after_seconds || 0.5;
-        const currentRate = errorData.current_rate || 0;
-        const limit = errorData.limit || 0;
-        
-        throttleRetryCount++;
-        log(`[COMPLETIONS] [THROTTLE] Rate limited (${currentRate}/${limit} tokens/min) - retry #${throttleRetryCount} after ${retryAfter}s`, "info");
-        
-        // Notify throttle callback if provided
-        if (throttleRetryCount === 1 && window._tabmailThrottleCallback) {
-          try {
-            window._tabmailThrottleCallback('start');
-          } catch (_) {}
-        }
-        
-        // Create or update throttle waiting indicator (styled as tool reply with indent)
+    // The throttle callback that was sent 'start'; it alone is sent 'end'.
+    let throttleCallback = null;
+
+    // Every exit from the throttle wait (success, refusal or any error) clears
+    // the waiting indicator and signals the throttle end, once, to the callback
+    // that was signalled its start.
+    try {
+      while (response.status === 429) {
         try {
-          if (!throttleBubble) {
-            const { createNewAgentBubble } = await import("../../chat/chat.js");
-            throttleBubble = await createNewAgentBubble("");
-            // Force tool styling (indent, opacity, icon) even outside active tool session
-            throttleBubble.classList.add("tool");
+          const errorData = await response.json();
+          const retryAfter = errorData.retry_after_seconds || 0.5;
+          const currentRate = errorData.current_rate || 0;
+          const limit = errorData.limit || 0;
+          
+          throttleRetryCount++;
+          log(`[COMPLETIONS] [THROTTLE] Rate limited (${currentRate}/${limit} tokens/min) - retry #${throttleRetryCount} after ${retryAfter}s`, "info");
+          
+          // Notify throttle callback if provided
+          if (throttleRetryCount === 1 && window._tabmailThrottleCallback) {
+            throttleCallback = window._tabmailThrottleCallback;
+            try {
+              throttleCallback('start');
+            } catch (_) {}
           }
-          const { setBubbleText } = await import("../../chat/modules/helpers.js");
-          setBubbleText(throttleBubble, "Taking a little longer ... [upgrade to Pro](https://tabmail.ai/pricing.html) for faster responses.");
+          
+          // Create or update throttle waiting indicator (styled as tool reply with indent)
+          try {
+            if (!throttleBubble) {
+              const { createNewAgentBubble } = await import("../../chat/chat.js");
+              throttleBubble = await createNewAgentBubble("");
+              // Force tool styling (indent, opacity, icon) even outside active tool session
+              throttleBubble.classList.add("tool");
+            }
+            const { setBubbleText } = await import("../../chat/modules/helpers.js");
+            setBubbleText(throttleBubble, "Taking a little longer ... [upgrade to Pro](https://tabmail.ai/pricing.html) for faster responses.");
+          } catch (e) {
+            log(`[COMPLETIONS] Failed to update throttle UI: ${e}`, "warn");
+          }
+          
+          // Wait before retry with exponential backoff capped at 5s
+          const backoffMultiplier = Math.pow(1.5, throttleRetryCount - 1);
+          const uncappedWait = retryAfter * backoffMultiplier * 1000;
+          const waitTime = Math.min(uncappedWait, 5000); // Cap at 5 seconds
+          log(`[COMPLETIONS] [THROTTLE] Waiting ${(waitTime/1000).toFixed(1)}s before retry (uncapped: ${(uncappedWait/1000).toFixed(1)}s)`, "info");
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+
+          // Retry request
+          log(`[COMPLETIONS] [THROTTLE] Retrying after throttle wait...`, "info");
+          const retryAccessToken = await getAccessToken();
+          if (!retryAccessToken) {
+            throw new Error("Lost authentication during throttle retry");
+          }
+
+          // Every send applies the AI setting, not only the first: the setting may
+          // have been turned off during the wait or the token lookup. Nothing
+          // between this check and the resend waits.
+          await assertAiBackendAllowed(`llm.sendChatCompletions throttle retry endpoint=${endpointType}`);
+
+          // Re-arm connect timeout for the retry fetch
+          if (internalAbortController && !internalAbortController.signal.aborted) {
+            connectTimer = setTimeout(() => {
+              log(`[COMPLETIONS] [THROTTLE] Connection timeout on retry — aborting`, "warn");
+              internalAbortController.abort();
+            }, CONNECT_TIMEOUT_MS);
+          }
+
+          response = await fetch(url, {
+            method: "POST",
+            headers: requestHeaders(retryAccessToken),
+            body: JSON.stringify(payloadWithOptions),
+            signal: effectiveSignal,
+          });
+
+          // Clear connect timeout on successful connection
+          if (connectTimer) {
+            clearTimeout(connectTimer);
+            connectTimer = null;
+          }
+        } catch (jsonError) {
+          // The AI setting's refusal ends the request as it does on the first send.
+          if (jsonError?.name === "PrivacyOptOutError") {
+            throw jsonError;
+          }
+          log(`[COMPLETIONS] [THROTTLE] Failed to parse 429 response (${jsonError}) - may indicate server issue`, "warn");
+          // If we can't parse the 429 response, break to avoid infinite loop
+          throw new Error("Rate limit active but unable to determine retry parameters. Please try again later.");
+        }
+      }
+    } finally {
+      // Remove throttle waiting indicator
+      if (throttleBubble) {
+        try {
+          throttleBubble.remove();
         } catch (e) {
-          log(`[COMPLETIONS] Failed to update throttle UI: ${e}`, "warn");
+          log(`[COMPLETIONS] Failed to remove throttle bubble: ${e}`, "warn");
         }
-        
-        // Wait before retry with exponential backoff capped at 5s
-        const backoffMultiplier = Math.pow(1.5, throttleRetryCount - 1);
-        const uncappedWait = retryAfter * backoffMultiplier * 1000;
-        const waitTime = Math.min(uncappedWait, 5000); // Cap at 5 seconds
-        log(`[COMPLETIONS] [THROTTLE] Waiting ${(waitTime/1000).toFixed(1)}s before retry (uncapped: ${(uncappedWait/1000).toFixed(1)}s)`, "info");
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        
-        // Retry request
-        log(`[COMPLETIONS] [THROTTLE] Retrying after throttle wait...`, "info");
-        const retryAccessToken = await getAccessToken();
-        if (!retryAccessToken) {
-          throw new Error("Lost authentication during throttle retry");
-        }
-
-        // Re-arm connect timeout for the retry fetch
-        if (internalAbortController && !internalAbortController.signal.aborted) {
-          connectTimer = setTimeout(() => {
-            log(`[COMPLETIONS] [THROTTLE] Connection timeout on retry — aborting`, "warn");
-            internalAbortController.abort();
-          }, CONNECT_TIMEOUT_MS);
-        }
-
-        response = await fetch(url, {
-          method: "POST",
-          headers: requestHeaders(retryAccessToken),
-          body: JSON.stringify(payloadWithOptions),
-          signal: effectiveSignal,
-        });
-
-        // Clear connect timeout on successful connection
-        if (connectTimer) {
-          clearTimeout(connectTimer);
-          connectTimer = null;
-        }
-      } catch (jsonError) {
-        log(`[COMPLETIONS] [THROTTLE] Failed to parse 429 response (${jsonError}) - may indicate server issue`, "warn");
-        // If we can't parse the 429 response, break to avoid infinite loop
-        throw new Error("Rate limit active but unable to determine retry parameters. Please try again later.");
       }
-    }
-    
-    // Remove throttle waiting indicator once we succeed
-    if (throttleBubble) {
-      try {
-        throttleBubble.remove();
-      } catch (e) {
-        log(`[COMPLETIONS] Failed to remove throttle bubble: ${e}`, "warn");
+
+      // Notify the throttle callback that was told it started that it ended
+      if (throttleCallback) {
+        try {
+          throttleCallback('end');
+        } catch (_) {}
       }
-    }
-    
-    // Notify throttle callback that it ended
-    if (wasThrottled && window._tabmailThrottleCallback) {
-      try {
-        window._tabmailThrottleCallback('end');
-      } catch (_) {}
     }
     
     // Handle auth errors
@@ -776,6 +795,11 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
           if (!newAccessToken) {
             throw new Error("Failed to get access token after re-auth");
           }
+
+          // The resend applies the AI setting too: it may have been turned off
+          // while signing in again or during the token lookup. Nothing between
+          // this check and the resend waits.
+          await assertAiBackendAllowed(`llm.sendChatCompletions re-auth retry endpoint=${endpointType}`);
 
           response = await fetch(url, {
             method: "POST",
