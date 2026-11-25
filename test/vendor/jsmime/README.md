@@ -9,8 +9,9 @@ development dependency: `test/` is in the web-ext ignore list, so nothing here s
 - **Revision:** tag `THUNDERBIRD_161_0_RELEASE`, changeset
   `f53f287971bad7e05aaa26bbefdda84c4aa6a16e`
 - **License:** MIT (`LICENSE`, copied unmodified)
-- **Modified:** no. SHA-256 of `jsmime.mjs` (checked by `test/vendoredJsmime.test.js`):
+- **Modified:** no. SHA-256 of `jsmime.mjs`:
   `200f67442b0b9fc4ab3f59fd2f55c75f5897a96125500af97d7d8d520cc0e3b9`
+  (checked by `test/vendoredJsmime.test.js`)
 
 The add-on supports Thunderbird 140.0 to 160.* (`manifest.json`). The parser changed after 145
 (encoded words are matched only where a token starts, and folded line breaks in addresses are
