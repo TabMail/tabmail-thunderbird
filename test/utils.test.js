@@ -7,7 +7,8 @@
 // Tests for TB-030 through TB-035 (TESTS.md §1.3) plus additional pure utility functions.
 // Modules with heavy browser dependencies are mocked; only pure logic is under test.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { withTbAddressParser } from './helpers/tbAddressParser.js';
 
 // ---------------------------------------------------------------------------
 // Mocks — utils.js imports config.js (SETTINGS) and thinkBuffer.js
@@ -245,39 +246,44 @@ describe('TB-032: isInboxFolder', () => {
 // TB-033: Email address extraction from header
 // ---------------------------------------------------------------------------
 describe('TB-033: extractEmailFromAuthor', () => {
-  it('extracts email from angle brackets', () => {
-    expect(extractEmailFromAuthor('John Doe <john@example.com>')).toBe('john@example.com');
+  // The author entry is read with Thunderbird's parser (messengerUtilities.parseMailboxString).
+  beforeAll(() => {
+    globalThis.browser = withTbAddressParser(globalThis.browser || {});
   });
 
-  it('extracts email with display name containing special chars', () => {
-    expect(extractEmailFromAuthor('"Doe, John" <john@example.com>')).toBe('john@example.com');
+  it('extracts email from angle brackets', async () => {
+    expect(await extractEmailFromAuthor('John Doe <john@example.com>')).toBe('john@example.com');
   });
 
-  it('extracts bare email address', () => {
-    expect(extractEmailFromAuthor('john@example.com')).toBe('john@example.com');
+  it('extracts email with display name containing special chars', async () => {
+    expect(await extractEmailFromAuthor('"Doe, John" <john@example.com>')).toBe('john@example.com');
   });
 
-  it('lowercases the result', () => {
-    expect(extractEmailFromAuthor('John@EXAMPLE.COM')).toBe('john@example.com');
-    expect(extractEmailFromAuthor('User <John@EXAMPLE.COM>')).toBe('john@example.com');
+  it('extracts bare email address', async () => {
+    expect(await extractEmailFromAuthor('john@example.com')).toBe('john@example.com');
   });
 
-  it('returns empty string for null/undefined/empty', () => {
-    expect(extractEmailFromAuthor(null)).toBe('');
-    expect(extractEmailFromAuthor(undefined)).toBe('');
-    expect(extractEmailFromAuthor('')).toBe('');
+  it('lowercases the result', async () => {
+    expect(await extractEmailFromAuthor('John@EXAMPLE.COM')).toBe('john@example.com');
+    expect(await extractEmailFromAuthor('User <John@EXAMPLE.COM>')).toBe('john@example.com');
   });
 
-  it('returns empty string for malformed input with no email', () => {
-    expect(extractEmailFromAuthor('just a name')).toBe('');
+  it('returns empty string for null/undefined/empty', async () => {
+    expect(await extractEmailFromAuthor(null)).toBe('');
+    expect(await extractEmailFromAuthor(undefined)).toBe('');
+    expect(await extractEmailFromAuthor('')).toBe('');
   });
 
-  it('handles plus-addressed emails', () => {
-    expect(extractEmailFromAuthor('User <user+tag@example.com>')).toBe('user+tag@example.com');
+  it('returns empty string for malformed input with no email', async () => {
+    expect(await extractEmailFromAuthor('just a name')).toBe('');
   });
 
-  it('handles dotted local parts', () => {
-    expect(extractEmailFromAuthor('first.last@example.com')).toBe('first.last@example.com');
+  it('handles plus-addressed emails', async () => {
+    expect(await extractEmailFromAuthor('User <user+tag@example.com>')).toBe('user+tag@example.com');
+  });
+
+  it('handles dotted local parts', async () => {
+    expect(await extractEmailFromAuthor('first.last@example.com')).toBe('first.last@example.com');
   });
 });
 

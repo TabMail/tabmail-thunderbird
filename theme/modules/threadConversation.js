@@ -43,7 +43,7 @@ async function getIdentityEmailToNameMap() {
     return map;
 }
 
-function formatSenderDisplayName(rawAuthor, identityEmailToName) {
+async function formatSenderDisplayName(rawAuthor, identityEmailToName) {
     const s = String(rawAuthor || "").trim();
     if (!s) return "Unknown";
 
@@ -68,11 +68,14 @@ function formatSenderDisplayName(rawAuthor, identityEmailToName) {
         return "Me";
     }
 
-    // "Name <email>"
+    // The entry's name as Thunderbird's parser reads it (quotes and escapes removed),
+    // or its address when it has no name.
     try {
-        const m = s.match(/^([^<]+)\s*</);
-        if (m && m[1]) return m[1].trim();
-    } catch (_) {}
+        const [mailbox] = await browser.messengerUtilities.parseMailboxString(s);
+        if (mailbox?.name || mailbox?.email) return mailbox.name || mailbox.email;
+    } catch (e) {
+        console.log(`[TabMail ThreadConv] Sender not parsed: ${e}`);
+    }
 
     return s;
 }
@@ -490,7 +493,7 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
             try {
                 const header = await browser.messages.get(msg.weId);
                 const rawAuthor = header?.author || msg.from || "";
-                enrichedMsg.from = formatSenderDisplayName(rawAuthor, identityEmailToName);
+                enrichedMsg.from = await formatSenderDisplayName(rawAuthor, identityEmailToName);
 
                 // Keep as arrays; content script will decide how to render.
                 enrichedMsg.recipients = Array.isArray(header?.recipients) ? header.recipients : [];
@@ -536,7 +539,7 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
                 enrichedMsg.attachments = [];
                 // Also normalize Identity format if it slipped through.
                 try {
-                    enrichedMsg.from = formatSenderDisplayName(enrichedMsg.from || msg.from || "", identityEmailToName);
+                    enrichedMsg.from = await formatSenderDisplayName(enrichedMsg.from || msg.from || "", identityEmailToName);
                 } catch (_) {}
             }
 

@@ -177,6 +177,10 @@
 
 - **[Full ADR](Companion/Decisions/Active/adr-032-index-stores-raw-invites-format-at-read.md)** — 2026-11-12 (#412): `message_meta.parsedIcsAttachments` holds the raw invite parts (`encodeStoredIcs`: `""` or JSON `{"tabmailStoredIcs":1,"parts":[...]}`, full length), never formatted text; `email_read` formats at read with the ICS parser; an old formatted value (`storedIcsParts` null) is absent, re-derived through `safeGetFull(..., { skipIndex: true })` and written back (`rewriteStoredIcs`, remove + re-add under the fence); empty = no invite, no download; offline = body without the invite, no error, never the old text; native-fts unchanged.
 
+## ADR-033: Every Address Is Read With Thunderbird's Own Parser
+
+- **[Full ADR](Companion/Decisions/Active/adr-033-addresses-read-with-thunderbirds-parser.md)** — 2026-11-25: every From/To/Cc address goes through Thunderbird's parser: `senderFilter.parseMailboxes` (`messengerUtilities.parseMailboxString`, one call per entry) for the Cc status, To/From suppress, `isInternalSender`, no-reply (`extractEmailFromAuthor`) and reply-all defaults; thread bubble sender (`threadConversation.js`) the same; `threadMessages` experiment `formatSender` via `MailServices.headerParser.parseEncodedHeaderW` on the raw From. Deleted the hand-written scanner (`_extractAllEmails`, `_fieldParts`, caps) and the prefilter regex copy. Suppress now matches only a mailbox's own address (iOS still matches any address in the text). Tests build entries with vendored JSMime (`test/helpers/tbAddressParser.js`, `test/vendor/jsmime/`, tests only). A name holding an address is read as one mailbox on Thunderbird.
+
 ---
 
 ## Template for New Decisions

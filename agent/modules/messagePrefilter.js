@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { extractEmailFromAuthor } from "./senderFilter.js";
 import { extractBodyFromParts, log, safeGetFull } from "./utils.js";
 
 /**
@@ -18,20 +19,11 @@ import { extractBodyFromParts, log, safeGetFull } from "./utils.js";
 
 /**
  * Checks if an email address is a no-reply address.
- * @param {string} author - The author field from message header (e.g., "Name <email@domain.com>" or "email@domain.com")
- * @returns {boolean} - True if the email is a no-reply address
+ * @param {string} author - The author entry from the message header (e.g., "Name <email@domain.com>" or "email@domain.com"); its address is read with Thunderbird's parser (senderFilter.extractEmailFromAuthor)
+ * @returns {Promise<boolean>} - True if the email is a no-reply address
  */
-function isNoReplyAddress(author) {
-    if (!author || typeof author !== 'string') return false;
-
-    // Extract email from author field - handle both "Name <email>" and plain "email" formats
-    let email = author.match(/<(.+?)>/)?.[1];
-    if (!email) {
-        // Try plain email format (no angle brackets)
-        const plainEmailMatch = author.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/);
-        email = plainEmailMatch?.[0];
-    }
-
+async function isNoReplyAddress(author) {
+    const email = await extractEmailFromAuthor(author);
     if (!email) return false;
 
     // Check for common no-reply patterns (case insensitive)
@@ -143,7 +135,7 @@ export async function analyzeEmailForReplyFilter(messageHeader, fullMessage = nu
     try {
         log(`[EmailFilter] Analyzing email ${messageHeader.id} for reply filter`);
 
-        const isNoReply = isNoReplyAddress(messageHeader.author);
+        const isNoReply = await isNoReplyAddress(messageHeader.author);
         log(`[EmailFilter] Message ${messageHeader.id}: isNoReply=${isNoReply} (author: ${messageHeader.author})`);
 
         // Compute hasUnsubscribe for LLM context (NOT used in skipCachedReply)

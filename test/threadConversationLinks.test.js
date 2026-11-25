@@ -8,6 +8,7 @@
 
 import { JSDOM } from 'jsdom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { tbAuthor, withTbAddressParser } from './helpers/tbAddressParser.js';
 
 const deps = vi.hoisted(() => ({ full: vi.fn() }));
 
@@ -48,24 +49,28 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function bubbleBody(full) {
+async function bubble(full, author = 'Bob <bob@example.com>') {
   deps.full.mockResolvedValueOnce(full);
   const sendMessage = vi.fn(async () => {});
   const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  vi.stubGlobal('browser', {
+  vi.stubGlobal('browser', withTbAddressParser({
     threadMessages: {
       getThreadParents: vi.fn(),
-      getThreadMessages: vi.fn(async () => ({ success: true, messages: [{ weId: 2, date: earlier, from: 'Bob <bob@example.com>' }] })),
+      getThreadMessages: vi.fn(async () => ({ success: true, messages: [{ weId: 2, date: earlier, from: 'Bob' }] })),
     },
-    messages: { get: vi.fn(async () => ({ author: 'Bob <bob@example.com>' })), listAttachments: vi.fn(async () => []) },
+    messages: { get: vi.fn(async () => ({ author })), listAttachments: vi.fn(async () => []) },
     accounts: { list: vi.fn(async () => []) },
     tabs: { sendMessage },
-  });
+  }));
   await fetchAndSendThreadConversation(7, 1);
   expect(sendMessage).toHaveBeenCalledTimes(1);
   const [, payload] = sendMessage.mock.calls[0];
   expect(payload.messages).toHaveLength(1);
-  return payload.messages[0].body;
+  return payload.messages[0];
+}
+
+async function bubbleBody(full) {
+  return (await bubble(full)).body;
 }
 
 describe('thread bubble body', () => {
@@ -92,5 +97,21 @@ describe('thread bubble body', () => {
       { contentType: 'text/html', body: '<p>Written as <a href="https://example.com/a">a</a> by hand</p>' },
     ] });
     expect(body).toBe('Written as [a](https://example.com/a) by hand');
+  });
+});
+
+// The bubble shows the sender's name as Thunderbird's parser reads the author entry
+// (each author is the entry Thunderbird hands the add-on for the raw From header).
+describe('thread bubble sender', () => {
+  it.each([
+    ['"Me <me@example.com>" <other@example.net>', 'Me <me@example.com>'],
+    ['"Doe, John" <john@example.com>', 'Doe, John'],
+    ['"Ann \\"x\\"" <a@example.com>', 'Ann "x"'],
+    ['=?UTF-8?Q?Ren=C3=A9?= <r@example.com>', 'Ren\u00e9'],
+    ['John@Example.com', 'John@Example.com'],
+    ['MAILER-DAEMON', 'MAILER-DAEMON'],
+  ])('From: %s → %s', async (rawFrom, expected) => {
+    const message = await bubble({ parts: [{ contentType: 'text/plain', body: 'Hi' }] }, tbAuthor(rawFrom));
+    expect(message.from).toBe(expected);
   });
 });

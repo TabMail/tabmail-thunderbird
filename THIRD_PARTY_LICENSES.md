@@ -78,5 +78,6 @@ shipped in the add-on XPI:
 - **acorn** — MIT License — https://github.com/acornjs/acorn
 - **fake-indexeddb** — Apache License 2.0 — https://github.com/dumbmatter/fakeIndexedDB
 - **jsdom** — MIT License — https://github.com/jsdom/jsdom
+- **JSMime** (Thunderbird's address parser, the tests' reference, in `test/vendor/jsmime/`) — MIT License — https://hg.mozilla.org/releases/comm-release/
 
-See `package.json` for exact versions.
+See `package.json` for exact versions, and `test/vendor/jsmime/README.md` for JSMime's revision.

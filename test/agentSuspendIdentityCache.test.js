@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { parseMailboxString } from './helpers/tbAddressParser.js';
 
 vi.mock('../agent/modules/utils.js', () => ({ log() {} }));
 import * as senderFilter from '../agent/modules/senderFilter.js';
@@ -74,6 +75,7 @@ function startAgent({ failedEvent } = {}) {
         if (String(key).startsWith('on')) return event(next);
         if (next === 'browser.accounts.list') return async () => accounts;
         if (next === 'browser.accounts.get') return async () => accounts[0];
+        if (next === 'browser.messengerUtilities.parseMailboxString') return parseMailboxString;
         if (key === 'getManifest') return () => ({ version: 'synthetic' });
         return api(next);
       },

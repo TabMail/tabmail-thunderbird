@@ -9,6 +9,7 @@
 // analyzeEmailForReplyFilter function.
 
 import { describe, it, expect, vi } from 'vitest';
+import { tbAuthor, withTbAddressParser } from './helpers/tbAddressParser.js';
 
 // ---------------------------------------------------------------------------
 // Mocks — messagePrefilter.js imports from utils.js
@@ -29,6 +30,9 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 }));
 
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
+
+// The author's address is read with Thunderbird's parser (messengerUtilities.parseMailboxString).
+globalThis.browser = withTbAddressParser({});
 
 // ---------------------------------------------------------------------------
 // Import module under test
@@ -156,6 +160,23 @@ describe('TB-144: isNoReplyAddress — "Name <noreply@x.com>" format', () => {
       '',
     );
     expect(result.isNoReply).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TB-144a: the address is the mailbox's own, never text in its display name.
+// Each author is the entry Thunderbird hands the add-on for the raw From header.
+// ---------------------------------------------------------------------------
+describe('TB-144a: isNoReplyAddress — the address outside a quoted display name', () => {
+  it.each([
+    ['"No Reply <noreply@example.com>" <person@example.net>', false],
+    ['"Person <person@example.net>" <noreply@example.com>', true],
+    ['=?UTF-8?Q?No_Reply_<noreply@example.com>?= <person@example.net>', false],
+    ['person@example.net (noreply@example.com)', false],
+  ])('From: %s → isNoReply %s', async (rawFrom, expected) => {
+    const result = await analyzeEmailForReplyFilter(makeHeader(tbAuthor(rawFrom)), { headers: {} }, '');
+    expect(result.isNoReply).toBe(expected);
+    expect(result.skipCachedReply).toBe(expected);
   });
 });
 

@@ -274,35 +274,31 @@ async function _runEmailReply(args = {}, options = {}) {
   // recipients (original To + Cc) → Cc. Filter out the user's own identities so
   // we never reply to ourselves. These defaults apply unless the LLM overrode
   // the matching field (per-field override — see tool description).
-  const { getUserEmailSetCached, extractEmailFromAuthor } = await import(
+  const { getUserEmailSetCached, parseMailboxes } = await import(
     "../../agent/modules/senderFilter.js"
   );
   const userEmails = await getUserEmailSetCached();
   const seen = new Set(Array.from(userEmails || []));
-  const toRecipient = (rawAddr) => {
-    const email = extractEmailFromAuthor(rawAddr);
-    if (!email || seen.has(email)) return null;
-    seen.add(email);
-    const m = String(rawAddr || "").match(/^\s*(.*?)\s*<[^<>]+>\s*$/);
-    let name = m ? m[1].trim() : "";
-    if (name.startsWith("\"") && name.endsWith("\"") && name.length >= 2) {
-      name = name.slice(1, -1);
-    }
-    return { name, email };
+  // Each entry is one mailbox; its name and address come from Thunderbird's parser.
+  const toRecipient = async (entry) => {
+    const [mailbox] = await parseMailboxes(entry);
+    if (!mailbox || seen.has(mailbox.email)) return null;
+    seen.add(mailbox.email);
+    return { name: mailbox.name, email: mailbox.email };
   };
 
   const defaultTo = [];
   if (repliedHeader) {
-    const sender = toRecipient(repliedHeader.author || "");
+    const sender = await toRecipient(repliedHeader.author || "");
     if (sender) defaultTo.push(sender);
   }
   const defaultCc = [];
   for (const addr of repliedHeader?.recipients || []) {
-    const r = toRecipient(addr);
+    const r = await toRecipient(addr);
     if (r) defaultCc.push(r);
   }
   for (const addr of repliedHeader?.ccList || []) {
-    const r = toRecipient(addr);
+    const r = await toRecipient(addr);
     if (r) defaultCc.push(r);
   }
   log(
