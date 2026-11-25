@@ -148,4 +148,16 @@ describe('thread bubble sender', () => {
     ], messages, [text, text, text]);
     expect(bubbles.map(b => b.from)).toEqual(['Doe, John', 'Me <me@example.com>', 'Unknown']);
   });
+
+  it('still shows the thread, with the source\'s own sender text, when reading the senders fails', async () => {
+    const messages = tbMessages();
+    const ids = ['Ann <a@example.com>', '"Doe, John" <john@example.com>'].map(from => messages.add({ from }).id);
+    vi.spyOn(messages, 'getAddressFields').mockRejectedValueOnce(new Error('synthetic read failure'));
+    const text = { parts: [{ contentType: 'text/plain', body: 'Hi' }] };
+    const bubbles = await renderThread([
+      { weId: ids[0], date: earlier(), from: 'Ann' },
+      { weId: ids[1], date: earlier(), from: 'Doe, John' },
+    ], messages, [text, text]);
+    expect(bubbles.map(b => [b.from, b.body])).toEqual([['Ann', 'Hi'], ['Doe, John', 'Hi']]);
+  });
 });
