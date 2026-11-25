@@ -87,7 +87,7 @@
       {
         "name": "getAddressFields",
         "type": "function",
-        "description": "Bulk read of Thunderbird's own parse of each message's From, To and Cc headers (headerParser.parseEncodedHeaderW over the raw header, groups flattened) by WebExtension message id. Each result is { author, recipients, ccList }, each a list of { name, email }, or null when the message is gone or its header could not be read.",
+        "description": "Bulk read of Thunderbird's own parse of each message's stored address fields, author (From, else Sender), recipients (To, else Cc, else Newsgroups) and ccList (Cc) (headerParser.parseEncodedHeaderW over each raw field, groups flattened), by WebExtension message id. Each result is { author, recipients, ccList }, each a list of { name, email }, or null when the message is gone or its header could not be read.",
         "async": true,
         "parameters": [
           { "name": "messageIds", "type": "array", "items": { "type": "integer" } }

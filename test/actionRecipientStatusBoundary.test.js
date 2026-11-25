@@ -52,6 +52,8 @@ it.each([
  ['malformed Cc display name',{ccList:['"me@example.com" <recipient@example.com>']},''],
  ['Cc name that begins and ends with a quote mark and holds the address',{ccList:['"\\"x\\" <me@example.com> \\"" <recipient@example.com>']},''],
  ['author name that begins and ends with a quote mark and holds the address',{author:'"\\"x\\" <me@example.com> \\"" <sender@example.com>'},'cc'],
+ ['RFC 2047 Cc name that begins and ends with a quote mark and holds the address',{ccList:['=?UTF-8?Q?=22x=22_=3Cme@example.com=3E_=22?= <recipient@example.com>']},''],
+ ['RFC 2047 author name that begins and ends with a quote mark and holds the address',{author:'=?UTF-8?Q?=22x=22_=3Cme@example.com=3E_=22?= <sender@example.com>'},'cc'],
  ['oversized Cc',{ccList:['x'.repeat(65537)]},''],
 ])('real classifier action boundary: %s',async(_name,patch,status)=>{
  Object.assign(h.header,patch);

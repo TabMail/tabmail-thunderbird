@@ -300,9 +300,10 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
           return out;
         },
 
-        // Thunderbird's own parse of each message's From, To and Cc headers, by WebExtension
-        // message id: headerParser.parseEncodedHeaderW over the raw header, the parse behind
-        // MessageHeader.author, recipients and ccList (groups flattened). It reads the structure
+        // Thunderbird's own parse of each message's stored address fields, by WebExtension
+        // message id: headerParser.parseEncodedHeaderW over msgHdr.author (From, else Sender),
+        // recipients (To, else Cc, else Newsgroups) and ccList (Cc), each the raw field, the
+        // parse behind MessageHeader.author, recipients and ccList (groups flattened). It reads the structure
         // first and decodes encoded words only inside it. Those MessageHeader strings are this
         // parse written back out, and a display name that begins and ends with a quote mark is
         // written out without quoting, so the strings are never parsed again. Each result is

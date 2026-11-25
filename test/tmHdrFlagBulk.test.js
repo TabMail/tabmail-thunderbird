@@ -11,6 +11,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { parseEncodedHeaderW, tbAddressFields, tbAuthor, tbEntries } from './helpers/tbAddressParser.js';
 
 const source = readFileSync(new URL('../agent/experiments/tmHdr/tmHdr.sys.mjs', import.meta.url), 'utf8');
 
@@ -20,6 +21,8 @@ function createExperiment(headers, messageManager = { get: vi.fn((id) => headers
   const sandbox = {
     ChromeUtils: { importESModule(path) {
       if (path.includes('ExtensionCommon')) return { ExtensionCommon: { ExtensionAPI: class {} } };
+      // Thunderbird's address parser, as its JSMime runs it (test/helpers/tbAddressParser.js).
+      if (path.includes('MailServices')) return { MailServices: { headerParser: { parseEncodedHeaderW } } };
       throw new Error(path);
     } },
     console: { log: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -130,5 +133,80 @@ describe('tmHdr logging', () => {
     const { api, console } = createExperiment({}, messageManager);
     expect(await api.getHasAttachmentBulk([7])).toEqual([null]);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('header read failed'), 7, expect.any(Error));
+  });
+});
+
+describe('tmHdr.getAddressFields', () => {
+  // A display name that begins and ends with a quote mark, holding an address: plain in From,
+  // RFC 2047-encoded in To.
+  const FROM = '"\\"x\\" <me@example.com> \\"" <bob@example.net>';
+  const TO = '=?UTF-8?Q?=22x=22_=3Cme@example.com=3E_=22?= <ann@example.org>';
+  const CC = 'Carol <carol@example.org>, "\\"Dan\\"" <dan@example.org>';
+
+  // The fields Thunderbird stores for a message: author, recipients and ccList hold the raw
+  // headers; the decoded copies nsIMsgDBHdr also carries are the parse written back out, which
+  // reads as a different mailbox for these names.
+  function storedHeader({ from = '', to = '', cc } = {}) {
+    return {
+      author: from,
+      recipients: to,
+      ccList: cc,
+      mime2DecodedAuthor: tbAuthor(from),
+      mime2DecodedRecipients: tbEntries(to).join(', '),
+    };
+  }
+
+  const emails = (list) => list.map((m) => m.email);
+
+  it('reads From, To and Cc into author, recipients and ccList, names kept whole', async () => {
+    const { api } = createExperiment({ 7: storedHeader({ from: FROM, to: TO, cc: CC }) });
+    const [fields] = await api.getAddressFields([7]);
+    expect(emails(fields.author)).toEqual(['bob@example.net']);
+    expect(emails(fields.recipients)).toEqual(['ann@example.org']);
+    expect(emails(fields.ccList)).toEqual(['carol@example.org', 'dan@example.org']);
+    expect(fields.author[0].name).toBe('"x" <me@example.com> "');
+    expect(fields.recipients[0].name).toBe('"x" <me@example.com> "');
+    expect(fields.ccList[1].name).toBe('"Dan"');
+    expect(fields).toEqual(tbAddressFields({ from: FROM, to: TO, cc: CC }));
+  });
+
+  it('flattens a group and reads a missing field as no mailboxes', async () => {
+    const { api } = createExperiment({
+      7: storedHeader({ from: 'Ann <ann@example.org>', to: 'Team: a@example.org, "B" <b@example.org>;' }),
+    });
+    const [fields] = await api.getAddressFields([7]);
+    expect(fields.recipients).toEqual([
+      { name: '', email: 'a@example.org' },
+      { name: 'B', email: 'b@example.org' },
+    ]);
+    expect(fields.ccList).toEqual([]);
+  });
+
+  it('returns null for a message that is gone or whose header cannot be read, in id order', async () => {
+    const headers = { 7: storedHeader({ from: FROM, to: TO, cc: CC }) };
+    const messageManager = { get: vi.fn((id) => {
+      if (id === 9) throw new Error('boom');
+      return headers[id] ?? null;
+    }) };
+    const { api, console } = createExperiment(headers, messageManager);
+    expect(await api.getAddressFields([5, 9, 7])).toEqual([
+      null,
+      null,
+      tbAddressFields({ from: FROM, to: TO, cc: CC }),
+    ]);
+    expect(messageManager.get.mock.calls.map(([id]) => id)).toEqual([5, 9, 7]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('header read failed'), 9, expect.any(Error));
+  });
+
+  it('returns null for every id when the extension has no message manager', async () => {
+    const { api } = createExperiment({}, null);
+    expect(await api.getAddressFields([7, 8])).toEqual([null, null]);
+  });
+
+  it('returns an empty list for a non-array argument', async () => {
+    const { api } = createExperiment({ 7: storedHeader({ from: FROM }) });
+    expect(await api.getAddressFields(null)).toEqual([]);
+    expect(await api.getAddressFields('7')).toEqual([]);
+    expect(await api.getAddressFields(7)).toEqual([]);
   });
 });

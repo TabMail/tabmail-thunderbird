@@ -4,9 +4,9 @@
 
 // Thunderbird's own address parsing, for tests.
 //
-// The add-on reads every address from Thunderbird's own parse of the raw From, To and
-// Cc headers (the tmHdr experiment's getAddressFields: headerParser.parseEncodedHeaderW
-// over each raw header). This module runs the same steps with Thunderbird's JSMime
+// The add-on reads every address from Thunderbird's own parse of the raw address fields
+// it stores for a message (the tmHdr experiment's getAddressFields:
+// headerParser.parseEncodedHeaderW over msgHdr.author, recipients and ccList). This module runs the same steps with Thunderbird's JSMime
 // (test/vendor/jsmime, see its README for the source and changeset):
 // - parseEncodedHeaderW(raw): MailServices.headerParser.parseEncodedHeaderW;
 // - tbAddressFields(raw): what tmHdr.getAddressFields returns for a message with raw
@@ -72,7 +72,12 @@ export function tbAuthor(rawHeader) {
   return tbEntries(rawHeader).shift() || "";
 }
 
-/** What tmHdr.getAddressFields returns for a message with these raw From, To and Cc headers. */
+/**
+ * What tmHdr.getAddressFields returns for a message with these raw From, To and Cc headers.
+ * Thunderbird stores From, else Sender, as the author and To, else Cc, else Newsgroups, as the
+ * recipients. This models From and To only: a message with no To whose outcome depends on that
+ * fallback gives its Cc as `to` as well.
+ */
 export function tbAddressFields({ from = "", to = "", cc = "" } = {}) {
   return {
     author: parseEncodedHeaderW(from),

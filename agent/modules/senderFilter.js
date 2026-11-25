@@ -75,8 +75,10 @@ function _mailboxes(list) {
 }
 
 /**
- * Every address the add-on reads is Thunderbird's own parse of the raw From, To
- * and Cc headers (tmHdr.getAddressFields: headerParser.parseEncodedHeaderW, which
+ * Every address the add-on reads is Thunderbird's own parse of the raw address
+ * fields it stores for a message: `author` (From, else Sender), `recipients` (To,
+ * else Cc, else Newsgroups) and `ccList` (Cc) (tmHdr.getAddressFields:
+ * headerParser.parseEncodedHeaderW, which
  * reads quoted strings, quoted pairs, comments and groups first and decodes encoded
  * words only inside them). A display name can hold any text, `<`, `,` and `@`
  * included, and is never read as an address. The `author`, `recipients` and `ccList`

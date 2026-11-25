@@ -13,7 +13,7 @@ text, `<`, `,` and `@` included, so each of these could read part of a name as a
 part of an address as a name. iOS replaced its own scanner with SwiftMail's RFC 5322 parser in #214.
 
 Thunderbird already parses every address header. `MailServices.headerParser.parseEncodedHeaderW`
-reads a raw From, To or Cc header structure first (quoted strings, quoted pairs, comments, groups)
+reads a raw address header's structure first (quoted strings, quoted pairs, comments, groups)
 and decodes encoded words only inside it. `browser.messages` gives the add-on that parse written
 back out, one string per mailbox (`author`, `recipients`, `ccList`). That copy is not exact: a
 display name that begins and ends with a quote mark is written out without quoting, so reading the
@@ -25,12 +25,13 @@ mailbox, b@example.net, named `"x" <a@example.com> "`; its string is
 
 - **One parse, Thunderbird's own.** Every address the add-on reads is Thunderbird's parse of the raw
   header. The `tmHdr` experiment's `getAddressFields(messageIds)` returns `parseEncodedHeaderW` over
-  each message's raw From, To and Cc (groups flattened) by WebExtension message id, many messages in
-  one call. `senderFilter.readAddressFields` and `senderFilter.readSenderEmail` (the first From
+  the raw address fields Thunderbird stores for each message, `author` (From, else Sender),
+  `recipients` (To, else Cc, else Newsgroups) and `ccList` (Cc) (groups flattened), by WebExtension
+  message id, many messages in one call. `senderFilter.readAddressFields` and `senderFilter.readSenderEmail` (the first From
   mailbox) read it for the summary's Cc status, the To/From suppress, `isInternalSender`, no-reply
   detection (`messagePrefilter.js`) and the reply-all defaults (`email_reply.js`). The thread view
   (`threadConversation.js`) reads every bubble's sender in one call. The `threadMessages` experiment
-  names a sender with the same `parseEncodedHeaderW` on the raw From value. The `author`,
+  names a sender with the same `parseEncodedHeaderW` on the raw `author` field. The `author`,
   `recipients` and `ccList` strings of a MessageHeader are never parsed.
 - **A gone header gives no address.** When a message is gone or its header cannot be read,
   `getAddressFields` returns null for it: no Cc claim, not an own-account or no-reply sender, empty
@@ -66,6 +67,9 @@ scanner.
   the add-on reads Thunderbird's own parse, in which such a name stays one mailbox's name.
 - The supported range is Thunderbird 140.0 to 160.*. Every address header the tests use parses the
   same with the JSMime of Thunderbird 140.0esr, 145 and the vendored revision (its README).
+- A message with no To has its Cc as its `recipients` too (Thunderbird stores To, else Cc), so a
+  user named only in its Cc is suppressed as a To recipient and gets no Cc hint. That only omits
+  the hint, and the strings read before this decision came from the same fields.
 - Two display-only name strips in the message-list experiments (`tmMessageListTableView`,
   `tmMessageListCardView`) still use a regex on text Thunderbird already rendered; they read no
   address for any decision.
