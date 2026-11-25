@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { withTbAddressParser } from './helpers/tbAddressParser.js';
+import { withTbAddressFields } from './helpers/tbAddressParser.js';
 
 vi.mock('../agent/modules/config.js', () => ({
   SETTINGS: {
@@ -42,7 +42,7 @@ function setupBrowser() {
     fullCalls.set(id, count);
     return { body: `Synthetic message ${id}, fetch ${count}` };
   });
-  globalThis.browser = withTbAddressParser({
+  globalThis.browser = withTbAddressFields({
     alarms: {
       onAlarm: {
         addListener: vi.fn(),

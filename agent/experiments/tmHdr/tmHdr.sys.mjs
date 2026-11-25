@@ -7,6 +7,14 @@ const { ExtensionCommon: ExtensionCommonTMHdr } = ChromeUtils.importESModule(
 );
 const CiTM = globalThis.Ci || Components?.interfaces;
 
+var MailServicesTMHdr = globalThis.__TM_tmHdr_MailServices || null;
+if (!MailServicesTMHdr) {
+  MailServicesTMHdr = ChromeUtils.importESModule(
+    "resource:///modules/MailServices.sys.mjs"
+  ).MailServices;
+  globalThis.__TM_tmHdr_MailServices = MailServicesTMHdr;
+}
+
 // Diagnostic logging is off in shipped builds; failures still log through console.warn.
 const TMHDR_DEBUG = false;
 function tmHdrDebugLog(...args) { if (TMHDR_DEBUG) console.log(...args); }
@@ -288,6 +296,39 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
           });
           if (unknown > 0) {
             tmHdrDebugLog(`[TMDBG tmHdr] getHasAttachmentBulk: ${unknown} of ${out.length} headers unavailable`);
+          }
+          return out;
+        },
+
+        // Thunderbird's own parse of each message's From, To and Cc headers, by WebExtension
+        // message id: headerParser.parseEncodedHeaderW over the raw header, the parse behind
+        // MessageHeader.author, recipients and ccList (groups flattened). It reads the structure
+        // first and decodes encoded words only inside it. Those MessageHeader strings are this
+        // parse written back out, and a display name that begins and ends with a quote mark is
+        // written out without quoting, so the strings are never parsed again. Each result is
+        // { author, recipients, ccList }, each a list of { name, email }, or null when the
+        // message is gone or its header could not be read.
+        async getAddressFields(messageIds) {
+          const read = (raw) =>
+            MailServicesTMHdr.headerParser.parseEncodedHeaderW(raw || "").map((m) => ({
+              name: String(m?.name || ""),
+              email: String(m?.email || ""),
+            }));
+          let unknown = 0;
+          const out = (Array.isArray(messageIds) ? messageIds : []).map((id) => {
+            try {
+              const hdr = mm ? mm.get(id) : null;
+              if (hdr) {
+                return { author: read(hdr.author), recipients: read(hdr.recipients), ccList: read(hdr.ccList) };
+              }
+            } catch (e) {
+              console.warn("[TMDBG tmHdr] getAddressFields: header read failed for", id, e);
+            }
+            unknown++;
+            return null;
+          });
+          if (unknown > 0) {
+            tmHdrDebugLog(`[TMDBG tmHdr] getAddressFields: ${unknown} of ${out.length} headers unavailable`);
           }
           return out;
         },

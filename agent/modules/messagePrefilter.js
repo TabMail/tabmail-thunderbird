@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { extractEmailFromAuthor } from "./senderFilter.js";
+import { readSenderEmail } from "./senderFilter.js";
 import { extractBodyFromParts, log, safeGetFull } from "./utils.js";
 
 /**
@@ -19,11 +19,11 @@ import { extractBodyFromParts, log, safeGetFull } from "./utils.js";
 
 /**
  * Checks if an email address is a no-reply address.
- * @param {string} author - The author entry from the message header (e.g., "Name <email@domain.com>" or "email@domain.com"); its address is read with Thunderbird's parser (senderFilter.extractEmailFromAuthor)
+ * @param {object} messageHeader - The message header from browser.messages.get(); the sender's address is Thunderbird's own parse of its From header (senderFilter.readSenderEmail)
  * @returns {Promise<boolean>} - True if the email is a no-reply address
  */
-async function isNoReplyAddress(author) {
-    const email = await extractEmailFromAuthor(author);
+async function isNoReplyAddress(messageHeader) {
+    const email = await readSenderEmail(messageHeader);
     if (!email) return false;
 
     // Check for common no-reply patterns (case insensitive)
@@ -135,7 +135,7 @@ export async function analyzeEmailForReplyFilter(messageHeader, fullMessage = nu
     try {
         log(`[EmailFilter] Analyzing email ${messageHeader.id} for reply filter`);
 
-        const isNoReply = await isNoReplyAddress(messageHeader.author);
+        const isNoReply = await isNoReplyAddress(messageHeader);
         log(`[EmailFilter] Message ${messageHeader.id}: isNoReply=${isNoReply} (author: ${messageHeader.author})`);
 
         // Compute hasUnsubscribe for LLM context (NOT used in skipCachedReply)

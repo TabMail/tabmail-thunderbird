@@ -12,46 +12,64 @@ thread view took the text before the first `<` as the sender's name. A display n
 text, `<`, `,` and `@` included, so each of these could read part of a name as an address, or show
 part of an address as a name. iOS replaced its own scanner with SwiftMail's RFC 5322 parser in #214.
 
-Thunderbird already parses every address header. `browser.messages` hands the add-on each From, To
-and Cc mailbox as one entry that Thunderbird parsed from the raw header (structure first, encoded
-words decoded inside it) and re-quoted, and `browser.messengerUtilities.parseMailboxString` reads an
-entry back with the same parser.
+Thunderbird already parses every address header. `MailServices.headerParser.parseEncodedHeaderW`
+reads a raw From, To or Cc header structure first (quoted strings, quoted pairs, comments, groups)
+and decodes encoded words only inside it. `browser.messages` gives the add-on that parse written
+back out, one string per mailbox (`author`, `recipients`, `ccList`). That copy is not exact: a
+display name that begins and ends with a quote mark is written out without quoting, so reading the
+string again can give a different mailbox. `"\"x\" <a@example.com> \"" <b@example.net>` is one
+mailbox, b@example.net, named `"x" <a@example.com> "`; its string is
+`"x" <a@example.com> " <b@example.net>`, which reads back as a@example.com.
 
 ## Decision
 
-- **One parser.** Every address the add-on reads goes through Thunderbird's parser:
-  `senderFilter.parseMailboxes(entry)` (`messengerUtilities.parseMailboxString`, one call per entry,
-  address trimmed and lowercased) for the summary's Cc status, the To/From suppress,
-  `isInternalSender`, no-reply detection (`extractEmailFromAuthor`) and the reply-all defaults; the
-  thread view's bubble sender (`threadConversation.js`) reads the author entry's name the same way;
-  the `threadMessages` experiment names a sender with `MailServices.headerParser.parseEncodedHeaderW`
-  on the message header's raw From value.
+- **One parse, Thunderbird's own.** Every address the add-on reads is Thunderbird's parse of the raw
+  header. The `tmHdr` experiment's `getAddressFields(messageIds)` returns `parseEncodedHeaderW` over
+  each message's raw From, To and Cc (groups flattened) by WebExtension message id, many messages in
+  one call. `senderFilter.readAddressFields` and `senderFilter.readSenderEmail` (the first From
+  mailbox) read it for the summary's Cc status, the To/From suppress, `isInternalSender`, no-reply
+  detection (`messagePrefilter.js`) and the reply-all defaults (`email_reply.js`). The thread view
+  (`threadConversation.js`) reads every bubble's sender in one call. The `threadMessages` experiment
+  names a sender with the same `parseEncodedHeaderW` on the raw From value. The `author`,
+  `recipients` and `ccList` strings of a MessageHeader are never parsed.
+- **A gone header gives no address.** When a message is gone or its header cannot be read,
+  `getAddressFields` returns null for it: no Cc claim, not an own-account or no-reply sender, empty
+  reply-all defaults, and the thread bubble shows the thread source's own sender text as it is.
 - **No address text of our own.** The hand-written scanner, its caps and the prefilter's regex copy
   are deleted. A name is never read as an address and an address is never read out of a name.
 - **Suppress reads only mailbox addresses.** The To/From suppress of the Cc status matches a
   mailbox's own address (plus-tags stripped), no longer an address that appears only inside a
-  display name. A wrong suppress only omits the hint; iOS (`PromptVariables`) still suppresses on any
-  address in the field text, a difference that can only omit the hint on one platform.
-- **Tests use Thunderbird's parser.** Tests build each entry from a raw header with Thunderbird's
-  JSMime (`test/helpers/tbAddressParser.js`; JSMime vendored unmodified under `test/vendor/jsmime/`,
-  tests only, revision in its README), so expected values are what Thunderbird gives.
+  display name; every From mailbox counts as an author. A wrong suppress only omits the hint; iOS
+  (`PromptVariables`) still suppresses on any address in the field text, a difference that can only
+  omit the hint on one platform.
+- **Tests use Thunderbird's parser.** Tests give each synthetic message raw headers, and the
+  experiment stub answers with Thunderbird's JSMime parse of them (`test/helpers/tbAddressParser.js`:
+  `tbMessages`, `withTbAddressFields`; JSMime vendored unmodified under `test/vendor/jsmime/`, tests
+  only, revision and hash check in its README). Each MessageHeader also carries the strings
+  Thunderbird would give, so reading those instead of the parse fails the tests.
 
 ## Rationale
 
 The add-on runs inside Thunderbird, whose parser already decided what each mailbox is. A second
 parser of our own can only disagree with it, and every disagreement is a name read as an address
-(a wrong Cc claim, a wrong own-account or no-reply decision) or a garbled name. Reading Thunderbird's
-own result removes the class instead of adding cases to a scanner.
+(a wrong Cc claim, a wrong own-account or no-reply decision) or a garbled name. Reading the strings
+`browser.messages` gives back with Thunderbird's parser would still be a second parse, of a copy
+that is not exact. Reading Thunderbird's own result removes the class instead of adding cases to a
+scanner.
 
 ## Consequences
 
-- One asynchronous messaging call per entry (run together with `Promise.all`); no call when the
-  receiving account has no address.
+- One experiment call per message read, and one per thread view for all its bubbles; no call when
+  the receiving account has no address, and none on the message-list row-render path.
 - The display-name case recorded in the root contract note
   (`Companion/Memory/Current/summary-recipient-status-cc-contract.md`) does not occur on Thunderbird:
-  Thunderbird hands such a name to the add-on as one escaped mailbox, read as one mailbox.
-- A name that ends in a backslash loses that backslash in Thunderbird's re-quoting; the address is
-  unaffected.
+  the add-on reads Thunderbird's own parse, in which such a name stays one mailbox's name.
+- The supported range is Thunderbird 140.0 to 160.*. Every address header the tests use parses the
+  same with the JSMime of Thunderbird 140.0esr, 145 and the vendored revision (its README).
 - Two display-only name strips in the message-list experiments (`tmMessageListTableView`,
   `tmMessageListCardView`) still use a regex on text Thunderbird already rendered; they read no
   address for any decision.
+- Two address reads outside this decision are unchanged: `chat/fsm/emailCompose.js`
+  `runStateSendEmailPreview` matches the user's address in `originalMsg.recipients` strings with
+  `includes` (headless and ChatLink modes only), and `compose/background.js` `parseComposeEntry`
+  splits compose-window recipient text with a regex.

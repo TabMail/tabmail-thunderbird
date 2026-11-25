@@ -5,9 +5,12 @@
 // The action request carries `recipient_status: "cc"` exactly when the REAL classifier
 // (`senderFilter.computeRecipientStatus`) finds the receiving account only in Cc, on every
 // path that asks for an action: first generation, forced recomputation, `processMessage`
-// and the message-display listener. Only browser APIs and the LLM are stubbed.
+// and the message-display listener. Only browser APIs and the LLM are stubbed. The header's
+// author/recipients/ccList stand for its raw From/To/Cc headers: tmHdr.getAddressFields answers
+// with Thunderbird's parse of them (vendored JSMime).
 
 import {beforeEach, afterEach, it, expect, vi} from 'vitest';
+import {tbAddressFields} from './helpers/tbAddressParser.js';
 const h=vi.hoisted(()=>({store:{},native:new Map(),chat:vi.fn(),get:vi.fn(),list:vi.fn(),peer:vi.fn(),header:null,owner:null}));
 vi.mock('../agent/modules/config.js',()=>({SETTINGS:{actionTTLSeconds:604800,actionGenerationParallelCalls:3}}));
 vi.mock('../agent/modules/utils.js',()=>({log:vi.fn(),indexHeader:vi.fn(),getUniqueMessageKey:async m=>`${m.folder.accountId}:${m.folder.path}:${m.headerMessageId}`,resolveUniqueMessageKey:async()=>({status:'unknown',weIds:[]}),safeGetFull:async()=>({body:'Synthetic text'}),extractBodyFromParts:async()=> 'Synthetic text',stripHtml:x=>x,saveChatLog:vi.fn(),getRealSubject:async m=>m.subject}));
@@ -28,7 +31,7 @@ beforeEach(async()=>{
  h.header={id:1,headerMessageId:'review@example.test',subject:'Synthetic subject',author:'sender@example.com',recipients:['recipient@example.com'],ccList:['me@example.com'],folder:{id:'inbox',accountId:'account1',path:'/INBOX',specialUse:['inbox']}};
  h.chat.mockReset().mockResolvedValue({assistant:'{"action":"archive"}'});h.peer.mockReset().mockResolvedValue(null);
  h.get.mockReset().mockImplementation(async id=>id===account.id?account:id===other.id?other:null);h.list.mockReset().mockResolvedValue([account,other]);
- globalThis.browser={accounts:{get:h.get,list:h.list},messages:{query:async()=>({messages:[h.header]})},tmHdr:{getRepliedBulk:async()=>[false],setAction:async(id,a)=>{h.native.set(id,a);return true;}}};
+ globalThis.browser={accounts:{get:h.get,list:h.list},messages:{query:async()=>({messages:[h.header]})},tmHdr:{getRepliedBulk:async()=>[false],setAction:async(id,a)=>{h.native.set(id,a);return true;},getAddressFields:async ids=>ids.map(id=>id===h.header.id?tbAddressFields({from:h.header.author,to:h.header.recipients.join(', '),cc:h.header.ccList.join(', ')}):null)}};
  ({getAction}=await import('../agent/modules/actionGenerator.js'));h.owner=await import('../agent/modules/actionCache.js');
 });
 afterEach(()=>h.owner.cleanupActionCache());
@@ -47,6 +50,8 @@ it.each([
  ['plus alias in To',{recipients:['me+tag@example.com']},''],
  ['plus alias only in Cc',{ccList:['me+tag@example.com']},''],
  ['malformed Cc display name',{ccList:['"me@example.com" <recipient@example.com>']},''],
+ ['Cc name that begins and ends with a quote mark and holds the address',{ccList:['"\\"x\\" <me@example.com> \\"" <recipient@example.com>']},''],
+ ['author name that begins and ends with a quote mark and holds the address',{author:'"\\"x\\" <me@example.com> \\"" <sender@example.com>'},'cc'],
  ['oversized Cc',{ccList:['x'.repeat(65537)]},''],
 ])('real classifier action boundary: %s',async(_name,patch,status)=>{
  Object.assign(h.header,patch);

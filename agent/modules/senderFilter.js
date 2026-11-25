@@ -67,45 +67,57 @@ export function invalidateUserEmailCache() {
   _cachedUserEmailSet = null;
 }
 
-/**
- * Every address the add-on reads goes through Thunderbird's own RFC 5322 parser.
- * Thunderbird parses each raw From/To/Cc header itself (quoted strings, quoted
- * pairs, comments, groups; encoded words decoded only once the structure is read)
- * and hands the add-on one re-quoted mailbox per entry: `author` is the first
- * From mailbox, and each `recipients` / `ccList` item is one mailbox. Reading an
- * entry back with the same parser gives its address and its name exactly. A name
- * can hold any text, `<`, `,` and `@` included, and is never read as an address.
- *
- * Returns the entry's mailboxes that have an address, as `{ name, email }` with
- * the address trimmed and lowercased (several only for an entry that is itself a
- * list).
- */
-export async function parseMailboxes(entry) {
-  const text = String(entry || "");
-  if (!text) return [];
-  const parsed = await browser.messengerUtilities.parseMailboxString(text);
-  const out = [];
-  for (const mailbox of parsed || []) {
-    const email = String(mailbox?.email || "").trim().toLowerCase();
-    if (email) out.push({ name: String(mailbox?.name || ""), email });
-  }
-  return out;
+function _mailboxes(list) {
+  return (Array.isArray(list) ? list : []).map((mailbox) => ({
+    name: String(mailbox?.name || ""),
+    email: String(mailbox?.email || "").trim(),
+  }));
 }
 
-/** The author entry's address, lowercased; "" when it holds none. */
-export async function extractEmailFromAuthor(author) {
+/**
+ * Every address the add-on reads is Thunderbird's own parse of the raw From, To
+ * and Cc headers (tmHdr.getAddressFields: headerParser.parseEncodedHeaderW, which
+ * reads quoted strings, quoted pairs, comments and groups first and decodes encoded
+ * words only inside them). A display name can hold any text, `<`, `,` and `@`
+ * included, and is never read as an address. The `author`, `recipients` and `ccList`
+ * strings of a MessageHeader are that parse written back out, and are never parsed
+ * again: a name that begins and ends with a quote mark is written out without
+ * quoting, so reading such a string again can give a different mailbox.
+ *
+ * Returns one result per message id, in order: `{ author, recipients, ccList }`,
+ * each a list of `{ name, email }` as Thunderbird reads them, the address trimmed
+ * ("" for a mailbox with none); `author` lists every From mailbox, the sender first. null
+ * when the message is gone or its header could not be read, so a caller has no
+ * address for it.
+ */
+export async function readAddressFields(messageIds) {
+  const ids = Array.isArray(messageIds) ? messageIds : [];
+  const known = [...new Set(ids.filter(Number.isInteger))];
+  const fields = known.length > 0 ? await browser.tmHdr.getAddressFields(known) : [];
+  const byId = new Map(known.map((id, i) => [id, fields?.[i] || null]));
+  return ids.map((id) => {
+    const field = byId.get(id);
+    if (!field) return null;
+    return {
+      author: _mailboxes(field.author),
+      recipients: _mailboxes(field.recipients),
+      ccList: _mailboxes(field.ccList),
+    };
+  });
+}
+
+/** The sender's address (the first From mailbox), lowercased; "" when it has none or the header is gone. */
+export async function readSenderEmail(messageHeader) {
   try {
-    return (await parseMailboxes(author))[0]?.email || "";
+    const [fields] = await readAddressFields([messageHeader?.id]);
+    return (fields?.author[0]?.email || "").toLowerCase();
   } catch (_) {
     return "";
   }
 }
 
-/** Every address in an address field: Thunderbird's string[] of entries, or one string. */
-async function _fieldEmails(field) {
-  const entries = Array.isArray(field) ? field : typeof field === "string" && field ? [field] : [];
-  const lists = await Promise.all(entries.map(parseMailboxes));
-  return lists.flat().map((mailbox) => mailbox.email);
+function _emails(mailboxes) {
+  return mailboxes.map((mailbox) => mailbox.email).filter(Boolean);
 }
 
 /** Strip a `+tag` local-part suffix (me+orders@x → me@x). Lowercased input expected. */
@@ -127,7 +139,7 @@ function _normalizeEmailSet(emails) {
 
 /**
  * Pure recipient-status classification for the summary request, over parsed
- * addresses (computeRecipientStatus parses the message's entries first).
+ * addresses (computeRecipientStatus reads them with readAddressFields first).
  * Returns "cc" ONLY on positive evidence: one of `claimEmails` (the RECEIVING
  * account's addresses) is one of the Cc mailboxes' addresses (and not in To,
  * and the user is not the author). Everything uncertain — aliases, Bcc,
@@ -169,7 +181,8 @@ export function classifyRecipientStatus(toEmails, ccEmails, fromEmails, claimEma
  * is positively found in the Cc field. The claim is deliberately scoped to
  * the account the email arrived on, but the suppress checks use every
  * account/identity address we know (cross-account To/From hits should also
- * prevent a claim). Unresolvable account → "" (never claim cc unsure).
+ * prevent a claim); every From mailbox counts as an author for that check.
+ * Unresolvable account or a gone header → "" (never claim cc unsure).
  */
 export async function computeRecipientStatus(messageHeader) {
   try {
@@ -190,12 +203,15 @@ export async function computeRecipientStatus(messageHeader) {
     try {
       suppress = (await getUserEmailSetCached()) || new Set();
     } catch (_) {}
-    const [toEmails, ccEmails, fromEmails] = await Promise.all([
-      _fieldEmails(messageHeader?.recipients),
-      _fieldEmails(messageHeader?.ccList),
-      _fieldEmails(messageHeader?.author),
-    ]);
-    return classifyRecipientStatus(toEmails, ccEmails, fromEmails, claim, suppress);
+    const [fields] = await readAddressFields([messageHeader?.id]);
+    if (!fields) return "";
+    return classifyRecipientStatus(
+      _emails(fields.recipients),
+      _emails(fields.ccList),
+      _emails(fields.author),
+      claim,
+      suppress
+    );
   } catch (_) {
     return "";
   }
@@ -212,7 +228,7 @@ export async function isInternalSender(messageHeader) {
       // Same policy as FolderScan: if we can't detect identities, don't filter.
       return false;
     }
-    const authorEmail = await extractEmailFromAuthor(messageHeader?.author);
+    const authorEmail = await readSenderEmail(messageHeader);
     if (!authorEmail) return false;
     return userEmails.has(authorEmail);
   } catch (_) {

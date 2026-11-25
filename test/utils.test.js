@@ -8,7 +8,7 @@
 // Modules with heavy browser dependencies are mocked; only pure logic is under test.
 
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
-import { withTbAddressParser } from './helpers/tbAddressParser.js';
+import { tbMessages, withTbAddressFields } from './helpers/tbAddressParser.js';
 
 // ---------------------------------------------------------------------------
 // Mocks — utils.js imports config.js (SETTINGS) and thinkBuffer.js
@@ -51,7 +51,7 @@ const {
 
 const { isInboxFolder } = await import('../agent/modules/folderUtils.js');
 
-const { extractEmailFromAuthor } = await import('../agent/modules/senderFilter.js');
+const { readSenderEmail } = await import('../agent/modules/senderFilter.js');
 
 // ---------------------------------------------------------------------------
 // TB-030: normalizeUnicode — NFC normalization + special character replacement
@@ -245,45 +245,47 @@ describe('TB-032: isInboxFolder', () => {
 // ---------------------------------------------------------------------------
 // TB-033: Email address extraction from header
 // ---------------------------------------------------------------------------
-describe('TB-033: extractEmailFromAuthor', () => {
-  // The author entry is read with Thunderbird's parser (messengerUtilities.parseMailboxString).
+describe('TB-033: readSenderEmail', () => {
+  // The sender's address is Thunderbird's own parse of the raw From header (tmHdr.getAddressFields).
+  const messages = tbMessages();
+  const sender = rawFrom => readSenderEmail(messages.add({ from: rawFrom }));
   beforeAll(() => {
-    globalThis.browser = withTbAddressParser(globalThis.browser || {});
+    globalThis.browser = withTbAddressFields(globalThis.browser || {}, messages);
   });
 
   it('extracts email from angle brackets', async () => {
-    expect(await extractEmailFromAuthor('John Doe <john@example.com>')).toBe('john@example.com');
+    expect(await sender('John Doe <john@example.com>')).toBe('john@example.com');
   });
 
   it('extracts email with display name containing special chars', async () => {
-    expect(await extractEmailFromAuthor('"Doe, John" <john@example.com>')).toBe('john@example.com');
+    expect(await sender('"Doe, John" <john@example.com>')).toBe('john@example.com');
   });
 
   it('extracts bare email address', async () => {
-    expect(await extractEmailFromAuthor('john@example.com')).toBe('john@example.com');
+    expect(await sender('john@example.com')).toBe('john@example.com');
   });
 
   it('lowercases the result', async () => {
-    expect(await extractEmailFromAuthor('John@EXAMPLE.COM')).toBe('john@example.com');
-    expect(await extractEmailFromAuthor('User <John@EXAMPLE.COM>')).toBe('john@example.com');
+    expect(await sender('John@EXAMPLE.COM')).toBe('john@example.com');
+    expect(await sender('User <John@EXAMPLE.COM>')).toBe('john@example.com');
   });
 
-  it('returns empty string for null/undefined/empty', async () => {
-    expect(await extractEmailFromAuthor(null)).toBe('');
-    expect(await extractEmailFromAuthor(undefined)).toBe('');
-    expect(await extractEmailFromAuthor('')).toBe('');
+  it('returns empty string for an empty From or no message', async () => {
+    expect(await sender('')).toBe('');
+    expect(await readSenderEmail(null)).toBe('');
+    expect(await readSenderEmail(undefined)).toBe('');
   });
 
   it('returns empty string for malformed input with no email', async () => {
-    expect(await extractEmailFromAuthor('just a name')).toBe('');
+    expect(await sender('just a name')).toBe('');
   });
 
   it('handles plus-addressed emails', async () => {
-    expect(await extractEmailFromAuthor('User <user+tag@example.com>')).toBe('user+tag@example.com');
+    expect(await sender('User <user+tag@example.com>')).toBe('user+tag@example.com');
   });
 
   it('handles dotted local parts', async () => {
-    expect(await extractEmailFromAuthor('first.last@example.com')).toBe('first.last@example.com');
+    expect(await sender('first.last@example.com')).toBe('first.last@example.com');
   });
 });
 

@@ -8,7 +8,7 @@
 // Tests cover email_compose, email_reply, email_forward, email_delete, contacts_delete.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { withTbAddressParser } from './helpers/tbAddressParser.js';
+import { withTbAddressFields } from './helpers/tbAddressParser.js';
 
 // ---------------------------------------------------------------------------
 // Mocks — all tools import from these modules
@@ -92,7 +92,7 @@ vi.mock('../agent/modules/inboxContext.js', () => ({
 }));
 
 // Need globalThis.browser for tools that access browser APIs
-globalThis.browser = withTbAddressParser({
+globalThis.browser = withTbAddressFields({
   storage: {
     local: {
       get: vi.fn(async () => ({})),

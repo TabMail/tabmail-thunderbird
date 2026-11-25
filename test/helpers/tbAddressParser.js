@@ -4,19 +4,20 @@
 
 // Thunderbird's own address parsing, for tests.
 //
-// The add-on reads every address with browser.messengerUtilities.parseMailboxString,
-// and Thunderbird hands it each From/To/Cc entry already parsed and re-quoted. This
-// module runs the same steps with Thunderbird's JSMime (test/vendor/jsmime, see its
-// README for the source and changeset), so tests feed the add-on what Thunderbird gives
-// it and parse it as Thunderbird does:
-// - tbEntries(raw): the entries browser.messages gives for a raw To or Cc header
-//   (ExtensionMessages.sys.mjs, parseEncodedAddrHeader: parseEncodedHeaderW, then
-//   makeMimeAddress for each mailbox with a name);
-// - tbAuthor(raw): the author entry, the first From mailbox;
-// - parseEncodedHeaderW(raw): MailServices.headerParser.parseEncodedHeaderW, which
-//   the experiments call on a message header's raw author;
-// - parseMailboxString(entry): messengerUtilities.parseMailboxString
-//   (ext-messengerUtilities.js: headerParser.parseDecodedHeader, groups flattened).
+// The add-on reads every address from Thunderbird's own parse of the raw From, To and
+// Cc headers (the tmHdr experiment's getAddressFields: headerParser.parseEncodedHeaderW
+// over each raw header). This module runs the same steps with Thunderbird's JSMime
+// (test/vendor/jsmime, see its README for the source and changeset):
+// - parseEncodedHeaderW(raw): MailServices.headerParser.parseEncodedHeaderW;
+// - tbAddressFields(raw): what tmHdr.getAddressFields returns for a message with raw
+//   From, To and Cc headers;
+// - tbMessages() / withTbAddressFields(browser, store): synthetic messages by id, with
+//   tmHdr.getAddressFields reading them (an unknown id reads as a gone message);
+// - tbEntries(raw), tbAuthor(raw): the strings browser.messages gives as recipients /
+//   ccList and author (ExtensionMessages.sys.mjs, parseEncodedAddrHeader:
+//   parseEncodedHeaderW, then makeMimeAddress for each mailbox with a name). The add-on
+//   never parses them; tests put them on a message so that reading them instead of
+//   Thunderbird's parse fails.
 // The steps follow MimeJSComponents.sys.mjs (fixArray, makeMimeHeader) at the same
 // changeset.
 
@@ -71,15 +72,43 @@ export function tbAuthor(rawHeader) {
   return tbEntries(rawHeader).shift() || "";
 }
 
-/** browser.messengerUtilities.parseMailboxString(entry), without options. */
-export async function parseMailboxString(entry) {
-  return mailboxes(jsmime.headerparser.parseAddressingHeader(entry || "", false)).map(
-    ({ name, email }) => ({ name: name || undefined, group: undefined, email: email || undefined })
-  );
+/** What tmHdr.getAddressFields returns for a message with these raw From, To and Cc headers. */
+export function tbAddressFields({ from = "", to = "", cc = "" } = {}) {
+  return {
+    author: parseEncodedHeaderW(from),
+    recipients: parseEncodedHeaderW(to),
+    ccList: parseEncodedHeaderW(cc),
+  };
 }
 
-/** Adds messengerUtilities.parseMailboxString to a test's `browser` object. */
-export function withTbAddressParser(browser = {}) {
-  browser.messengerUtilities = { ...(browser.messengerUtilities || {}), parseMailboxString };
+/**
+ * Synthetic messages by id. add({ from, to, cc }, extra) stores the raw headers and returns
+ * the MessageHeader browser.messages would give for them (id, author, recipients, ccList,
+ * plus `extra`); getAddressFields(ids) answers as the experiment does, null for an unknown id.
+ */
+export function tbMessages() {
+  const raws = new Map();
+  let nextId = 1;
+  return {
+    add(raw = {}, extra = {}) {
+      const id = nextId++;
+      raws.set(id, raw);
+      return {
+        id,
+        author: tbAuthor(raw.from || ""),
+        recipients: tbEntries(raw.to || ""),
+        ccList: tbEntries(raw.cc || ""),
+        ...extra,
+      };
+    },
+    async getAddressFields(ids) {
+      return ids.map((id) => (raws.has(id) ? tbAddressFields(raws.get(id)) : null));
+    },
+  };
+}
+
+/** Adds tmHdr.getAddressFields, reading `store` (tbMessages()), to a test's `browser` object. */
+export function withTbAddressFields(browser = {}, store = tbMessages()) {
+  browser.tmHdr = { ...(browser.tmHdr || {}), getAddressFields: (ids) => store.getAddressFields(ids) };
   return browser;
 }
