@@ -9,6 +9,7 @@
 // analyzeEmailForReplyFilter function.
 
 import { describe, it, expect, vi } from 'vitest';
+import { tbMessages, withTbAddressFields } from './helpers/tbAddressParser.js';
 
 // ---------------------------------------------------------------------------
 // Mocks — messagePrefilter.js imports from utils.js
@@ -30,6 +31,10 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 
+// The sender's address is Thunderbird's own parse of the raw From header (tmHdr.getAddressFields).
+const messages = tbMessages();
+globalThis.browser = withTbAddressFields({}, messages);
+
 // ---------------------------------------------------------------------------
 // Import module under test
 // ---------------------------------------------------------------------------
@@ -37,10 +42,10 @@ vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 const { analyzeEmailForReplyFilter } = await import('../agent/modules/messagePrefilter.js');
 
 // ---------------------------------------------------------------------------
-// Helper: create a minimal messageHeader
+// Helper: a minimal messageHeader for a message with this raw From header
 // ---------------------------------------------------------------------------
-function makeHeader(author, id = 1) {
-  return { id, author };
+function makeHeader(rawFrom) {
+  return messages.add({ from: rawFrom });
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +161,25 @@ describe('TB-144: isNoReplyAddress — "Name <noreply@x.com>" format', () => {
       '',
     );
     expect(result.isNoReply).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TB-144a: the address is the mailbox's own, never text in its display name.
+// Each sender is Thunderbird's parse of the raw From header.
+// ---------------------------------------------------------------------------
+describe('TB-144a: isNoReplyAddress — the address outside a quoted display name', () => {
+  it.each([
+    ['"No Reply <noreply@example.com>" <person@example.net>', false],
+    ['"Person <person@example.net>" <noreply@example.com>', true],
+    ['=?UTF-8?Q?No_Reply_<noreply@example.com>?= <person@example.net>', false],
+    ['person@example.net (noreply@example.com)', false],
+    ['"\\"Support\\" <noreply@example.com> \\"" <person@example.net>', false],
+    ['=?UTF-8?Q?=22Support=22_<noreply@example.com>,_=22x=22?= <person@example.net>', false],
+  ])('From: %s → isNoReply %s', async (rawFrom, expected) => {
+    const result = await analyzeEmailForReplyFilter(makeHeader(rawFrom), { headers: {} }, '');
+    expect(result.isNoReply).toBe(expected);
+    expect(result.skipCachedReply).toBe(expected);
   });
 });
 

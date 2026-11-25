@@ -4,10 +4,15 @@
 
 // senderFilter.test.js — Tests for agent/modules/senderFilter.js
 //
-// Tests for extractEmailFromAuthor (pure), getUserEmailSetCached (mocked browser),
-// and isInternalSender (mocked browser).
+// Tests for readAddressFields / readSenderEmail (Thunderbird's own parse of the raw headers),
+// getUserEmailSetCached (mocked browser), classifyRecipientStatus (pure), computeRecipientStatus
+// and isInternalSender. Messages are synthetic raw From/To/Cc headers (tbMessages): the
+// experiment's getAddressFields answers with Thunderbird's parse of them (vendored JSMime), and
+// each MessageHeader also carries the author/recipients/ccList strings Thunderbird would give,
+// which the add-on must never parse.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
+import { tbMessages, withTbAddressFields } from './helpers/tbAddressParser.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -28,70 +33,169 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 
 // Set up browser mock before importing the module
-globalThis.browser = {
+const messages = tbMessages();
+globalThis.browser = withTbAddressFields({
   accounts: {
     list: vi.fn(async () => []),
   },
-};
+}, messages);
+
+/** A message with this raw From header (and To/Cc when given). */
+function fromHeader(from, extra = {}) {
+  return messages.add({ from }, extra);
+}
 
 // ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
 
-const { extractEmailFromAuthor, getUserEmailSetCached, invalidateUserEmailCache, isInternalSender, classifyRecipientStatus, computeRecipientStatus } = await import('../agent/modules/senderFilter.js');
+const { readAddressFields, readSenderEmail, getUserEmailSetCached, invalidateUserEmailCache, isInternalSender, classifyRecipientStatus, computeRecipientStatus } = await import('../agent/modules/senderFilter.js');
 
 // ---------------------------------------------------------------------------
-// extractEmailFromAuthor (pure function)
+// readSenderEmail / readAddressFields (Thunderbird's parse of the raw headers)
 // ---------------------------------------------------------------------------
 
-describe('extractEmailFromAuthor', () => {
-  it('extracts email from angle brackets', () => {
-    expect(extractEmailFromAuthor('John Doe <john@example.com>')).toBe('john@example.com');
+describe('readSenderEmail', () => {
+  it('reads the address after a name', async () => {
+    expect(await readSenderEmail(fromHeader('John Doe <john@example.com>'))).toBe('john@example.com');
   });
 
-  it('extracts email with display name containing special chars', () => {
-    expect(extractEmailFromAuthor('"Doe, John" <john@example.com>')).toBe('john@example.com');
+  it('reads the address after a quoted name with a comma', async () => {
+    expect(await readSenderEmail(fromHeader('"Doe, John" <john@example.com>'))).toBe('john@example.com');
   });
 
-  it('extracts bare email address', () => {
-    expect(extractEmailFromAuthor('john@example.com')).toBe('john@example.com');
+  it('reads a bare address', async () => {
+    expect(await readSenderEmail(fromHeader('john@example.com'))).toBe('john@example.com');
   });
 
-  it('lowercases the result', () => {
-    expect(extractEmailFromAuthor('John@EXAMPLE.COM')).toBe('john@example.com');
-    expect(extractEmailFromAuthor('User <John@EXAMPLE.COM>')).toBe('john@example.com');
+  it('lowercases the result', async () => {
+    expect(await readSenderEmail(fromHeader('John@EXAMPLE.COM'))).toBe('john@example.com');
+    expect(await readSenderEmail(fromHeader('User <John@EXAMPLE.COM>'))).toBe('john@example.com');
   });
 
-  it('returns empty string for null/undefined/empty', () => {
-    expect(extractEmailFromAuthor(null)).toBe('');
-    expect(extractEmailFromAuthor(undefined)).toBe('');
-    expect(extractEmailFromAuthor('')).toBe('');
+  it('returns empty string for an empty From', async () => {
+    expect(await readSenderEmail(fromHeader(''))).toBe('');
   });
 
-  it('returns empty string for malformed input with no email', () => {
-    expect(extractEmailFromAuthor('just a name')).toBe('');
+  it('returns empty string for a From with no address', async () => {
+    expect(await readSenderEmail(fromHeader('just a name'))).toBe('');
   });
 
-  it('handles plus-addressed emails', () => {
-    expect(extractEmailFromAuthor('User <user+tag@example.com>')).toBe('user+tag@example.com');
+  it('handles plus-addressed emails', async () => {
+    expect(await readSenderEmail(fromHeader('User <user+tag@example.com>'))).toBe('user+tag@example.com');
   });
 
-  it('handles dotted local parts', () => {
-    expect(extractEmailFromAuthor('first.last@example.com')).toBe('first.last@example.com');
+  it('handles dotted local parts', async () => {
+    expect(await readSenderEmail(fromHeader('first.last@example.com'))).toBe('first.last@example.com');
   });
 
-  it('handles multiple angle bracket pairs (takes first)', () => {
-    expect(extractEmailFromAuthor('a <a@x.com> b <b@y.com>')).toBe('a@x.com');
+  it('reads the whole local part (every atext character)', async () => {
+    expect(await readSenderEmail(fromHeader("o'brien@example.com"))).toBe("o'brien@example.com");
   });
 
-  it('handles email with subdomains', () => {
-    expect(extractEmailFromAuthor('user@mail.sub.example.com')).toBe('user@mail.sub.example.com');
+  it('handles email with subdomains', async () => {
+    expect(await readSenderEmail(fromHeader('user@mail.sub.example.com'))).toBe('user@mail.sub.example.com');
   });
 
-  it('handles non-string input types', () => {
-    expect(extractEmailFromAuthor(42)).toBe('');
-    expect(extractEmailFromAuthor({})).toBe('');
-    expect(extractEmailFromAuthor(true)).toBe('');
+  it('returns empty string with no message, an id that is not a message id, or a gone message', async () => {
+    expect(await readSenderEmail(null)).toBe('');
+    expect(await readSenderEmail(undefined)).toBe('');
+    expect(await readSenderEmail({})).toBe('');
+    expect(await readSenderEmail({ id: '1', author: 'john@example.com' })).toBe('');
+    expect(await readSenderEmail({ id: 999999, author: 'john@example.com' })).toBe('');
+  });
+
+  it('returns empty string when the header read fails', async () => {
+    const read = browser.tmHdr.getAddressFields;
+    browser.tmHdr.getAddressFields = vi.fn(async () => { throw new Error('synthetic read failure'); });
+    try {
+      expect(await readSenderEmail(fromHeader('john@example.com'))).toBe('');
+    } finally {
+      browser.tmHdr.getAddressFields = read;
+    }
+  });
+});
+
+// The sender is the first mailbox of Thunderbird's own parse of the raw From header; its address
+// is the one Thunderbird's parser reads, never text in a display name, a comment or an encoded word.
+const AUTHOR_FORMS = [
+  ['quoted name holding an angle-addr', '"Me <me@example.com>" <other@example.net>', 'other@example.net'],
+  ['escaped quotes in the name', '"Ann \\"x\\" <a@example.com>" <b@example.net>', 'b@example.net'],
+  ['one escaped quote in the name', '"Ann \\" <a@example.com>" <b@example.net>', 'b@example.net'],
+  ['an open parenthesis inside quotes', '"( <a@example.com>" <b@example.net>', 'b@example.net'],
+  ['a comment holding an angle-addr before the name', '(<a@example.com>) Real <b@example.net>', 'b@example.net'],
+  ['a comment holding an angle-addr after the address', 'Real <b@example.net> (<a@example.com>)', 'b@example.net'],
+  ['a bare address with such a comment', 'b@example.net (<a@example.com>)', 'b@example.net'],
+  ['nested comments', 'b@example.net ((x) <a@example.com>)', 'b@example.net'],
+  ['two angle-addrs (Thunderbird keeps the last)', 'Real <a@example.com> <b@example.net>', 'b@example.net'],
+  ['an encoded name that decodes to an angle-addr and a comma', '=?UTF-8?Q?X_<a@example.com>,?= <b@example.net>', 'b@example.net'],
+  ['a non-ASCII quoted name holding an angle-addr', '"\u00e9 <a@example.com>" <b@example.net>', 'b@example.net'],
+  ['a quoted local part holding ">"', '"x>y"@example.com', '"x>y"@example.com'],
+  ['an unterminated quote', '"unterminated <a@example.com>', ''],
+  ['an address only inside quotes', '"<a@example.com>"', ''],
+  ['group syntax (the first member)', 'Team: a@example.com, b@example.net;', 'a@example.com'],
+  ['several authors (the first)', 'Ann <a@example.com>, Bob <b@example.net>', 'a@example.com'],
+  ['an unquoted comma in the name (Thunderbird reads a list; the first mailbox is "Doe")', 'Doe, John <john@example.com>', ''],
+  ['a quoted comma in the name', '"Doe, John" <john@example.com>', 'john@example.com'],
+  ['a bare address', 'b@example.net', 'b@example.net'],
+  ['a name with no address', 'MAILER-DAEMON', ''],
+  ['a name that begins and ends with a quote mark, holding an angle-addr', '"\\"x\\" <me@example.com> \\"" <bob@example.net>', 'bob@example.net'],
+  ['an encoded name that decodes to such a name', '=?UTF-8?Q?=22x=22_=3Cme=40example=2Ecom=3E_=22?= <bob@example.net>', 'bob@example.net'],
+  ['an encoded name that decodes to two quoted names around an angle-addr and a comma', '=?UTF-8?Q?=22x=22_<me@example.com>,_=22y=22?= <bob@example.net>', 'bob@example.net'],
+];
+
+describe('readSenderEmail reads the address Thunderbird parses, outside quotes, comments and encoded words', () => {
+  it.each(AUTHOR_FORMS)('%s', async (_label, rawFrom, expected) => {
+    expect(await readSenderEmail(fromHeader(rawFrom))).toBe(expected);
+  });
+});
+
+describe('readAddressFields', () => {
+  it("returns each field's mailboxes with their names and addresses as Thunderbird reads them, every From mailbox in order", async () => {
+    const header = messages.add({
+      from: '"Me <me@example.com>" <Other@Example.NET>, Bob <bob@example.net>',
+      to: 'Ann <a@example.com>, "Doe, John" <john@example.com>',
+      cc: 'team: c@example.net, d@example.net;, just a name',
+    });
+    expect(await readAddressFields([header.id])).toEqual([{
+      author: [
+        { name: 'Me <me@example.com>', email: 'Other@Example.NET' },
+        { name: 'Bob', email: 'bob@example.net' },
+      ],
+      recipients: [
+        { name: 'Ann', email: 'a@example.com' },
+        { name: 'Doe, John', email: 'john@example.com' },
+      ],
+      ccList: [
+        { name: '', email: 'c@example.net' },
+        { name: '', email: 'd@example.net' },
+        { name: 'just a name', email: '' },
+      ],
+    }]);
+  });
+
+  it('returns null for a gone message and for an id that is not a message id, in order', async () => {
+    const header = fromHeader('a@example.com');
+    const result = await readAddressFields([999999, header.id, 'x', null]);
+    expect(result.map((fields) => fields?.author[0]?.email ?? null)).toEqual([null, 'a@example.com', null, null]);
+  });
+
+  it('asks Thunderbird once for several messages, each id once, and not at all without a message id', async () => {
+    const a = fromHeader('a@example.com');
+    const b = fromHeader('b@example.net');
+    const spy = vi.spyOn(browser.tmHdr, 'getAddressFields');
+    try {
+      const result = await readAddressFields([a.id, b.id, a.id]);
+      expect(result.map((fields) => fields.author[0].email)).toEqual(['a@example.com', 'b@example.net', 'a@example.com']);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith([a.id, b.id]);
+      spy.mockClear();
+      expect(await readAddressFields([])).toEqual([]);
+      expect(await readAddressFields(['x', undefined])).toEqual([null, null]);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -140,46 +244,46 @@ describe('getUserEmailSetCached', () => {
     }
     expect((await oldReader).has('new@example.test')).toBe(true);
     expect((await getUserEmailSetCached()).has('old@example.test')).toBe(false);
-    expect(await isInternalSender({ author: 'new@example.test' })).toBe(true);
-    expect(await isInternalSender({ author: 'old@example.test' })).toBe(false);
+    expect(await isInternalSender(fromHeader('new@example.test'))).toBe(true);
+    expect(await isInternalSender(fromHeader('old@example.test'))).toBe(false);
     expect(browser.accounts.list).toHaveBeenCalledTimes(2);
   });
 });
 
 // ---------------------------------------------------------------------------
-// classifyRecipientStatus (pure function)
+// classifyRecipientStatus (pure function over parsed addresses)
 // ---------------------------------------------------------------------------
 
 describe('classifyRecipientStatus', () => {
-  const userEmails = new Set(['me@example.com', 'me2@company.com']);
-  const FROM = 'Boss <boss@example.com>'; // external author unless a test says otherwise
+  const userEmails = new Set(['me@example.com', 'me2@example.net']);
+  const FROM = ['boss@example.com']; // external author unless a test says otherwise
 
   // "cc" needs POSITIVE evidence (user's exact address in Cc). Absence of the
   // user from To is NOT evidence — aliases/Bcc/list mail must yield "".
 
   it('returns "cc" when a user address is in Cc and not in To', () => {
-    expect(classifyRecipientStatus(['Other <other@example.com>'], ['Me <me@example.com>'], FROM, userEmails)).toBe('cc');
+    expect(classifyRecipientStatus(['other@example.com'], ['me@example.com'], FROM, userEmails)).toBe('cc');
     // Any of the account's addresses counts, case-insensitively.
-    expect(classifyRecipientStatus(['other@example.com'], ['ME2@Company.COM'], FROM, userEmails)).toBe('cc');
+    expect(classifyRecipientStatus(['other@example.com'], ['ME2@Example.NET'], FROM, userEmails)).toBe('cc');
   });
 
   it('returns "" when a user address is in To (direct recipient)', () => {
-    expect(classifyRecipientStatus(['Someone <other@example.com>', 'Me <me@example.com>'], [], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com', 'me@example.com'], [], FROM, userEmails)).toBe('');
     // In To wins even if ALSO in Cc.
-    expect(classifyRecipientStatus(['Me <ME@Example.COM>'], ['me@example.com'], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['ME@Example.COM'], ['me@example.com'], FROM, userEmails)).toBe('');
   });
 
   it('returns "" when the user is in neither To nor Cc (alias/Bcc/list — unsure)', () => {
-    expect(classifyRecipientStatus(['Boss <boss@example.com>'], ['peer@company.com'], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['boss@example.com'], ['peer@example.net'], FROM, userEmails)).toBe('');
     expect(classifyRecipientStatus([], [], FROM, userEmails)).toBe('');
     expect(classifyRecipientStatus(null, null, FROM, userEmails)).toBe('');
   });
 
   it('returns "" when the user is the author (self-sent/list post), even if cc\'d', () => {
-    expect(classifyRecipientStatus(['list@company.com'], [], 'Me <me@example.com>', userEmails)).toBe('');
-    expect(classifyRecipientStatus(['list@company.com'], ['me@example.com'], 'me@example.com', userEmails)).toBe('');
+    expect(classifyRecipientStatus(['list@example.net'], [], ['me@example.com'], userEmails)).toBe('');
+    expect(classifyRecipientStatus(['list@example.net'], ['me@example.com'], ['me@example.com'], userEmails)).toBe('');
     // Self-sent via a plus-alias also counts as authored (loose suppress).
-    expect(classifyRecipientStatus(['list@company.com'], ['me@example.com'], 'me+news@example.com', userEmails)).toBe('');
+    expect(classifyRecipientStatus(['list@example.net'], ['me@example.com'], ['me+news@example.com'], userEmails)).toBe('');
   });
 
   it('treats a plus-alias in To as direct (loose suppress — no cc claim)', () => {
@@ -191,7 +295,9 @@ describe('classifyRecipientStatus', () => {
     expect(classifyRecipientStatus(['other@example.com'], ['me+x@example.com'], FROM, userEmails)).toBe('');
     // Lookalike/superstring addresses in Cc must not claim.
     expect(classifyRecipientStatus(['other@example.com'], ['notme@example.com'], FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus(['other@example.com'], ['me@example.com.evil.org'], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['me@example.com.example.net'], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['\u00f6me@example.com'], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['me@example.co\u0301m'], FROM, userEmails)).toBe('');
   });
 
   it('returns "" when user emails cannot be determined (never claim cc unsure)', () => {
@@ -199,185 +305,9 @@ describe('classifyRecipientStatus', () => {
     expect(classifyRecipientStatus(['other@example.com'], ['me@example.com'], FROM, null)).toBe('');
   });
 
-  it('extracts ALL addresses per entry (display names with brackets, multi-mailbox entries)', () => {
-    // Display name containing angle brackets must not hide the real address.
-    expect(classifyRecipientStatus(['"Support <noreply>" <me@example.com>'], [], FROM, userEmails)).toBe('');
-    // Multi-mailbox string entry in Cc — user second — still positive evidence.
-    expect(classifyRecipientStatus(['other@example.com'], ['team: boss@example.com, me@example.com;'], FROM, userEmails)).toBe('cc');
-  });
-
-  it('tolerates raw comma-joined string fields (extracts ALL addresses)', () => {
-    expect(classifyRecipientStatus('Boss <boss@example.com>, Me <me@example.com>', '', FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus('boss@example.com', 'peer@company.com, me@example.com', FROM, userEmails)).toBe('cc');
-    // Non-array, non-string shapes → no addresses → unsure → ""
-    expect(classifyRecipientStatus(42, 42, FROM, userEmails)).toBe('');
-  });
-
-  it('ignores unparseable entries', () => {
-    expect(classifyRecipientStatus(['just a name', 'Me <me@example.com>'], [], FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus(['just a name'], ['also just a name'], FROM, userEmails)).toBe('');
-  });
-
   it('returns "" when classification throws (defensive catch)', () => {
     // Duck-typed claimEmails without an iterator → for..of throws → catch → ""
-    expect(classifyRecipientStatus(['a@b.com'], ['me@example.com'], FROM, { size: 1 })).toBe('');
-  });
-
-  it('claim path ignores address-shaped tokens in display names / comments / encoded words', () => {
-    // Decoded quoted display name carrying the user's address → NOT evidence.
-    expect(classifyRecipientStatus(['other@example.com'], ['"me@example.com" <bob@corp.com>'], FROM, userEmails)).toBe('');
-    // RFC 2047 encoded word (raw Gmail header shape) → NOT evidence.
-    expect(classifyRecipientStatus(['other@example.com'], ['=?utf-8?Q?me@example.com?= <bob@corp.com>'], FROM, userEmails)).toBe('');
-    // Comment carrying the address → NOT evidence.
-    expect(classifyRecipientStatus(['other@example.com'], ['(me@example.com) <bob@corp.com>'], FROM, userEmails)).toBe('');
-    // Unquoted display-name address before a bracketed mailbox → NOT evidence.
-    expect(classifyRecipientStatus(['other@example.com'], ['me@example.com <bob@corp.com>'], FROM, userEmails)).toBe('');
-    // Unclosed bracket → yields nothing rather than falling back to display text.
-    expect(classifyRecipientStatus(['other@example.com'], ['<bob@corp.com me@example.com'], FROM, userEmails)).toBe('');
-    // The user actually bracketed in Cc still claims.
-    expect(classifyRecipientStatus(['other@example.com'], ['"Anything at all" <me@example.com>'], FROM, userEmails)).toBe('cc');
-  });
-
-  it('full atext extraction: no truncated-tail collisions with neighboring addresses', () => {
-    // o'brien@example.com must extract WHOLE — a narrow class would yield
-    // brien@example.com and falsely claim for user brien@example.com.
-    const brien = new Set(['brien@example.com']);
-    expect(classifyRecipientStatus(['other@example.com'], ["o'brien@example.com"], FROM, brien)).toBe('');
-    // And o'brien in To must not suppress user brien (different mailbox)…
-    expect(classifyRecipientStatus(["o'brien@example.com"], ['brien@example.com'], FROM, brien)).toBe('cc');
-    // …while the real o'brien user still matches exactly.
-    const obrien = new Set(["o'brien@example.com"]);
-    expect(classifyRecipientStatus(['other@example.com'], ["O'Brien <o'brien@example.com>"], FROM, obrien)).toBe('cc');
-  });
-
-  it('claim path is whole-token anchored — truncated heads/tails never claim', () => {
-    // Combining mark after the address (Swift graphemes vs JS code units — the
-    // anchored exact match rejects on BOTH platforms, restoring parity).
-    expect(classifyRecipientStatus(['other@example.com'], ['<me@example.coḿ>'], FROM, userEmails)).toBe('');
-    // Non-ASCII prefix restarts a substring match mid-token; exact match rejects.
-    expect(classifyRecipientStatus(['other@example.com'], ['<öme@example.com>'], FROM, userEmails)).toBe('');
-    // Trailing junk after a matching domain must not claim the prefix.
-    expect(classifyRecipientStatus(['other@example.com'], ['<me@example.com_x>'], FROM, userEmails)).toBe('');
-    // Bracket span with extra tokens is not a single addr-spec.
-    expect(classifyRecipientStatus(['other@example.com'], ['<junk me@example.com>'], FROM, userEmails)).toBe('');
-  });
-
-  it('a part with brackets counts ONLY bracketed spans (quote-imbalance defense)', () => {
-    // Unescaped quotes in a formatted display name can strand a planted
-    // address in a bare comma segment — the bracket-in-part rule ignores it.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"a", me@example.com, b" <other2@example.com>'], FROM, userEmails
-    )).toBe('');
-    // Deliberate trade-off: a bare address mixed into a bracketed part is
-    // also ignored (missed claim = safe omit).
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['me@example.com, Name <c@company.com>'], FROM, userEmails
-    )).toBe('');
-  });
-
-  it('group syntax: leading "name:" prefix is stripped for the first member', () => {
-    expect(classifyRecipientStatus(['other@example.com'], ['team: me@example.com, boss@example.com;'], FROM, userEmails)).toBe('cc');
-  });
-
-  it('bounded matcher input: degenerate runs and oversized fields safely omit', () => {
-    // 100KB unbroken atext run — must complete fast (token bound) and omit.
-    const run = 'a'.repeat(100000);
-    const t0 = Date.now();
-    expect(classifyRecipientStatus(['other@example.com'], [run], FROM, userEmails)).toBe('');
-    // Same run glued to the user's address: one giant token, dropped → omit.
-    expect(classifyRecipientStatus(['other@example.com'], [run + 'me@example.com'], FROM, userEmails)).toBe('');
-    // Oversized field (> 64KB) → classification skipped entirely.
-    expect(classifyRecipientStatus([run], ['me@example.com'], FROM, userEmails)).toBe('');
-    expect(Date.now() - t0).toBeLessThan(2000);
-    // Normal-size comma-packed list still extracts on the claim path.
-    const packed = Array.from({ length: 200 }, (_, i) => `u${i}@example.com`).join(',') + ',me@example.com';
-    expect(classifyRecipientStatus(['other@example.com'], [packed], FROM, userEmails)).toBe('cc');
-  });
-
-  it('claim path is linear on unbalanced-opener floods (round-2 ReDoS shapes)', () => {
-    // '<' and '(' floods at the 64KB field cap previously hit quadratic regex
-    // scans (~6s in JS, minutes in Swift). Linear scans must stay fast.
-    const t0 = Date.now();
-    expect(classifyRecipientStatus(['other@example.com'], ['<'.repeat(65536)], FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus(['other@example.com'], ['('.repeat(65536)], FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus(['other@example.com'], ['"'.repeat(65536)], FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus(['other@example.com'], ['=?'.repeat(32768)], FROM, userEmails)).toBe('');
-    expect(classifyRecipientStatus(['other@example.com'], ['<a'.repeat(32768)], FROM, userEmails)).toBe('');
-    expect(Date.now() - t0).toBeLessThan(500);
-  });
-
-  it('many REAL addresses stay fast (per-candidate validator cost is bounded)', () => {
-    // Flood shapes produce zero exactAddr calls; this shape produces 2000
-    // (sized under the 64KB field cap) — pins the per-candidate cost (the
-    // round-3 Swift finding class).
-    const bracketed = Array.from({ length: 2000 }, (_, i) => `U${i} <u${i}@example.com>`).join(', ');
-    const bare = Array.from({ length: 2000 }, (_, i) => `u${i}@example.com`).join(',');
-    const t0 = Date.now();
-    expect(classifyRecipientStatus(['other@example.com'], [bracketed + ', Me <me@example.com>'], FROM, userEmails)).toBe('cc');
-    expect(classifyRecipientStatus(['other@example.com'], [bare + ',me@example.com'], FROM, userEmails)).toBe('cc');
-    // Large To (user absent) exercises the suppress path at volume; user in Cc still claims.
-    expect(classifyRecipientStatus([bare], ['me@example.com'], FROM, userEmails)).toBe('cc');
-    expect(Date.now() - t0).toBeLessThan(500);
-  });
-
-  it('bracket-exposed display-name injection cannot fabricate a claim (last-span rule)', () => {
-    // SwiftMail MIME-decodes a display name and re-wraps it in UNESCAPED quotes,
-    // so a Cc entry `bob@corp.com` with decoded name `x" <me@example.com> "y`
-    // reaches the classifier as: "x" <me@example.com> "y" <bob@corp.com>.
-    // The escaped-quote defense doesn't apply (quotes are unescaped), so the
-    // planted <me@example.com> survives quote-stripping. Only the LAST bracket
-    // span per segment is the real address, so the injection is rejected.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"x" <me@example.com> "y" <bob@corp.com>'], FROM, userEmails
-    )).toBe('');
-    // Bare-address form in a display position (before the real bracket) too.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['me@example.com <bob@corp.com>'], FROM, userEmails
-    )).toBe('');
-    // The real user address as the LAST span still claims.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"decoy <bob@corp.com>" <me@example.com>'], FROM, userEmails
-    )).toBe('cc');
-    // Multi-address list where an injected span precedes each real address.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"<me@example.com>" <a@corp.com>, "<me@example.com>" <b@corp.com>'], FROM, userEmails
-    )).toBe('');
-  });
-
-  it('documents the accepted residual: unescaped-quote + comma injection (KNOWN LIMITATION)', () => {
-    // ACCEPTED LOW-IMPACT LIMITATION (2026-07-05) — see _extractAddressEmails
-    // doc + PROJECT_MEMORY.md. When a producer (SwiftMail IMAP formatAddress)
-    // emits the decoded display name in UNESCAPED quotes AND the name contains
-    // a comma/semicolon, the injected <me@example.com> becomes the last span of
-    // its own segment. The resulting string is BYTE-IDENTICAL to a legitimate
-    // two-recipient Cc that MUST claim, so no string parser can distinguish
-    // them. This test PINS the current (spuriously "cc") behavior so the
-    // tradeoff is visible; it is NOT an endorsement. Flipping it to "" requires
-    // producer-side escaping or structured per-address plumbing (out of scope).
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"x" <me@example.com> , "y" <bob@corp.com>'], FROM, userEmails
-    )).toBe('cc');
-    // The legitimate twin it is byte-ambiguous with — MUST claim (a real
-    // multi-recipient Cc where the user is genuinely a named recipient).
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"Me" <me@example.com>, "Bob" <bob@corp.com>'], FROM, userEmails
-    )).toBe('cc');
-  });
-
-  it('sanitizers are escape-aware — escaped delimiters cannot expose planted spans', () => {
-    // Backslash-escaped quotes inside a quoted display name mis-paired the
-    // old regex sanitizer, exposing <victim> as a countable span.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"a\\" <me@example.com> \\"b" <real@company.com>'], FROM, userEmails
-    )).toBe('');
-    // Same for escaped parens inside a comment.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['(a\\) <me@example.com> \\(b) <real@company.com>'], FROM, userEmails
-    )).toBe('');
-    // Escaped-escape (\\\\) before a quote is NOT an escaped quote — still pairs.
-    expect(classifyRecipientStatus(
-      ['other@example.com'], ['"a\\\\" <me@example.com>'], FROM, userEmails
-    )).toBe('cc');
+    expect(classifyRecipientStatus(['a@example.com'], ['me@example.com'], FROM, { size: 1 })).toBe('');
   });
 
   it('suppressEmails only suppress — they never create a claim', () => {
@@ -386,7 +316,7 @@ describe('classifyRecipientStatus', () => {
     // Another own account in To → suppressed even though claim address is in Cc.
     expect(classifyRecipientStatus(['otheracct@example.com'], ['me@example.com'], FROM, claim, suppress)).toBe('');
     // Another own account as the AUTHOR → suppressed.
-    expect(classifyRecipientStatus(['list@company.com'], ['me@example.com'], 'otheracct@example.com', claim, suppress)).toBe('');
+    expect(classifyRecipientStatus(['list@example.net'], ['me@example.com'], ['otheracct@example.com'], claim, suppress)).toBe('');
     // A suppress-only address in Cc does NOT claim.
     expect(classifyRecipientStatus(['other@example.com'], ['otheracct@example.com'], FROM, claim, suppress)).toBe('');
     // Suppress list absent → claim set alone still works.
@@ -409,8 +339,9 @@ describe('computeRecipientStatus', () => {
     identities: [{ email: 'Me@Example.com' }, { email: 'alias@example.com' }],
   };
 
-  function makeHeader(recipients, ccList = [], author = 'Boss <boss@example.com>') {
-    return { folder: { accountId: 'account1' }, recipients, ccList, author };
+  // A message on the receiving account with these raw To, Cc and From headers.
+  function makeHeader(rawTo, rawCc = '', rawFrom = 'Boss <boss@example.com>') {
+    return messages.add({ from: rawFrom, to: rawTo, cc: rawCc }, { folder: { accountId: 'account1' } });
   }
 
   beforeEach(() => {
@@ -418,61 +349,157 @@ describe('computeRecipientStatus', () => {
   });
 
   it('returns "cc" when an identity email is in ccList (identities-only account shape)', async () => {
-    expect(await computeRecipientStatus(makeHeader(['other@example.com'], ['Me <me@example.com>']))).toBe('cc');
-    expect(await computeRecipientStatus(makeHeader(['other@example.com'], ['alias@example.com']))).toBe('cc');
+    expect(await computeRecipientStatus(makeHeader('other@example.com', 'Me <me@example.com>'))).toBe('cc');
+    expect(await computeRecipientStatus(makeHeader('other@example.com', 'alias@example.com'))).toBe('cc');
   });
 
   it('returns "" when the identity email is in To (direct recipient)', async () => {
-    expect(await computeRecipientStatus(makeHeader(['Someone <me@example.com>']))).toBe('');
-    expect(await computeRecipientStatus(makeHeader(['alias@example.com'], ['me@example.com']))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('Someone <me@example.com>'))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('alias@example.com', 'me@example.com'))).toBe('');
   });
 
-  it('returns "" when the user authored the message (reads messageHeader.author)', async () => {
+  it('returns "" when the user authored the message (reads the From header)', async () => {
     expect(await computeRecipientStatus(
-      makeHeader(['list@company.com'], ['me@example.com'], 'Me <me@example.com>')
+      makeHeader('list@example.net', 'me@example.com', 'Me <me@example.com>')
+    )).toBe('');
+  });
+
+  it('returns "" when the user is any of several authors', async () => {
+    expect(await computeRecipientStatus(
+      makeHeader('list@example.net', 'me@example.com', 'Boss <boss@example.com>, Me <me@example.com>')
     )).toBe('');
   });
 
   it('returns "" when the user is in neither To nor Cc (unsure)', async () => {
-    expect(await computeRecipientStatus(makeHeader(['Boss <boss@example.com>']))).toBe('');
-    expect(await computeRecipientStatus(makeHeader([], []))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('Boss <boss@example.com>'))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('', ''))).toBe('');
   });
 
   it('also honors a top-level account.email when present (defensive)', async () => {
     browser.accounts.get = vi.fn(async () => ({ type: 'imap', email: 'Top@Example.com', identities: [] }));
-    expect(await computeRecipientStatus(makeHeader(['other@example.com'], ['top@example.com']))).toBe('cc');
-    expect(await computeRecipientStatus(makeHeader(['Someone <top@example.com>']))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('other@example.com', 'top@example.com'))).toBe('cc');
+    expect(await computeRecipientStatus(makeHeader('Someone <top@example.com>'))).toBe('');
   });
 
   it('passes the message accountId to accounts.get (not some other account)', async () => {
-    await computeRecipientStatus(makeHeader(['x@y.com']));
+    await computeRecipientStatus(makeHeader('x@example.net'));
     expect(browser.accounts.get).toHaveBeenCalledWith('account1', false);
   });
 
   it("does NOT claim cc for ANOTHER account's address in Cc (receiving-account scope)", async () => {
     // otheracct@example.com may be a different registered account, but the
     // check is deliberately scoped to the account the email arrived on.
-    expect(await computeRecipientStatus(makeHeader(['x@y.com'], ['otheracct@example.com']))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('x@example.net', 'otheracct@example.com'))).toBe('');
   });
 
   it('returns "" when the account has no resolvable addresses', async () => {
     browser.accounts.get = vi.fn(async () => ({ type: 'imap', identities: [] }));
-    expect(await computeRecipientStatus(makeHeader(['other@example.com'], ['me@example.com']))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('other@example.com', 'me@example.com'))).toBe('');
   });
 
   it('returns "" for a null header or header without a folder/accountId', async () => {
     expect(await computeRecipientStatus(null)).toBe('');
-    expect(await computeRecipientStatus({ recipients: ['other@example.com'], ccList: ['me@example.com'] })).toBe('');
+    expect(await computeRecipientStatus(messages.add({ to: 'other@example.com', cc: 'me@example.com' }))).toBe('');
+  });
+
+  it('returns "" when the message is gone or its id is not a message id (no claim)', async () => {
+    const folder = { accountId: 'account1' };
+    expect(await computeRecipientStatus({ id: 999999, folder, recipients: ['other@example.com'], ccList: ['me@example.com'] })).toBe('');
+    expect(await computeRecipientStatus({ folder, recipients: ['other@example.com'], ccList: ['me@example.com'] })).toBe('');
+  });
+
+  it('returns "" when the header read fails', async () => {
+    const read = browser.tmHdr.getAddressFields;
+    browser.tmHdr.getAddressFields = vi.fn(async () => { throw new Error('synthetic read failure'); });
+    try {
+      expect(await computeRecipientStatus(makeHeader('other@example.com', 'me@example.com'))).toBe('');
+    } finally {
+      browser.tmHdr.getAddressFields = read;
+    }
   });
 
   it('returns "" when accounts.get rejects (defensive catch)', async () => {
     browser.accounts.get = vi.fn(async () => { throw new Error('gone'); });
-    expect(await computeRecipientStatus(makeHeader(['other@example.com'], ['me@example.com']))).toBe('');
+    expect(await computeRecipientStatus(makeHeader('other@example.com', 'me@example.com'))).toBe('');
   });
 
   it('returns "" when header property access throws (defensive catch)', async () => {
     const evil = new Proxy({}, { get() { throw new Error('boom'); } });
     expect(await computeRecipientStatus(evil)).toBe('');
+  });
+
+  // The Cc claim reads only the Cc mailboxes' own addresses: never text in a display name,
+  // a comment or an encoded word, and never across a quoted comma.
+  it.each([
+    ['a quoted name holding the address', '"me@example.com" <bob@example.net>', ''],
+    ['an encoded name holding the address', '=?utf-8?Q?me@example.com?= <bob@example.net>', ''],
+    ['a comment holding the address', '(me@example.com) <bob@example.net>', ''],
+    ['an unquoted name holding the address', 'me@example.com <bob@example.net>', ''],
+    ['an unclosed angle bracket', '<bob@example.net me@example.com', ''],
+    ['nested comments holding an angle-addr', 'Real <real@example.net> ((x) <me@example.com>)', ''],
+    ['a quote inside a comment', 'Real <real@example.net>, (") "<me@example.com>"', ''],
+    ['encoded-word markers across quotes and comments', '"x=?y" <real@example.net> (z?=" <me@example.com> "")', ''],
+    ['encoded-word markers around an angle-addr', '=?a <real@example.net> ?= me@example.com', ''],
+    ['encoded-word markers inside an angle-addr', 'Real <=?a?Q?x?=me@example.com>', ''],
+    ['encoded-word markers before a bare address', '=?x?Q?<real@example.net>?= me@example.com', ''],
+    ['escaped quotes around an angle-addr', '"a\\" <me@example.com> \\"b" <real@example.net>', ''],
+    ['escaped parentheses around an angle-addr', '(a\\) <me@example.com> \\(b) <real@example.net>', ''],
+    ['the address in each quoted name of a list', '"<me@example.com>" <a@example.net>, "<me@example.com>" <b@example.net>', ''],
+    ['an encoded name that decodes to a quote, the address and a comma', '=?UTF-8?Q?x"_<me@example.com>,_"y?= <bob@example.net>', ''],
+    ['a name that begins and ends with a quote mark, holding the address', '"\\"x\\" <me@example.com> \\"" <bob@example.net>', ''],
+    ['an encoded name that decodes to such a name', '=?UTF-8?Q?=22x=22_=3Cme=40example=2Ecom=3E_=22?= <bob@example.net>', ''],
+    ['an encoded name that decodes to two quoted names around the address and a comma', '=?UTF-8?Q?=22x=22_<me@example.com>,_=22y=22?= <bob@example.net>', ''],
+    ['a combining mark after the domain', '<me@example.cóm>', ''],
+    ['a non-ASCII local part', '<öme@example.com>', ''],
+    ['the address with any name', '"Anything at all" <me@example.com>', 'cc'],
+    ['two named mailboxes', '"Me" <me@example.com>, "Bob" <bob@example.net>', 'cc'],
+    ['two named mailboxes with a space before the comma', '"x" <me@example.com> , "y" <bob@example.net>', 'cc'],
+    ['a group', 'team: boss@example.com, me@example.com;', 'cc'],
+    ['a bare address before a named mailbox', 'me@example.com, Name <c@example.net>', 'cc'],
+    ['an unbalanced quote that leaves the address a mailbox of its own', '"a", me@example.com, b" <other2@example.net>', 'cc'],
+  ])('Cc with %s → "%s"', async (_label, rawCc, expected) => {
+    expect(await computeRecipientStatus(makeHeader('other@example.com', rawCc))).toBe(expected);
+  });
+
+  // To and From suppress only on their mailboxes' own addresses (plus-tags stripped).
+  it.each([
+    ['To names the address only in a quoted name', '"Me <me@example.com>" <list@example.net>', 'Boss <boss@example.com>', 'cc'],
+    ['From names the address only in a quoted name', 'other@example.com', '"Me <me@example.com>" <boss@example.net>', 'cc'],
+    ['From names the address only in a name that begins and ends with a quote mark', 'other@example.com', '"\\"x\\" <me@example.com> \\"" <boss@example.net>', 'cc'],
+    ['To holds the address after a quoted name with brackets', '"Support <noreply@example.net>" <me@example.com>', 'Boss <boss@example.com>', ''],
+    ['To holds the address second in a list', 'Boss <boss@example.com>, Me <me@example.com>', 'Boss <boss@example.com>', ''],
+    ['From is the user under a plus-alias', 'list@example.net', 'Me <me+news@example.com>', ''],
+  ])('%s → "%s"', async (_label, rawTo, rawFrom, expected) => {
+    expect(await computeRecipientStatus(makeHeader(rawTo, 'Me <me@example.com>', rawFrom))).toBe(expected);
+  });
+
+  it('reads each address whole (an apostrophe in the local part)', async () => {
+    browser.accounts.get = vi.fn(async () => ({ type: 'imap', identities: [{ email: 'brien@example.com' }] }));
+    expect(await computeRecipientStatus(makeHeader('other@example.com', "o'brien@example.com"))).toBe('');
+    expect(await computeRecipientStatus(makeHeader("o'brien@example.com", 'brien@example.com'))).toBe('cc');
+    browser.accounts.get = vi.fn(async () => ({ type: 'imap', identities: [{ email: "o'brien@example.com" }] }));
+    expect(await computeRecipientStatus(makeHeader('other@example.com', "O'Brien <o'brien@example.com>"))).toBe('cc');
+  });
+
+  it('asks Thunderbird once per message, and not at all without an account address', async () => {
+    const spy = vi.spyOn(browser.tmHdr, 'getAddressFields');
+    try {
+      const header = makeHeader('a@example.net, b@example.net', 'c@example.net, d@example.net, Me <me@example.com>');
+      expect(await computeRecipientStatus(header)).toBe('cc');
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith([header.id]);
+      spy.mockClear();
+      browser.accounts.get = vi.fn(async () => ({ type: 'imap', identities: [] }));
+      expect(await computeRecipientStatus(makeHeader('a@example.net', 'me@example.com'))).toBe('');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reads a long Cc list whole', async () => {
+    const rawCc = Array.from({ length: 2000 }, (_, i) => `U${i} <u${i}@example.net>`).join(', ') + ', Me <me@example.com>';
+    expect(await computeRecipientStatus(makeHeader('other@example.com', rawCc))).toBe('cc');
   });
 });
 
@@ -508,7 +535,7 @@ describe('isInternalSender', () => {
 
   it('returns false when no accounts', async () => {
     browser.accounts.list.mockResolvedValue([]);
-    const result = await isInternalSender({ author: 'someone@example.com' });
+    const result = await isInternalSender(fromHeader('someone@example.com'));
     expect(result).toBe(false);
   });
 
@@ -518,7 +545,35 @@ describe('isInternalSender', () => {
   });
 
   it('returns false when author has no email', async () => {
-    const result = await isInternalSender({ author: 'just a name' });
-    expect(result).toBe(false);
+    browser.accounts.list.mockResolvedValue([{ type: 'imap', identities: [{ email: 'me@example.com' }] }]);
+    invalidateUserEmailCache();
+    expect(await isInternalSender(fromHeader('just a name'))).toBe(false);
+  });
+
+  it('returns false for a gone message', async () => {
+    browser.accounts.list.mockResolvedValue([{ type: 'imap', identities: [{ email: 'me@example.com' }] }]);
+    invalidateUserEmailCache();
+    expect(await isInternalSender({ id: 999999, author: 'me@example.com' })).toBe(false);
+  });
+
+  // The sender is the first mailbox of Thunderbird's parse of the raw From header; only its own
+  // address counts, never an address in its display name or a comment.
+  it.each([
+    ['"Me <me@example.com>" <other@example.net>', false],
+    ['=?UTF-8?Q?me@example.com?= <other@example.net>', false],
+    ['other@example.net (me@example.com)', false],
+    ['"\\"x\\" <me@example.com> \\"" <other@example.net>', false],
+    ['=?UTF-8?Q?=22x=22_<me@example.com>,_=22y=22?= <other@example.net>', false],
+    ['"Other <other@example.net>" <me@example.com>', true],
+    ['Me <ME@Example.com>', true],
+  ])('From: %s → %s', async (rawFrom, expected) => {
+    browser.accounts.list.mockResolvedValue([{ type: 'imap', identities: [{ email: 'me@example.com' }] }]);
+    invalidateUserEmailCache();
+    expect(await isInternalSender(fromHeader(rawFrom))).toBe(expected);
+  });
+
+  afterAll(async () => {
+    browser.accounts.list.mockResolvedValue([]);
+    invalidateUserEmailCache();
   });
 });

@@ -8,6 +8,7 @@
 
 import { JSDOM } from 'jsdom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { tbMessages, withTbAddressFields } from './helpers/tbAddressParser.js';
 
 const deps = vi.hoisted(() => ({ full: vi.fn() }));
 
@@ -48,24 +49,38 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function bubbleBody(full) {
-  deps.full.mockResolvedValueOnce(full);
+// Renders the thread view for these related messages (as the thread experiment lists them),
+// with `messages` (tbMessages()) answering tmHdr.getAddressFields; returns the bubbles sent.
+async function renderThread(related, messages, fulls) {
+  for (const full of fulls) deps.full.mockResolvedValueOnce(full);
   const sendMessage = vi.fn(async () => {});
-  const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  vi.stubGlobal('browser', {
+  vi.stubGlobal('browser', withTbAddressFields({
     threadMessages: {
       getThreadParents: vi.fn(),
-      getThreadMessages: vi.fn(async () => ({ success: true, messages: [{ weId: 2, date: earlier, from: 'Bob <bob@example.com>' }] })),
+      getThreadMessages: vi.fn(async () => ({ success: true, messages: related })),
     },
-    messages: { get: vi.fn(async () => ({ author: 'Bob <bob@example.com>' })), listAttachments: vi.fn(async () => []) },
+    messages: { get: vi.fn(async id => ({ id })), listAttachments: vi.fn(async () => []) },
     accounts: { list: vi.fn(async () => []) },
     tabs: { sendMessage },
-  });
+  }, messages));
   await fetchAndSendThreadConversation(7, 1);
   expect(sendMessage).toHaveBeenCalledTimes(1);
   const [, payload] = sendMessage.mock.calls[0];
-  expect(payload.messages).toHaveLength(1);
-  return payload.messages[0].body;
+  return payload.messages;
+}
+
+const earlier = () => new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+async function bubble(full, rawFrom = 'Bob <bob@example.com>') {
+  const messages = tbMessages();
+  const { id } = messages.add({ from: rawFrom });
+  const bubbles = await renderThread([{ weId: id, date: earlier(), from: 'Bob' }], messages, [full]);
+  expect(bubbles).toHaveLength(1);
+  return bubbles[0];
+}
+
+async function bubbleBody(full) {
+  return (await bubble(full)).body;
 }
 
 describe('thread bubble body', () => {
@@ -92,5 +107,57 @@ describe('thread bubble body', () => {
       { contentType: 'text/html', body: '<p>Written as <a href="https://example.com/a">a</a> by hand</p>' },
     ] });
     expect(body).toBe('Written as [a](https://example.com/a) by hand');
+  });
+});
+
+// The bubble shows the sender's name from Thunderbird's own parse of the raw From header,
+// or its address when it has none.
+describe('thread bubble sender', () => {
+  it.each([
+    ['"Me <me@example.com>" <other@example.net>', 'Me <me@example.com>'],
+    ['"Doe, John" <john@example.com>', 'Doe, John'],
+    ['"Ann \\"x\\"" <a@example.com>', 'Ann "x"'],
+    ['=?UTF-8?Q?Ren=C3=A9?= <r@example.com>', 'Ren\u00e9'],
+    ['John@Example.com', 'John@Example.com'],
+    ['MAILER-DAEMON', 'MAILER-DAEMON'],
+    ['"\\"x\\" <me@example.com> \\"" <bob@example.net>', '"x" <me@example.com> "'],
+    ['=?UTF-8?Q?=22x=22_<me@example.com>,_=22y=22?= <bob@example.net>', '"x" <me@example.com>, "y"'],
+  ])('From: %s → %s', async (rawFrom, expected) => {
+    const message = await bubble({ parts: [{ contentType: 'text/plain', body: 'Hi' }] }, rawFrom);
+    expect(message.from).toBe(expected);
+  });
+
+  it('reads every bubble\'s sender in one call', async () => {
+    const messages = tbMessages();
+    const ids = ['Ann <a@example.com>', 'b@example.net', '"Doe, John" <john@example.com>'].map(from => messages.add({ from }).id);
+    const spy = vi.spyOn(messages, 'getAddressFields');
+    const text = { parts: [{ contentType: 'text/plain', body: 'Hi' }] };
+    const bubbles = await renderThread(ids.map(weId => ({ weId, date: earlier(), from: 'unused' })), messages, [text, text, text]);
+    expect(bubbles.map(b => b.from)).toEqual(['Ann', 'b@example.net', 'Doe, John']);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(ids);
+  });
+
+  it('shows the thread source\'s own sender text, as it is, when the header cannot be read', async () => {
+    const messages = tbMessages();
+    const text = { parts: [{ contentType: 'text/plain', body: 'Hi' }] };
+    const bubbles = await renderThread([
+      { weId: 41, date: earlier(), from: 'Doe, John' },
+      { weId: 42, date: earlier(), from: 'Me <me@example.com>' },
+      { weId: 43, date: earlier(), from: '' },
+    ], messages, [text, text, text]);
+    expect(bubbles.map(b => b.from)).toEqual(['Doe, John', 'Me <me@example.com>', 'Unknown']);
+  });
+
+  it('still shows the thread, with the source\'s own sender text, when reading the senders fails', async () => {
+    const messages = tbMessages();
+    const ids = ['Ann <a@example.com>', '"Doe, John" <john@example.com>'].map(from => messages.add({ from }).id);
+    vi.spyOn(messages, 'getAddressFields').mockRejectedValueOnce(new Error('synthetic read failure'));
+    const text = { parts: [{ contentType: 'text/plain', body: 'Hi' }] };
+    const bubbles = await renderThread([
+      { weId: ids[0], date: earlier(), from: 'Ann' },
+      { weId: ids[1], date: earlier(), from: 'Doe, John' },
+    ], messages, [text, text]);
+    expect(bubbles.map(b => [b.from, b.body])).toEqual([['Ann', 'Hi'], ['Doe, John', 'Hi']]);
   });
 });

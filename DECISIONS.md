@@ -177,6 +177,10 @@
 
 - **[Full ADR](Companion/Decisions/Active/adr-032-index-stores-raw-invites-format-at-read.md)** — 2026-11-12 (#412): `message_meta.parsedIcsAttachments` holds the raw invite parts (`encodeStoredIcs`: `""` or JSON `{"tabmailStoredIcs":1,"parts":[...]}`, full length), never formatted text; `email_read` formats at read with the ICS parser; an old formatted value (`storedIcsParts` null) is absent, re-derived through `safeGetFull(..., { skipIndex: true })` and written back (`rewriteStoredIcs`, remove + re-add under the fence); empty = no invite, no download; offline = body without the invite, no error, never the old text; native-fts unchanged.
 
+## ADR-033: Every Address Is Read With Thunderbird's Own Parser
+
+- **[Full ADR](Companion/Decisions/Active/adr-033-addresses-read-with-thunderbirds-parser.md)** — 2026-11-25: every From/To/Cc address is Thunderbird's own parse of the raw header: `tmHdr.getAddressFields(messageIds)` (`headerParser.parseEncodedHeaderW` by WebExtension id, many messages per call), read by `senderFilter.readAddressFields` / `readSenderEmail` for the Cc status, To/From suppress, `isInternalSender`, no-reply and reply-all defaults; thread bubbles in one call (`threadConversation.js`); `threadMessages` `formatSender` the same parse on the raw From. MessageHeader `author`/`recipients`/`ccList` strings are never parsed (written back out unquoted for a name that begins and ends with `"`, so not an exact copy). A gone header gives no address. Deleted the hand-written scanner (`_extractAllEmails`, `_fieldParts`, caps) and the prefilter regex copy. Suppress matches only a mailbox's own address (iOS still matches any address in the text). Tests: vendored JSMime (`test/helpers/tbAddressParser.js` `tbMessages`/`withTbAddressFields`, `test/vendor/jsmime/`, tests only, hash pinned); parses the test headers the same as TB 140.0esr and 145. A name holding an address stays one mailbox's name.
+
 ---
 
 ## Template for New Decisions

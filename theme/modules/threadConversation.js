@@ -9,6 +9,7 @@
 import { getActionForWeId } from "../../agent/modules/actionCache.js";
 import { SETTINGS } from "../../agent/modules/config.js";
 import { unwrapMarkdownLinks } from "../../agent/modules/markdownLinks.js";
+import { readAddressFields } from "../../agent/modules/senderFilter.js";
 import { getIdentityForMessage, safeGetFull, stripHtml } from "../../agent/modules/utils.js";
 
 // Cache identity email -> display name (for "Identity:email:..." author strings)
@@ -43,8 +44,14 @@ async function getIdentityEmailToNameMap() {
     return map;
 }
 
-function formatSenderDisplayName(rawAuthor, identityEmailToName) {
-    const s = String(rawAuthor || "").trim();
+/**
+ * The bubble's sender: the name, or the address when it has none, from Thunderbird's own
+ * parse of the From header (`sender`, the first From mailbox). When the header could not
+ * be read, the related-messages source's own sender text is shown as it is.
+ */
+function formatSenderDisplayName(sender, fallbackText, identityEmailToName) {
+    if (sender?.name || sender?.email) return sender.name || sender.email;
+    const s = String(fallbackText || "").trim();
     if (!s) return "Unknown";
 
     // Thunderbird sometimes surfaces self as "Identity:email:me@example.com"
@@ -67,12 +74,6 @@ function formatSenderDisplayName(rawAuthor, identityEmailToName) {
         console.log(`[TabMail ThreadConv] Identity author format unexpected: raw="${s}"`);
         return "Me";
     }
-
-    // "Name <email>"
-    try {
-        const m = s.match(/^([^<]+)\s*</);
-        if (m && m[1]) return m[1].trim();
-    } catch (_) {}
 
     return s;
 }
@@ -482,15 +483,22 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
         const previewLines = threadConfig.previewLines;
 
         const identityEmailToName = await getIdentityEmailToNameMap();
+
+        // Every bubble's sender, read in one call.
+        let senderFields = [];
+        try {
+            senderFields = await readAddressFields(filteredThreadMessages.map((msg) => msg.weId));
+        } catch (e) {
+            console.log(`[TabMail ThreadConv] Thread senders not read: ${e}`);
+        }
         
-        const messagesWithBody = await Promise.all(filteredThreadMessages.map(async (msg) => {
+        const messagesWithBody = await Promise.all(filteredThreadMessages.map(async (msg, index) => {
             const enrichedMsg = { ...msg, body: "", bodyIsHtml: false };
+            enrichedMsg.from = formatSenderDisplayName(senderFields[index]?.author[0], msg.from, identityEmailToName);
 
             // Enrich headers (author/recipients/cc) so expanded UI can show metadata.
             try {
                 const header = await browser.messages.get(msg.weId);
-                const rawAuthor = header?.author || msg.from || "";
-                enrichedMsg.from = formatSenderDisplayName(rawAuthor, identityEmailToName);
 
                 // Keep as arrays; content script will decide how to render.
                 enrichedMsg.recipients = Array.isArray(header?.recipients) ? header.recipients : [];
@@ -534,10 +542,6 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
                 enrichedMsg.tags = [];
                 enrichedMsg.action = null;
                 enrichedMsg.attachments = [];
-                // Also normalize Identity format if it slipped through.
-                try {
-                    enrichedMsg.from = formatSenderDisplayName(enrichedMsg.from || msg.from || "", identityEmailToName);
-                } catch (_) {}
             }
 
             // Pass UI config down (no hardcoded numeric values in the content script).

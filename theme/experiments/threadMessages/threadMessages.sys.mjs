@@ -29,6 +29,14 @@ if (!ExtensionCommonThreadMessages) {
   globalThis.__TM_threadMessages_ExtensionCommon = ExtensionCommonThreadMessages;
 }
 
+var MailServicesThreadMessages = globalThis.__TM_threadMessages_MailServices || null;
+if (!MailServicesThreadMessages) {
+  MailServicesThreadMessages = ChromeUtils.importESModule(
+    "resource:///modules/MailServices.sys.mjs"
+  ).MailServices;
+  globalThis.__TM_threadMessages_MailServices = MailServicesThreadMessages;
+}
+
 // Configuration constants (matching SETTINGS pattern)
 var CONFIG = {
   maxMessages: 10,       // Default max parent messages to return
@@ -48,15 +56,13 @@ function threadMessagesWarn(...args) {
 tlog("Loaded threadMessages.sys.mjs (v2 hot-reload-safe)", new Date().toISOString());
 
 /**
- * Format sender address for display
+ * The sender's name for display, or its address when it has no name. The raw From
+ * header is read with Thunderbird's own parser, which reads the structure first and
+ * decodes encoded words only inside it, as browser.messages does for `author`.
  */
-function formatSender(author) {
-  if (!author) return "Unknown";
-  // Extract name from "Name <email>" format
-  const match = author.match(/^([^<]+)\s*</);
-  if (match) return match[1].trim();
-  // If just email, return it cleaned
-  return author.replace(/<|>/g, '').trim();
+function formatSender(msgHdr) {
+  const [sender] = MailServicesThreadMessages.headerParser.parseEncodedHeaderW(msgHdr?.author || "");
+  return sender?.name || sender?.email || "Unknown";
 }
 
 function _safeGetMsgDatabase(folder) {
@@ -247,7 +253,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
                 
                 const msgObj = {
                   weId: weMsg.id,
-                  from: formatSender(weMsg.author || parentHdr.author || parentHdr.mime2DecodedAuthor),
+                  from: formatSender(parentHdr),
                   date: weMsg.date ? new Date(weMsg.date).toISOString() : null,
                   subject: weMsg.subject || parentHdr.subject || parentHdr.mime2DecodedSubject || "",
                 };
@@ -394,7 +400,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
 
                 messages.push({
                   weId: weMsg.id,
-                  from: formatSender(weMsg.author || childHdr.author || childHdr.mime2DecodedAuthor),
+                  from: formatSender(childHdr),
                   date: weMsg.date ? new Date(weMsg.date).toISOString() : null,
                   subject: weMsg.subject || childHdr.subject || childHdr.mime2DecodedSubject || "",
                 });

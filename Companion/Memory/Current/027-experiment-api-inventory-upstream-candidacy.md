@@ -4,6 +4,8 @@
 
 Current lifecycle update (2026-09-26): `tmKeepAlive` and its hidden relay have been removed. The inventory below is historical; `tmUpdates` remains independently owned by `updates/background.js`. Native FTS connections and parent-owned Device Sync transport retain their own lifetimes.
 
+Current update (2026-11-25, ADR-033): `tmHdr.getAddressFields(messageIds)` returns Thunderbird's own parse of each message's raw From/To/Cc (`headerParser.parseEncodedHeaderW`, `{ name, email }` per mailbox) by WebExtension id. Stock `MessageHeader` gives only that parse written back out as strings, which are not an exact copy (a name that begins and ends with a quote mark is written out unquoted). Tier A candidate next to the flags portion: structured mailboxes on `MessageHeader`.
+
 <!-- BEGIN PRESERVED BLOCK -->
 > Full inventory of `experiment_apis` in `manifest.json` (each = `<area>/experiments/<name>/{schema.json,*.sys.mjs}`). Compiled 2026-06-18 for the "can these become real upstream MV3 APIs?" question. Upstream process: prototype as experiment → file issue + contribute generalized version to `github.com/thunderbird/webext-experiments` (MPL2, **design principles: high-level, NO Thunderbird-specific details, no magic numbers**, lint) → on accept, Bugzilla bug in product **Thunderbird / component "Add-Ons: Extensions API"** with schema+impl → land in comm-central via Phabricator → "Since Thunderbird NN" → deprecate experiment. The design-principle filter is the real gate: most of ours are TabMail-specific (`tm-action`, action chips, 108px row height) and must be generalized to the *capability primitive* underneath before they'd be accepted.
 

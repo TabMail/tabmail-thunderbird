@@ -274,35 +274,34 @@ async function _runEmailReply(args = {}, options = {}) {
   // recipients (original To + Cc) → Cc. Filter out the user's own identities so
   // we never reply to ourselves. These defaults apply unless the LLM overrode
   // the matching field (per-field override — see tool description).
-  const { getUserEmailSetCached, extractEmailFromAuthor } = await import(
+  const { getUserEmailSetCached, readAddressFields } = await import(
     "../../agent/modules/senderFilter.js"
   );
   const userEmails = await getUserEmailSetCached();
   const seen = new Set(Array.from(userEmails || []));
-  const toRecipient = (rawAddr) => {
-    const email = extractEmailFromAuthor(rawAddr);
+  // Names and addresses are Thunderbird's own parse of the replied message's From, To
+  // and Cc headers. A message whose header cannot be read leaves both defaults empty.
+  let fields = null;
+  if (repliedHeader) {
+    try {
+      [fields] = await readAddressFields([repliedHeader.id]);
+    } catch (e) {
+      log(`[TMDBG Tools] email_reply: reply-all defaults not read: ${e}`, "warn");
+    }
+  }
+  const toRecipient = (mailbox) => {
+    const email = String(mailbox?.email || "").toLowerCase();
     if (!email || seen.has(email)) return null;
     seen.add(email);
-    const m = String(rawAddr || "").match(/^\s*(.*?)\s*<[^<>]+>\s*$/);
-    let name = m ? m[1].trim() : "";
-    if (name.startsWith("\"") && name.endsWith("\"") && name.length >= 2) {
-      name = name.slice(1, -1);
-    }
-    return { name, email };
+    return { name: mailbox.name, email };
   };
 
   const defaultTo = [];
-  if (repliedHeader) {
-    const sender = toRecipient(repliedHeader.author || "");
-    if (sender) defaultTo.push(sender);
-  }
+  const sender = toRecipient(fields?.author[0]);
+  if (sender) defaultTo.push(sender);
   const defaultCc = [];
-  for (const addr of repliedHeader?.recipients || []) {
-    const r = toRecipient(addr);
-    if (r) defaultCc.push(r);
-  }
-  for (const addr of repliedHeader?.ccList || []) {
-    const r = toRecipient(addr);
+  for (const mailbox of [...(fields?.recipients || []), ...(fields?.ccList || [])]) {
+    const r = toRecipient(mailbox);
     if (r) defaultCc.push(r);
   }
   log(

@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { tbMessages } from './helpers/tbAddressParser.js';
 
 vi.mock('../agent/modules/utils.js', () => ({ log() {} }));
 import * as senderFilter from '../agent/modules/senderFilter.js';
+
+// Messages with a raw From header; tmHdr.getAddressFields answers with Thunderbird's parse of it.
+const addressBook = tbMessages();
+const sender = from => addressBook.add({ from });
 
 function startAgent({ failedEvent } = {}) {
   let source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
@@ -74,6 +79,7 @@ function startAgent({ failedEvent } = {}) {
         if (String(key).startsWith('on')) return event(next);
         if (next === 'browser.accounts.list') return async () => accounts;
         if (next === 'browser.accounts.get') return async () => accounts[0];
+        if (next === 'browser.tmHdr.getAddressFields') return ids => addressBook.getAddressFields(ids);
         if (key === 'getManifest') return () => ({ version: 'synthetic' });
         return api(next);
       },
@@ -112,12 +118,12 @@ describe('sender identity cache after canceled background suspension', () => {
     globalThis.browser = app.browser;
     try {
       senderFilter.invalidateUserEmailCache();
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(true);
       app.setEmail('new@example.test');
       await app.event(name).emit('synthetic', {});
       await drain();
-      expect(await senderFilter.isInternalSender({ author: 'new@example.test' })).toBe(true);
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+      expect(await senderFilter.isInternalSender(sender('new@example.test'))).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(false);
     } finally {
       app.releaseStartup();
       await drain();
@@ -133,11 +139,11 @@ describe('sender identity cache after canceled background suspension', () => {
     globalThis.browser = app.browser;
     try {
       senderFilter.invalidateUserEmailCache();
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(true);
       app.setEmail('new@example.test');
       app.event('browser.identities.onUpdated').emitNow('synthetic', {});
-      expect(await senderFilter.isInternalSender({ author: 'new@example.test' })).toBe(true);
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+      expect(await senderFilter.isInternalSender(sender('new@example.test'))).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(false);
     } finally {
       app.releaseStartup();
       await drain();
@@ -157,15 +163,15 @@ describe('sender identity cache after canceled background suspension', () => {
         expect(app.event(name).listeners.size).toBe(name === failedEvent ? 0 : 1);
       }
       senderFilter.invalidateUserEmailCache();
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(true);
       app.releaseStartup();
       await drain();
       for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
       app.setEmail('retried@example.test');
       await app.event(failedEvent).emit('synthetic', {});
       await drain();
-      expect(await senderFilter.isInternalSender({ author: 'retried@example.test' })).toBe(true);
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+      expect(await senderFilter.isInternalSender(sender('retried@example.test'))).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(false);
     } finally {
       app.releaseStartup();
       senderFilter.invalidateUserEmailCache();
@@ -182,19 +188,19 @@ describe('sender identity cache after canceled background suspension', () => {
       app.releaseStartup();
       await drain();
       senderFilter.invalidateUserEmailCache();
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(true);
       const edited = app.event('browser.identities.onUpdated');
       expect(edited.listeners.size).toBeGreaterThan(0);
       app.setEmail('two@example.test');
       await edited.emit('synthetic', {});await drain();
-      expect(await senderFilter.isInternalSender({ author: 'two@example.test' })).toBe(true);
-      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+      expect(await senderFilter.isInternalSender(sender('two@example.test'))).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('one@example.test'))).toBe(false);
       await app.event('browser.runtime.onSuspend').emit();
       await app.event('browser.runtime.onSuspendCanceled').emit();
       app.setEmail('three@example.test');
       await edited.emit('synthetic', {});await drain();
-      expect(await senderFilter.isInternalSender({ author: 'three@example.test' })).toBe(true);
-      expect(await senderFilter.isInternalSender({ author: 'two@example.test' })).toBe(false);
+      expect(await senderFilter.isInternalSender(sender('three@example.test'))).toBe(true);
+      expect(await senderFilter.isInternalSender(sender('two@example.test'))).toBe(false);
     } finally {
       senderFilter.invalidateUserEmailCache();
       if (previous === undefined) delete globalThis.browser;
