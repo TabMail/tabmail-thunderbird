@@ -79,5 +79,6 @@ shipped in the add-on XPI:
 - **fake-indexeddb** — Apache License 2.0 — https://github.com/dumbmatter/fakeIndexedDB
 - **jsdom** — MIT License — https://github.com/jsdom/jsdom
 - **JSMime** (Thunderbird's address parser, the tests' reference, in `test/vendor/jsmime/`) — MIT License — https://hg.mozilla.org/releases/comm-release/
+- **MimeJSComponents** (Thunderbird's `MailServices.headerParser`, the tests' reference for compose window recipients, in `test/vendor/mimejscomponents/`) — Mozilla Public License 2.0 — https://hg.mozilla.org/releases/comm-release/
 
-See `package.json` for exact versions, and `test/vendor/jsmime/README.md` for JSMime's revision.
+See `package.json` for exact versions, `test/vendor/jsmime/README.md` for JSMime's revision, and `test/vendor/mimejscomponents/README.md` for MimeJSComponents' revisions.

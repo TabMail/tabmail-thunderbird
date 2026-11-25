@@ -12,6 +12,7 @@
 import { trackComposeWindow } from "../../agent/modules/composeTracker.js";
 import * as idb from "../../agent/modules/idbStorage.js";
 import { getIdentityForMessage, log } from "../../agent/modules/utils.js";
+import { readAddressFields } from "../../agent/modules/senderFilter.js";
 import { ctx } from "../modules/context.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { initialiseEmailCompose, streamText } from "../modules/helpers.js";
@@ -456,17 +457,17 @@ export async function runStateSendEmailPreview() {
             if (originalMsg.author) {
               toList = [originalMsg.author];
             }
-            // Reply-all: Cc = original To + Cc (minus our own address)
-            // Note: For simplicity, we show the original To recipients
-            // The actual Thunderbird reply-all logic is more complex
+            // Reply-all preview: Cc = the original's To (its recipients field), minus our own address
             if (ccList.length === 0 && originalMsg.recipients && originalMsg.recipients.length > 0) {
-              // Get our identity to filter it out from Cc
+              // Get our identity to filter it out from Cc: a mailbox is left out only when its
+              // own address is ours, in Thunderbird's own parse of the original To; an address
+              // that appears only in a name is not ours.
               const identityInfo = await getIdentityForMessage(msgId);
               const ourEmail = identityInfo?.email?.toLowerCase();
-              const filteredRecipients = originalMsg.recipients.filter(r => {
-                const email = r.toLowerCase();
-                return !ourEmail || !email.includes(ourEmail);
-              });
+              const [fields] = await readAddressFields([msgId]);
+              const filteredRecipients = (fields?.recipients || [])
+                .filter((mailbox) => mailbox.email && mailbox.email.toLowerCase() !== ourEmail)
+                .map((mailbox) => (mailbox.name ? `${mailbox.name} <${mailbox.email}>` : mailbox.email));
               if (filteredRecipients.length > 0) {
                 ccList = filteredRecipients;
               }

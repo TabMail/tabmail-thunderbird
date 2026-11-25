@@ -77,3 +77,48 @@ scanner.
   `runStateSendEmailPreview` matches the user's address in `originalMsg.recipients` strings with
   `includes` (headless and ChatLink modes only), and `compose/background.js` `parseComposeEntry`
   splits compose-window recipient text with a regex.
+
+## Compose write-back and reply-all preview (2026-11-25)
+
+The two reads the last item above lists now use Thunderbird's parser.
+
+- **Compose write-back.** An accepted inline edit's recipient changes reach the
+  `tmComposeRecipients` experiment as mailboxes to add (`{ name, email }`) and addresses to remove
+  (`*` removes every recipient of the field). The write-back no longer parses or formats
+  recipient text in `compose/background.js` (`parseComposeEntry` and `formatForCompose` are
+  deleted). The one split left there, `toRecipient` in `runInlineComposeEdit`, builds the
+  recipient list the model is shown and is never written back. In the same native turn as its
+  checks, the experiment reads the window's field (`GetComposeDetails`), takes Thunderbird's parse
+  of it (`parseEncodedHeaderW`), drops the removed addresses, appends each added mailbox whose
+  address is not there yet, and writes every mailbox with `makeMimeAddress` to native
+  `SetComposeDetails`, which takes header text. That is how Thunderbird writes every pill at Send,
+  so for a name that Thunderbird reads back as one name, the pills the write makes are what Send
+  reads: every address the message goes to is the address of a pill. A name that begins and ends
+  with a quote mark is written as the emitter writes it, as it is; Thunderbird then reads its
+  text, so an address in it becomes a pill of its own. A name with an unbalanced quote mark (only
+  malformed model output gives one) is read as Thunderbird reads such a header itself, for
+  example when it fills a reply to a message carrying that mailbox, and the pills it makes show
+  before Send; no guard is added over Thunderbird's own parser. Every kept recipient keeps its address and Thunderbird's reading of its name, so a name
+  holding quote marks no longer gains backslashes at each write-back. A pill with no address
+  (typed text that is not an address) is kept.
+- **Thunderbird's own pill step.** Native `SetComposeDetails` makes the address pills by writing the
+  field's mailboxes out as display text (names unquoted) and reading that text back with
+  `makeFromDisplayAddress`. That reader splits at the first comma after an `@`, even inside a name.
+  From Thunderbird 160 it also reads text with a colon and a later semicolon as a group list when
+  every entry has an `@`. A recipient whose name holds an `@` before a comma, or a name shaped like
+  such a group, therefore becomes more than one pill. Thunderbird does the same when it fills a
+  reply-all itself, and the pills show in the window before Send.
+- **Compose API recipients are display text.** `compose.setComposeDetails` and `compose.beginNew`
+  read each recipient string with `makeFromDisplayAddress`, then write it with `makeMimeAddress`.
+  The reply, forward and new-message writes in `chat/fsm/emailCompose.js` pass `Name <email>`, which
+  is that display form, so they stay as they are. Quoting the name there changes no pill, and it
+  turns the two shapes above into a garbled or empty pill. The experiment's write is the other form:
+  header text, for native `SetComposeDetails`.
+- **Reply-all preview.** `runStateSendEmailPreview` takes the Cc of a reply that has no recipients
+  of its own from `readAddressFields` (the original's `recipients` field). It leaves out only a
+  mailbox whose own address is the user's, in any letter case. An address inside a name, or one that
+  only contains the user's address, stays.
+- **Tests.** `test/helpers/tbComposeRecipients.js` runs Thunderbird's own `MimeJSComponents.sys.mjs`
+  and models the compose window's pill steps from Thunderbird's compose code. The file is vendored
+  unmodified under `test/vendor/mimejscomponents/` in two versions: Thunderbird 145 (byte-identical
+  to 140.0esr) and Thunderbird 161, with hashes in its README. The write-back tests run with both.
