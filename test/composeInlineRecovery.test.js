@@ -53,24 +53,22 @@ vi.mock('../agent/modules/utils.js',()=>({getUniqueMessageKey:vi.fn()}));
 vi.mock('../compose/modules/autocompleteGenerator.js',()=>({generateCorrection:vi.fn()}));
 vi.mock('../compose/modules/edit.js',()=>({runComposeEdit:vi.fn()}));
 import {runComposeEdit} from '../compose/modules/edit.js';
-async function wireBackground(w, requestedTab = 1) {
+import {tbHeaderParser,pillsFromHeader,headerFromPills,composeApiList} from './helpers/tbComposeRecipients.js';
+async function wireBackground(w, requestedTab = 1, version = '145') {
   vi.resetModules();
   const listeners = new Set();
   const current = {to:['first@example.com'],cc:[],bcc:[],subject:'Synthetic',type:'new'};
   const otherCurrent={to:['other@example.com'],cc:['other-copy@example.com'],bcc:[],subject:'Other window',type:'new'};
   const stores=new Map([[1,current],[2,otherCurrent]]);
   const api={runtime:{onMessage:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},getURL:p=>p},
-    compose:{getComposeDetails:vi.fn(async id=>{const state=stores.get(id);return {...structuredClone(state),...Object.fromEntries(['to','cc','bcc'].map(field=>[field,headerList(state[field].join(','))]))}}),setComposeDetails:vi.fn((id,patch)=>Object.assign(stores.get(id),structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
+    compose:{getComposeDetails:vi.fn(async id=>{const state=stores.get(id);return {...structuredClone(state),...Object.fromEntries(['to','cc','bcc'].map(field=>[field,composeApiList(hp,headerFromPills(hp,state[field]))]))}}),setComposeDetails:vi.fn((id,patch)=>Object.assign(stores.get(id),structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
     tabs:{sendMessage:vi.fn(async()=>{}),onRemoved:{addListener:vi.fn(),removeListener:vi.fn()}}};
-  // Native compose fields are header strings; the public compose API exposes
-  // parsed arrays. Keep those boundaries distinct so bypassing conversion fails.
-  const parse=value=>String(value).split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).filter(value=>value.trim()).map(value=>{
-    const m=value.trim().match(/^(.*?)\s*<([^<>]+)>$/);
-    return {name:m?m[1].replace(/^"|"$/g,''):'',email:m?m[2]:value.trim()};
-  });
-  const format=({name,email})=>name?`${name} <${email}>`:email;
-  const headerList=(value,emailOnly=false)=>parse(value||'').map(address=>emailOnly?address.email:format(address));
+  // Each window's store holds its address pills (their fullAddress) by field, and
+  // compose.setComposeDetails records each native recipient write. Native fields are
+  // header strings and the public compose API gives lists, each converted as
+  // Thunderbird converts them, with Thunderbird's own parser of this version.
+  const hp=tbHeaderParser(version);
   const makeWindow=id=>{
     const root=w.document.createElement('div');let rendered;
     // Native recipient writers materialize committed pills and clear row input.
@@ -90,8 +88,8 @@ async function wireBackground(w, requestedTab = 1) {
     };
     refreshRows();
     return {closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(selector=>{refreshRows();return root.querySelector(selector)})},
-      GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,stores.get(id)[field].join(',')])),
-      SetComposeDetails:patch=>{api.compose.setComposeDetails(id,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,headerList(value)])));refreshRows();}};
+      GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,headerFromPills(hp,stores.get(id)[field])])),
+      SetComposeDetails:patch=>{api.compose.setComposeDetails(id,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,pillsFromHeader(hp,value)])));refreshRows();}};
   };
   const nativeWindow=makeWindow(1),otherWindow=makeWindow(2);
   let sequence=0;
@@ -103,7 +101,7 @@ async function wireBackground(w, requestedTab = 1) {
     const schema=JSON.parse(readFileSync(resolve(registration.schema),'utf8')).find(entry=>entry.namespace==='tmComposeRecipients');
     const filename=resolve(registration.parent.script);
     const Experiment=runInNewContext(readFileSync(filename,'utf8')+'\n;tmComposeRecipients;',{
-      ChromeUtils:{importESModule:path=>path==='resource://gre/modules/ExtensionCommon.sys.mjs'?{ExtensionCommon:{ExtensionAPI:class{}}}:path==='resource:///modules/MailServices.sys.mjs'?{MailServices:{headerParser:{makeFromDisplayAddress:parse,makeMimeAddress:(name,email)=>format({name,email})}}}:path==='resource:///modules/ExtensionMessages.sys.mjs'?{parseEncodedAddrHeader:headerList}:(()=>{throw Error('Unknown native module: '+path)})()},
+      ChromeUtils:{importESModule:path=>path==='resource://gre/modules/ExtensionCommon.sys.mjs'?{ExtensionCommon:{ExtensionAPI:class{}}}:path==='resource:///modules/MailServices.sys.mjs'?{MailServices:{headerParser:hp}}:path==='resource:///modules/ExtensionMessages.sys.mjs'?{parseEncodedAddrHeader:(header,emailOnly)=>composeApiList(hp,header,emailOnly)}:(()=>{throw Error('Unknown native module: '+path)})()},
       Services:{uuid:{generateUUID:()=>({toString:()=>String(++sequence)})}}
     },{filename});
     experiment=new Experiment();
@@ -347,7 +345,7 @@ it('does not allow another compose window to consume a proposal',async()=>{
  runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
  const result=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
  const p=result.recipientEdit;
- expect(await api.tmComposeRecipients.commit(2,p.id,p.baseline,{to:['wrong@example.com']})).toBe(false);
+ expect(await api.tmComposeRecipients.commit(2,p.id,p.baseline,{to:{adds:[{name:'',email:'wrong@example.com'}],removes:[]}})).toBe(false);
  await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:p});
  expect(current.to).toEqual(['first@example.com','new@example.com']);
 });
@@ -609,4 +607,76 @@ it.each(['to','cc','bcc'])('preserves a newer manual %s recipient order',async f
  expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
  expect(tm.state.editChatHistory).toEqual([{userRequest:'Add a recipient'}]);
+});
+
+// What Thunderbird reads from a field's pills: the compose API's list (names and addresses),
+// the addresses Send writes from the pills, and each pill's own address.
+const fieldRead=(hp,pills)=>composeApiList(hp,headerFromPills(hp,pills));
+const sentAddresses=(hp,pills)=>hp.parseEncodedHeaderW(headerFromPills(hp,pills)).map(mailbox=>mailbox.email);
+const pillAddresses=(hp,pills)=>pills.map(pill=>hp.makeFromDisplayAddress(pill)[0].email);
+const versionsAndFields=['145','161'].flatMap(version=>['to','cc','bcc'].map(field=>[version,field]));
+async function acceptRecipientEdit(tm,w,field,request,delta) {
+ runComposeEdit.mockResolvedValueOnce({body:'Expanded draft.',chatHistory:[{userRequest:request}],[field+'Delta']:delta});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:request,wrapper:w.document.getElementById('tm-inline-edit')});
+}
+
+// Names Thunderbird keeps as one pill when it fills a field: a comma, quote marks, or an
+// address in angle brackets. Each write-back keeps every recipient's address and
+// Thunderbird's reading of its name, and adds each new mailbox as Thunderbird reads it.
+const keptNames=['Doe, John','say "hi", ok','x <name@example.org>','"x" <name@example.org> "y"',"O'Brien (Sales)"];
+it.each(versionsAndFields)('keeps every recipient and adds each new one across two write-backs (Thunderbird %s, %s)',async(version,field)=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current,otherCurrent}=await wireBackground(w,1,version);
+ const hp=tbHeaderParser(version);
+ api._nativeWindow.SetComposeDetails({[field]:keptNames.map((name,i)=>hp.makeMimeAddress(name,`kept${i}@example.com`)).join(',')});
+ expect(pillAddresses(hp,current[field])).toEqual(keptNames.map((_,i)=>`kept${i}@example.com`));
+ expect(hp.parseEncodedHeaderW(headerFromPills(hp,current[field])).map(mailbox=>mailbox.name))
+  .toEqual(['Doe, John','say "hi", ok','x <name@example.org>','x <name@example.org>',"O'Brien (Sales)"]);
+ const keptRead=fieldRead(hp,current[field]);
+ api.compose.setComposeDetails.mockClear();
+ const before=structuredClone(current),otherBefore=structuredClone(otherCurrent);
+ await acceptRecipientEdit(tm,w,field,'First',{adds:[{name:'"Boss"',email:'added0@example.com'}],removes:[]});
+ expect(fieldRead(hp,current[field])).toEqual([...keptRead,'Boss <added0@example.com>']);
+ await acceptRecipientEdit(tm,w,field,'Second',{adds:[{name:'"a, b@example.org"',email:'added1@example.com'}],removes:[]});
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(2);
+ expect(fieldRead(hp,current[field])).toEqual([...keptRead,'Boss <added0@example.com>','"a, b@example.org" <added1@example.com>']);
+ expect(pillAddresses(hp,current[field])).toEqual(sentAddresses(hp,current[field]));
+ expect({...current,[field]:before[field]}).toEqual(before);
+ expect(otherCurrent).toEqual(otherBefore);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+});
+
+// A name the model gives may hold text that Thunderbird reads as addresses. For these name
+// shapes, after the write-back every address Send writes is the address of a pill, and the
+// added address is one of them.
+const addedNameShapes=['"g": other@example.org; "b"','"x" <other@example.org> "y"','"a, b@example.org"','say "hi", ok'];
+it.each(versionsAndFields.flatMap(([version,field])=>addedNameShapes.map(name=>[version,field,name])))('every address Send writes is a pill after an added name (Thunderbird %s, %s): %s',async(version,field,name)=>{
+ const {w,tm}=setup('<p>Draft.</p>');const {current}=await wireBackground(w,1,version);
+ const hp=tbHeaderParser(version);
+ await acceptRecipientEdit(tm,w,field,'Add',{adds:[{name,email:'real@example.com'}],removes:[]});
+ expect(sentAddresses(hp,current[field])).toContain('real@example.com');
+ expect(pillAddresses(hp,current[field])).toEqual(sentAddresses(hp,current[field]));
+});
+
+// Text the user typed that is not an address stays a pill of its own (Thunderbird marks it
+// invalid). A change to its field keeps it, whether the change adds or removes, and it is
+// not merged into a named recipient that follows it.
+it.each(versionsAndFields)('keeps a pill with no address when its field changes (Thunderbird %s, %s)',async(version,field)=>{
+ const {w,tm}=setup('<p>Draft.</p>');const {current}=await wireBackground(w,1,version);
+ const hp=tbHeaderParser(version);
+ current[field]=[...hp.makeFromDisplayAddress('John').map(address=>address.toString()),'a@example.com'];
+ expect(fieldRead(hp,current[field])).toEqual(['John','a@example.com']);
+ await acceptRecipientEdit(tm,w,field,'Add',{adds:[{name:'New',email:'b@example.com'}],removes:[]});
+ expect(fieldRead(hp,current[field])).toEqual(['John','a@example.com','New <b@example.com>']);
+ await acceptRecipientEdit(tm,w,field,'Remove',{adds:[],removes:['a@example.com']});
+ expect(fieldRead(hp,current[field])).toEqual(['John','New <b@example.com>']);
+});
+
+// The experiment checks each added address at its own boundary: an empty or blank one is
+// skipped, and one with spaces around it is trimmed before it is matched or written.
+it.each(['to','cc','bcc'])('skips a blank added %s address and trims one with spaces',async field=>{
+ const {w,tm}=setup('<p>Draft.</p>');const {current}=await wireBackground(w);
+ const hp=tbHeaderParser('145');
+ current[field]=['up@example.com'];
+ await acceptRecipientEdit(tm,w,field,'Add',{adds:[{name:'X',email:'  '},{name:'',email:''},{name:'',email:' Up@Example.com '},{name:'',email:' new@example.com '}],removes:[]});
+ expect(fieldRead(hp,current[field])).toEqual(['up@example.com','new@example.com']);
 });

@@ -26,24 +26,14 @@ var tmComposeRecipients = class extends TMRecipientExtensionCommon.ExtensionAPI 
         this.operations.set(win, id);
         return id;
       },
-      commit: async (tabId, id, baseline, patch) => {
+      commit: async (tabId, id, baseline, deltas) => {
         const win = composeWindow(tabId);
         if (this.operations.get(win) !== id) return false;
         this.operations.delete(win);
         // Public compose.setComposeDetails awaits recipient parsing between read
         // and write. Keep validation and SetComposeDetails in ONE native turn:
         // a later user action must never be overwritten by an older proposal.
-        // Only string mailboxes are accepted; no async address-book resolution.
-        const nativePatch = {};
-        for (const field of ['to', 'cc', 'bcc']) {
-          // Optional schema properties arrive as null at the experiment boundary.
-          if (patch[field] == null) continue;
-          nativePatch[field] = patch[field].flatMap(value =>
-            TMRecipientMailServices.headerParser.makeFromDisplayAddress(value).map(address =>
-              TMRecipientMailServices.headerParser.makeMimeAddress(address.name, address.email)
-            )
-          ).join(',');
-        }
+        // Only mailboxes are written; no async address-book resolution.
         // GetComposeDetails serializes committed pills only. Preserve unfinished
         // manual input (including an existing pill being edited) before native
         // SetComposeDetails rebuilds the address rows and discards that input.
@@ -55,6 +45,35 @@ var tmComposeRecipients = class extends TMRecipientExtensionCommon.ExtensionAPI 
         const current = win.GetComposeDetails();
         for (const field of ['to', 'cc', 'bcc']) {
           if (JSON.stringify(tmRecipientHeaderList(current[field], false)) !== JSON.stringify(baseline[field])) return false;
+        }
+        // Each changed field is Thunderbird's own parse of the window's field (the parse
+        // behind the compose API's recipient strings), minus the removed addresses, plus
+        // the added mailboxes, each written as header text with Thunderbird's own
+        // makeMimeAddress, the way Thunderbird writes every pill at Send. So for a name
+        // Thunderbird reads back as one name, the pills this write makes are what Send
+        // reads; a name with an unbalanced quote mark is read as Thunderbird reads such a
+        // header itself. A pill with no address (typed text that is not an address) is
+        // kept like any other recipient.
+        const nativePatch = {};
+        for (const field of ['to', 'cc', 'bcc']) {
+          // Optional schema properties arrive as null at the experiment boundary.
+          const delta = deltas[field];
+          if (delta == null) continue;
+          const removes = delta.removes || [];
+          const removed = new Set(removes.filter(email => email !== '*').map(email => email.toLowerCase()));
+          const mailboxes = removes.includes('*') ? [] :
+            TMRecipientMailServices.headerParser.parseEncodedHeaderW(current[field] || '')
+              .filter(mailbox => !removed.has(mailbox.email.toLowerCase()));
+          const seen = new Set(mailboxes.map(mailbox => mailbox.email.toLowerCase()));
+          for (const add of delta.adds || []) {
+            const email = String(add.email || '').trim();
+            if (!email || email === '*' || seen.has(email.toLowerCase())) continue;
+            mailboxes.push({ name: String(add.name || '').trim(), email });
+            seen.add(email.toLowerCase());
+          }
+          nativePatch[field] = mailboxes
+            .map(mailbox => TMRecipientMailServices.headerParser.makeMimeAddress(mailbox.name, mailbox.email))
+            .join(',');
         }
         if (Object.keys(nativePatch).length) {
           const active = win.document.activeElement;

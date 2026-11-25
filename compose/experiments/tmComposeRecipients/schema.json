@@ -28,28 +28,50 @@
         }
       },
       {
-        "id": "Patch",
+        "id": "Mailbox",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "id": "Delta",
+        "type": "object",
+        "description": "Mailboxes to add, and addresses to remove (\"*\" removes every recipient of the field).",
+        "properties": {
+          "adds": {
+            "type": "array",
+            "items": {
+              "$ref": "Mailbox"
+            }
+          },
+          "removes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "id": "Deltas",
         "type": "object",
         "properties": {
           "to": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
+            "$ref": "Delta",
             "optional": true
           },
           "cc": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
+            "$ref": "Delta",
             "optional": true
           },
           "bcc": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
+            "$ref": "Delta",
             "optional": true
           }
         }
@@ -88,8 +110,8 @@
             "$ref": "Recipients"
           },
           {
-            "name": "patch",
-            "$ref": "Patch"
+            "name": "deltas",
+            "$ref": "Deltas"
           }
         ],
         "returns": {

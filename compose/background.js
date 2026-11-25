@@ -195,73 +195,27 @@ async function handleRuntimeMessage(message, sender) {
     const proposal = message.recipientEdit;
     if (!proposal?.id) return { applied: false };
     const details = proposal.baseline;
-    const parseComposeEntry = (s) => {
-      const str = String(s || "").trim();
-      if (!str) return null;
-      const m = str.match(/^(.*?)\s*<([^<>]+)>\s*$/);
-      if (m) {
-        let name = (m[1] || "").trim();
-        if (name.startsWith('"') && name.endsWith('"') && name.length >= 2) {
-          name = name.slice(1, -1);
-        }
-        return { name, email: (m[2] || "").trim() };
-      }
-      return { name: "", email: str };
-    };
-    const formatForCompose = (r) => {
-      if (!r || !r.email) return null;
-      const name = String(r.name || "").trim();
-      const email = String(r.email).trim();
-      return name ? `${name} <${email}>` : email;
-    };
-    const applyDelta = (currentList, delta) => {
-      const current = (currentList || []).map(parseComposeEntry).filter(Boolean);
-      const clearAll = (delta.removes || []).some((e) => e === "*");
-      const removeSet = new Set(
-        (delta.removes || []).filter((e) => e !== "*").map((e) => String(e).toLowerCase())
-      );
-      const kept = clearAll
-        ? []
-        : current.filter((r) => !removeSet.has(r.email.toLowerCase()));
-      const seen = new Set(kept.map((r) => r.email.toLowerCase()));
-      for (const add of delta.adds || []) {
-        const email = String(add?.email || "").trim();
-        if (!email || email === "*") continue;
-        const key = email.toLowerCase();
-        if (!seen.has(key)) {
-          kept.push({ name: String(add?.name || "").trim(), email });
-          seen.add(key);
-        }
-      }
-      return kept.map(formatForCompose).filter(Boolean);
-    };
-
-    const recipientPatch = {};
-    const deltaFor = {
-      to: proposal?.toDelta,
-      cc: proposal?.ccDelta,
-      bcc: proposal?.bccDelta,
-    };
-    const currentFor = {
-      to: details.to,
-      cc: details.cc,
-      bcc: details.bcc,
-    };
-    for (const field of ["to", "cc", "bcc"]) {
-      const delta = deltaFor[field];
+    // The experiment applies each delta to Thunderbird's own parse of the compose
+    // window's recipients and writes every mailbox back with Thunderbird's quoting;
+    // the recipient strings are never split or reassembled here.
+    const deltas = {};
+    for (const [field, delta] of [["to", proposal.toDelta], ["cc", proposal.ccDelta], ["bcc", proposal.bccDelta]]) {
       if (delta === undefined) continue;
-      recipientPatch[field] = applyDelta(currentFor[field], delta);
+      deltas[field] = {
+        adds: (delta.adds || []).map((add) => ({ name: String(add?.name || ""), email: String(add?.email || "") })),
+        removes: (delta.removes || []).map(String),
+      };
     }
-    if (Object.keys(recipientPatch).length > 0) {
+    if (Object.keys(deltas).length > 0) {
       const summary = (f) => {
-        const d = deltaFor[f];
-        return d ? `+${(d.adds || []).length}/-${(d.removes || []).length}` : "-";
+        const d = deltas[f];
+        return d ? `+${d.adds.length}/-${d.removes.length}` : "-";
       };
       console.log(
         `[TabMail BG]   Applying recipient deltas: to=${summary("to")} cc=${summary("cc")} bcc=${summary("bcc")}`
       );
     }
-    const applied = await messenger.tmComposeRecipients.commit(tabId, proposal.id, details, recipientPatch);
+    const applied = await messenger.tmComposeRecipients.commit(tabId, proposal.id, details, deltas);
     return { applied };
 
   } else if (message.type === "runInlineComposeEdit") {
