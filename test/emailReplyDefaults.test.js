@@ -14,7 +14,7 @@ import { tbMessages, withTbAddressFields } from './helpers/tbAddressParser.js';
 const shared = vi.hoisted(() => ({ ctx: {}, calls: [] }));
 vi.mock('../agent/modules/llm.js', () => ({ sendChat: vi.fn(), processEditResponse: raw => (raw ? JSON.parse(raw) : {}) }));
 vi.mock('../agent/modules/utils.js', () => ({
-  log: vi.fn(), saveChatLog: vi.fn(), resolveUniqueMessageKey: async () => ({ weID: 3 }),
+  log: vi.fn(), saveChatLog: vi.fn(), getIdentityForMessage: async () => null, resolveUniqueMessageKey: async () => ({ weID: 3 }),
   safeGetFull: async () => ({ body: 'Synthetic original.' }), extractBodyFromParts: async () => 'Synthetic original.', stripHtml: s => s,
 }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserCompositionPrompt: async () => '', getUserKBPrompt: async () => '' }));
@@ -22,7 +22,7 @@ vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: async () => ({ classLi
 vi.mock('../chat/modules/context.js', () => ({ ctx: shared.ctx, initFsmSession: (pid, tool) => { shared.ctx.fsmSessions[pid] = { toolName: tool }; } }));
 vi.mock('../chat/modules/helpers.js', () => ({
   initialiseEmailCompose: () => { shared.ctx.composeDraft = { subject: '', body: '', recipients: [], cc: [], bcc: [] }; },
-  streamText: vi.fn(), getUserName: async () => 'Synthetic', formatTimestampForAgent: () => '',
+  streamText: vi.fn(), getSenderName: async () => 'Synthetic', formatTimestampForAgent: () => '',
 }));
 vi.mock('../chat/fsm/emailCompose.js', () => ({ validateAndNormalizeRecipientSets: async p => ({ ok: true, recipients: p.recipients || [], cc: p.cc || [], bcc: p.bcc || [] }) }));
 vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: async () => { shared.calls.push(structuredClone({ draft: shared.ctx.composeDraft })); } }));

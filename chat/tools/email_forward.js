@@ -327,7 +327,9 @@ async function _runEmailForward(args = {}, options = {}) {
     }
 
     const { runComposeEdit } = await import("../../compose/modules/edit.js");
-    const { saveChatLog } = await import("../../agent/modules/utils.js");
+    const { getIdentityForMessage, saveChatLog } = await import("../../agent/modules/utils.js");
+    // The identity send_email opens the forward with, so the body is signed as its sender (#472)
+    const identity = await getIdentityForMessage(ctx.composeDraft.forwardOfId);
     const { subject, body, raw, messages } = await runComposeEdit({
       recipients: ctx.composeDraft.recipients || [],
       subject: ctx.composeDraft.subject,
@@ -335,6 +337,7 @@ async function _runEmailForward(args = {}, options = {}) {
       request: ctx.composeDraft.request,
       relatedEmailId: internalId,
       mode: "forward",
+      identityId: identity?.identityId || "",
     });
     saveChatLog(
       "tabmail_chatwindow_compose_email_edit",

@@ -6,7 +6,7 @@ vi.mock('../agent/modules/config.js',()=>({SETTINGS:{},getBackendUrl:()=> 'https
 vi.mock('../agent/modules/llm.js',()=>({sendChat:vi.fn(),processEditResponse:vi.fn()}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserCompositionPrompt:async()=>'',getUserKBPrompt:async()=>''}));
 vi.mock('../agent/modules/utils.js',()=>({extractBodyFromParts:vi.fn(),safeGetFull:vi.fn(),saveChatLog:vi.fn(),stripHtml:vi.fn(),log:vi.fn()}));
-vi.mock('../chat/modules/helpers.js',()=>({getUserName:async()=>'Example',formatTimestampForAgent:()=> '2026-09-13'}));
+vi.mock('../chat/modules/helpers.js',()=>({getSenderName:async()=>'Example',formatTimestampForAgent:()=> '2026-09-13'}));
 vi.mock('../chat/tools/core.js',()=>({executeToolsHeadless:vi.fn()}));
 vi.mock('../chat/modules/persistentChatStore.js',()=>({loadIdMap:vi.fn(),saveIdMap:vi.fn(),saveIdMapImmediate:vi.fn()}));
 import {sendChat,processEditResponse} from '../agent/modules/llm.js';

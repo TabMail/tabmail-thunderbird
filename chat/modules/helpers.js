@@ -194,6 +194,34 @@ export async function getUserName(fullname=false) {
   return "there";
 }
 
+/**
+ * The identity an email is sent from (#472): the one `identityId` names, the identity its compose
+ * window sends from. With none, Thunderbird opens the window with the default account's default
+ * identity, which need not be the first account's first identity; a MailAccount lists its default
+ * identity first. Null when none resolves; throws when the API does.
+ */
+export async function getSendingIdentity(identityId) {
+  if (identityId) return await browser.identities.get(identityId);
+  return (await browser.accounts.getDefault())?.identities?.[0] ?? null;
+}
+
+/**
+ * The name an email the assistant writes is signed with: the full name of the identity it is sent
+ * from (`getSendingIdentity`), or the local part of that identity's address when it has no name
+ * (#472). When neither resolves or a lookup fails, the placeholder "there", which `getUserName`
+ * also sends; never another identity's name.
+ */
+export async function getSenderName(identityId) {
+  try {
+    const identity = await getSendingIdentity(identityId);
+    if (identity?.name) return identity.name;
+    if (identity?.email) return identity.email.split("@")[0];
+  } catch (e) {
+    log(`[TMDBG ChatHelpers] Failed to fetch the sending identity ${identityId || "(default)"}: ${e}`);
+  }
+  return "there";
+}
+
 // -------------------------------------------------------------
 // UI helpers used by various modules
 // -------------------------------------------------------------

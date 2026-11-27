@@ -2,13 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { formatTimestampForAgent, getUserName } from "../../chat/modules/helpers.js";
+import { formatTimestampForAgent, getSenderName } from "../../chat/modules/helpers.js";
 import { executeToolsHeadless } from "../../chat/tools/core.js";
 import { SETTINGS } from "./config.js";
 import * as idb from "./idbStorage.js";
 import { processEditResponse, sendChat } from "./llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "./promptGenerator.js";
-import { extractBodyFromParts, formatForLog, getRealSubject, getUniqueMessageKey, log, safeGetFull, saveChatLog, splitConvertedTextForQuote } from "./utils.js";
+import { extractBodyFromParts, formatForLog, getIdentityForMessage, getRealSubject, getUniqueMessageKey, log, safeGetFull, saveChatLog, splitConvertedTextForQuote } from "./utils.js";
 
 export const STORAGE_PREFIX = "reply:";
 export const TS_PREFIX = "reply:ts:";
@@ -128,8 +128,9 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
         userKBContent = ""; // fallback to empty if loading fails
     }
 
-    // Get user name
-    const userName = await getUserName({ fullname: true });
+    // Signed as the identity a reply to this message goes from: its account's (#472)
+    const identity = await getIdentityForMessage(messageHeader);
+    const userName = await getSenderName(identity?.identityId);
 
     // Get the body from the full message to send to the LLM
     const full = await safeGetFull(messageHeader.id, messageHeader);

@@ -4,12 +4,12 @@
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 const shared=vi.hoisted(()=>({ctx:{},calls:[]}));
 vi.mock('../agent/modules/llm.js',()=>({sendChat:vi.fn(),processEditResponse:raw=>raw?JSON.parse(raw):{}}));
-vi.mock('../agent/modules/utils.js',()=>({log:vi.fn(),saveChatLog:vi.fn(),resolveUniqueMessageKey:async()=>({weID:3}),safeGetFull:async()=>({body:'Synthetic original.'}),extractBodyFromParts:async()=> 'Synthetic original.',stripHtml:s=>s}));
+vi.mock('../agent/modules/utils.js',()=>({log:vi.fn(),saveChatLog:vi.fn(),getIdentityForMessage:async()=>null,resolveUniqueMessageKey:async()=>({weID:3}),safeGetFull:async()=>({body:'Synthetic original.'}),extractBodyFromParts:async()=> 'Synthetic original.',stripHtml:s=>s}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserCompositionPrompt:async()=>'',getUserKBPrompt:async()=>''}));
 vi.mock('../agent/modules/senderFilter.js',()=>({getUserEmailSetCached:async()=>new Set(['self@example.com']),readAddressFields:async ids=>ids.map(()=>({author:[{name:'',email:'source@example.com'}],recipients:[{name:'',email:'self@example.com'}],ccList:[]}))}));
 vi.mock('../chat/chat.js',()=>({createNewAgentBubble:async()=>({classList:{remove(){},add(){}}})}));
 vi.mock('../chat/modules/context.js',()=>({ctx:shared.ctx,initFsmSession:(pid,tool)=>{shared.ctx.fsmSessions[pid]={toolName:tool}}}));
-vi.mock('../chat/modules/helpers.js',()=>({initialiseEmailCompose:()=>{shared.ctx.composeDraft={subject:'',body:'',recipients:[],cc:[],bcc:[]}},streamText:vi.fn(),getUserName:async()=>'Synthetic',formatTimestampForAgent:()=>''}));
+vi.mock('../chat/modules/helpers.js',()=>({initialiseEmailCompose:()=>{shared.ctx.composeDraft={subject:'',body:'',recipients:[],cc:[],bcc:[]}},streamText:vi.fn(),getSenderName:async()=>'Synthetic',formatTimestampForAgent:()=>''}));
 vi.mock('../chat/fsm/emailCompose.js',()=>({validateAndNormalizeRecipientSets:async p=>({ok:true,recipients:p.recipients||[],cc:p.cc||[],bcc:p.bcc||[]})}));
 vi.mock('../chat/fsm/core.js',()=>({executeAgentAction:async()=>{shared.calls.push(structuredClone({state:shared.ctx.state,draft:shared.ctx.composeDraft}))}}));
 vi.mock('../chat/tools/core.js',()=>({executeToolsHeadless:vi.fn()}));
