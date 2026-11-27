@@ -372,7 +372,9 @@ async function _runEmailReply(args = {}, options = {}) {
     agentBubble.textContent = `Composing reply for: "${emailSubject}"${suffix}`;
   }
   const { runComposeEdit } = await import("../../compose/modules/edit.js");
-  const { saveChatLog } = await import("../../agent/modules/utils.js");
+  const { getIdentityForMessage, saveChatLog } = await import("../../agent/modules/utils.js");
+  // The identity send_email opens the reply with, so the body is signed as its sender (#472)
+  const identity = await getIdentityForMessage(ctx.composeDraft.replyToId);
   const { subject, body, raw, messages } = await runComposeEdit({
     recipients: ctx.composeDraft.recipients || [],
     subject: ctx.composeDraft.subject,
@@ -380,6 +382,7 @@ async function _runEmailReply(args = {}, options = {}) {
     request: ctx.composeDraft.request,
     relatedEmailId: internalId,
     mode: "reply",
+    identityId: identity?.identityId || "",
   });
   saveChatLog(
     "tabmail_chatwindow_compose_email_edit",

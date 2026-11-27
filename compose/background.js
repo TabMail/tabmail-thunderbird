@@ -328,6 +328,8 @@ async function handleRuntimeMessage(message, sender) {
         mode,
         ignoreSemaphore: true,
         chatHistory,
+        // Signed as the identity this window sends from (#472)
+        identityId: details.identityId,
       });
       
       // Recipient proposals are committed only after the content editor accepts

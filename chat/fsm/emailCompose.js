@@ -15,7 +15,7 @@ import { getIdentityForMessage, log } from "../../agent/modules/utils.js";
 import { readAddressFields } from "../../agent/modules/senderFilter.js";
 import { ctx } from "../modules/context.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
-import { initialiseEmailCompose, streamText } from "../modules/helpers.js";
+import { getSendingIdentity, initialiseEmailCompose, streamText } from "../modules/helpers.js";
 import { createNewAgentBubble } from "../chat.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { isChatLinkMessage } from "../../chatlink/modules/core.js";
@@ -147,25 +147,9 @@ export async function runStateSendEmail() {
   // const agentBubble = await createNewAgentBubble("Sending email…");
 
   try {
-    // Determine whether the user prefers plain-text composition. We inspect the
-    // default identity: composeHtml === false means plain-text.
-    let isPlainTextPref = false;
-    try {
-      const accounts = await browser.accounts.list();
-      const defaultIdentity = accounts?.[0]?.identities?.[0] || null;
-      if (
-        defaultIdentity &&
-        Object.prototype.hasOwnProperty.call(defaultIdentity, "composeHtml")
-      ) {
-        isPlainTextPref = !defaultIdentity.composeHtml;
-      }
-      console.log(
-        `[TMDBG Compose] defaultIdentity composeHtml=${defaultIdentity?.composeHtml} → isPlainTextPref=${isPlainTextPref}`
-      );
-    } catch (e) {
-      console.warn("[Compose/send_email] Failed to read accounts:", e);
-    }
-
+    // No isPlainText is given: Thunderbird then composes in HTML or plain text as the
+    // identity the window sends from prefers (its composeHtml), the window's own rule
+    // (#472). The first account's first identity is not necessarily that identity.
     let tabId = null;
     if (ctx.composeDraft.replyToId) {
       // For replies from chat, update the reply cache before opening compose window
@@ -217,7 +201,7 @@ export async function runStateSendEmail() {
       // Resolve the correct identity for this reply based on the original message's account
       // Without this, Thunderbird defaults to the first identity which may be wrong for multi-account users
       const identityInfo = await getIdentityForMessage(ctx.composeDraft.replyToId);
-      const replyDetails = { isPlainText: isPlainTextPref };
+      const replyDetails = {};
       if (identityInfo?.identityId) {
         replyDetails.identityId = identityInfo.identityId;
       }
@@ -282,7 +266,7 @@ export async function runStateSendEmail() {
 
       // Resolve the correct identity for this forward based on the original message's account
       const fwdIdentityInfo = await getIdentityForMessage(ctx.composeDraft.forwardOfId);
-      const fwdDetails = { isPlainText: isPlainTextPref };
+      const fwdDetails = {};
       if (fwdIdentityInfo?.identityId) {
         fwdDetails.identityId = fwdIdentityInfo.identityId;
       }
@@ -336,7 +320,6 @@ export async function runStateSendEmail() {
         bcc: (ctx.composeDraft.bcc || []).map((r) => `${r.name} <${r.email}>`),
         subject: ctx.composeDraft.subject,
         // Omit body so Thunderbird can insert the signature automatically.
-        isPlainText: isPlainTextPref,
       };
       const newTab = await browser.compose.beginNew(details);
       tabId =
@@ -514,13 +497,13 @@ export async function runStateSendEmailPreview() {
             : identityInfo.email;
         }
       } else {
-        // New email - get default identity
-        const accounts = await browser.accounts.list();
-        const defaultIdentity = accounts?.[0]?.identities?.[0];
-        if (defaultIdentity?.email) {
-          fromAddress = defaultIdentity.name
-            ? `${defaultIdentity.name} <${defaultIdentity.email}>`
-            : defaultIdentity.email;
+        // New email: the identity the window opens with, as send_email opens it
+        // with none (#472).
+        const sendingIdentity = await getSendingIdentity();
+        if (sendingIdentity?.email) {
+          fromAddress = sendingIdentity.name
+            ? `${sendingIdentity.name} <${sendingIdentity.email}>`
+            : sendingIdentity.email;
         }
       }
       if (fromAddress) {
@@ -601,13 +584,12 @@ export async function runStateSendEmailPreview() {
               : identityInfo.email;
           }
         } else {
-          // New email - get default identity
-          const accounts = await browser.accounts.list();
-          const defaultIdentity = accounts?.[0]?.identities?.[0];
-          if (defaultIdentity?.email) {
-            fromAddress = defaultIdentity.name
-              ? `${defaultIdentity.name} <${defaultIdentity.email}>`
-              : defaultIdentity.email;
+          // New email: the identity the window opens with (#472).
+          const sendingIdentity = await getSendingIdentity();
+          if (sendingIdentity?.email) {
+            fromAddress = sendingIdentity.name
+              ? `${sendingIdentity.name} <${sendingIdentity.email}>`
+              : sendingIdentity.email;
           }
         }
         if (fromAddress) {

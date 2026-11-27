@@ -5,7 +5,7 @@
 import { processEditResponse, sendChat } from "../../agent/modules/llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
 import { extractBodyFromParts, safeGetFull, saveChatLog, splitConvertedTextForQuote } from "../../agent/modules/utils.js";
-import { getUserName } from "../../chat/modules/helpers.js";
+import { getSenderName } from "../../chat/modules/helpers.js";
 import { executeToolsHeadless } from "../../chat/tools/core.js";
 import { createIsolatedContext } from "../../chat/modules/idTranslator.js";
 
@@ -22,6 +22,7 @@ import { createIsolatedContext } from "../../chat/modules/idTranslator.js";
  * @param {string} [params.relatedEmailId]
  * @param {string} [params.mode]
  * @param {string} [params.userCompositionPrompt]
+ * @param {string} [params.identityId] The identity the email is sent from; it names the writer
  * @returns {Object} Single consolidated message
  */
 export async function buildComposeEditChat({
@@ -35,6 +36,7 @@ export async function buildComposeEditChat({
   relatedEmailId = "",
   mode = "new",
   userCompositionPrompt = "",
+  identityId = "",
 } = {}) {
   const recipsJson = JSON.stringify(Array.isArray(recipients) ? recipients : []);
 
@@ -69,8 +71,8 @@ export async function buildComposeEditChat({
     userKBContent = ""; // fallback to empty if loading fails
   }
 
-  // Get user name
-  const userName = await getUserName({ fullname: true });
+  // The writer is the identity the email is sent from (#472)
+  const userName = await getSenderName(identityId);
 
   // Get current time for new email mode
   let currentTime = null;
@@ -155,6 +157,7 @@ export async function buildComposeEditChat({
  * @param {string} [params.mode]
  * @param {boolean} [params.ignoreSemaphore=false]
  * @param {Array<{userRequest:string,bodyAtRequest:string,subjectAtRequest:string,assistantResponse:string}>} [params.chatHistory=[]] Previous edit turns with draft state
+ * @param {string} [params.identityId] The identity the email is sent from; empty means the default identity
  * @returns {Promise<{subject?:string, body?:string, raw:string, messages:Array, chatHistory:Array}>}
  */
 export async function runComposeEdit({
@@ -169,6 +172,7 @@ export async function runComposeEdit({
   mode = "new",
   ignoreSemaphore = false,
   chatHistory = [],
+  identityId = "",
 } = {}) {
   const startTime = performance.now();
   try {
@@ -186,7 +190,8 @@ export async function runComposeEdit({
       selectedText,
       relatedEmailId,
       mode,
-      userCompositionPrompt: userCompPrompt || ""
+      userCompositionPrompt: userCompPrompt || "",
+      identityId,
     });
 
     try {

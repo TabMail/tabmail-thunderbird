@@ -138,6 +138,18 @@ async function wireBackground(w, requestedTab = 1, version = '145') {
   return {api,current,otherCurrent};
 }
 afterEach(()=>{delete globalThis.browser;delete globalThis.messenger;delete globalThis.window;runComposeEdit.mockReset()});
+it.each(['new','reply','forward'])('asks for a %s window\'s edit signed as the identity that window sends from (#472)',async type=>{
+ const {w,tm}=setup('<p>A synthetic draft ready to save.</p>');
+ const {current,otherCurrent}=await wireBackground(w);
+ current.identityId='id2';otherCurrent.identityId='id1';
+ current.type=type;if(type!=='new')current.relatedMessageId=5;
+ tm.state.editChatHistory=[];
+ runComposeEdit.mockResolvedValueOnce({body:'',error:'empty_edit_body',chatHistory:[]});
+ tm.showInlineEditDropdown();
+ await tm._runInlineEditInstruction({instruction:'Expand the draft',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(runComposeEdit).toHaveBeenCalledTimes(1);
+ expect(runComposeEdit).toHaveBeenCalledWith(expect.objectContaining({identityId:'id2',mode:type}));
+});
 it.each(['empty','whitespace'])('keeps %s recovery visible but outside serialized mail, then applies a retry',async outcome=>{
  const {w,tm,body}=setup('<p>A synthetic draft ready to save.</p>');
  const {api,current}=await wireBackground(w);

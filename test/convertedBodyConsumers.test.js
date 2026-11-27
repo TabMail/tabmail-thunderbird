@@ -16,7 +16,7 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({ getAndClearThink: vi.fn(() =
 vi.mock('../agent/modules/utils.js', async importOriginal => ({ ...(await importOriginal()), safeGetFull: h.full }));
 vi.mock('../agent/modules/llm.js', () => ({ sendChat: h.send, processEditResponse: vi.fn() }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserCompositionPrompt: async () => '', getUserKBPrompt: async () => '' }));
-vi.mock('../chat/modules/helpers.js', () => ({ getUserName: async () => 'Example User', formatTimestampForAgent: () => 'synthetic-time' }));
+vi.mock('../chat/modules/helpers.js', () => ({ getSenderName: async () => 'Example User', formatTimestampForAgent: () => 'synthetic-time' }));
 vi.mock('../chat/tools/core.js', () => ({ executeToolsHeadless: h.tools }));
 vi.mock('../chat/modules/idTranslator.js', () => ({ createIsolatedContext: vi.fn() }));
 vi.mock('../agent/modules/deviceSync.js', () => ({ probeAICache: vi.fn(async () => null) }));
