@@ -1882,24 +1882,32 @@ describe('Device Sync', () => {
         }
       });
 
-      // A refusal whose headers are in while its body is still arriving: the transfer ends at once (as fetch
-      // ends a response whose request is aborted, or whose body is cancelled), not at the deadline, and the
-      // retry step recovers. The pass that then arrives in time leaves no deadline behind to end it later.
-      it('a refusal whose body is still arriving is ended at once, and the retry step connects', async () => {
+      // A refusal whose headers are in while its body is still arriving: its body is never read, and the
+      // transfer ends at once (as fetch ends a response whose request is aborted, or whose body is cancelled),
+      // not at the deadline, and the retry step recovers. The pass that then arrives in time leaves no
+      // deadline behind to end it later.
+      it('a refusal whose body is still arriving is ended at once, unread, and the retry step connects', async () => {
         vi.useFakeTimers();
         try {
           const { SETTINGS } = await import('../agent/modules/config.js');
           const deadline = SETTINGS.deviceSync.passRequestTimeoutMs;
           passRequests.length = 0;
           let transferEnded = false;
+          const bodyReads = [];
+          let body;
           passAnswer = (init) => {
             init.signal.addEventListener('abort', () => { transferEnded = true; });
-            return {
-              ok: false, status: 503,
-              body: new ReadableStream({ cancel() { transferEnded = true; } }),
-              json: () => new Promise((_resolve, reject) => {
+            const neverEnds = (reader) => () => {
+              bodyReads.push(reader);
+              return new Promise((_resolve, reject) => {
                 init.signal.addEventListener('abort', () => reject(new DOMException('synthetic abort', 'AbortError')));
-              }),
+              });
+            };
+            body = new ReadableStream({ cancel() { transferEnded = true; } });
+            return {
+              ok: false, status: 503, body,
+              json: neverEnds('json'), text: neverEnds('text'), arrayBuffer: neverEnds('arrayBuffer'),
+              blob: neverEnds('blob'), formData: neverEnds('formData'), bytes: neverEnds('bytes'),
             };
           };
           setStorage({ device_sync_auto_enabled: true });
@@ -1907,6 +1915,8 @@ describe('Device Sync', () => {
 
           await deviceSync.connect();
 
+          expect(bodyReads).toEqual([]);
+          expect(body.locked).toBe(false);
           expect(transferEnded).toBe(true);
           expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
           expect(mockWebSocketInstances.length).toBe(before);
@@ -1967,6 +1977,89 @@ describe('Device Sync', () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+
+      // The deadline is one, for the whole request: headers that come late leave the body only what is left
+      // of it, never a fresh deadline of its own. Time is measured from the moment the request went out.
+      it('headers that arrive late leave the body only the rest of the one deadline', async () => {
+        vi.useFakeTimers();
+        try {
+          const { SETTINGS } = await import('../agent/modules/config.js');
+          const deadline = SETTINGS.deviceSync.passRequestTimeoutMs;
+          passRequests.length = 0;
+          let issuedAt = null;
+          let deliverHeaders = null;
+          const bodyReads = [];
+          passAnswer = (init) => {
+            issuedAt = Date.now();
+            return new Promise((resolve) => {
+              deliverHeaders = () => resolve({ ok: true, status: 200, json: () => {
+                bodyReads.push(Date.now());
+                return new Promise((_resolve, reject) => {
+                  init.signal.addEventListener('abort', () => reject(new DOMException('synthetic abort', 'AbortError')));
+                });
+              } });
+            });
+          };
+          setStorage({ device_sync_auto_enabled: true });
+          const before = mockWebSocketInstances.length;
+          const pending = deviceSync.connect();
+          await vi.waitFor(() => expect(deliverHeaders).toBeTypeOf('function'));
+          const untilDeadline = () => issuedAt + deadline - Date.now();
+
+          // The headers come in at half the deadline, and the body read starts then.
+          await vi.advanceTimersByTimeAsync(Math.floor(deadline / 2) - (Date.now() - issuedAt));
+          deliverHeaders();
+          await vi.waitFor(() => expect(bodyReads).toHaveLength(1));
+          expect(untilDeadline()).toBeGreaterThan(1);
+
+          await vi.advanceTimersByTimeAsync(untilDeadline() - 1);
+          expect(passRequests[0].init.signal.aborted).toBe(false);
+          expect(await browserMock.tmDeviceSync.getState()).toBe('closed');
+          passAnswer = issuePass;
+          await vi.advanceTimersByTimeAsync(1);
+          expect(Date.now()).toBe(issuedAt + deadline);
+          expect(passRequests[0].init.signal.aborted).toBe(true);
+          await pending;
+          expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
+          expect(mockWebSocketInstances.length).toBe(before);
+
+          await vi.advanceTimersByTimeAsync(5000);
+          await vi.waitFor(() => expect(mockWebSocketInstances.length).toBe(before + 1));
+          expect(passRequests).toHaveLength(2);
+          expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+          await openLatestSocket();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      // Two connects while the first pass request is out make one request and one socket: the second waits
+      // for the first, and the worker is asked for no pass that goes unused.
+      it('a connect while a pass request is out asks for no second pass, and one socket opens', async () => {
+        passRequests.length = 0;
+        const releases = [];
+        passAnswer = () => {
+          const answer = issuePass();
+          return new Promise((resolve) => { releases.push(() => resolve(answer)); });
+        };
+        setStorage({ device_sync_auto_enabled: true });
+        const before = mockWebSocketInstances.length;
+        const first = deviceSync.connect();
+        await vi.waitFor(() => expect(releases).toHaveLength(1));
+
+        const second = deviceSync.connect();
+        // Room for the second caller to reach the worker, were it to ask on its own.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(passRequests).toHaveLength(1);
+        expect(await browserMock.tmDeviceSync.getState()).toBe('closed');
+
+        for (const release of releases) release();
+        await Promise.all([first, second]);
+        expect(passRequests).toHaveLength(1);
+        expect(mockWebSocketInstances.length).toBe(before + 1);
+        expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-1');
+        await openLatestSocket();
       });
 
       it('after a connection drops, the next connect asks for a fresh pass, not before its retry', async () => {

@@ -205,6 +205,30 @@ describe('parent Device Sync transport', () => {
     expect(events).toEqual([]);
     expect(api.state()).toBe('closed');
   });
+  // A retry armed by a connect that could not start, before any socket or host exists, ends with sync
+  // turned off or the add-on shut down: no wake at its time or later, and a later start connects.
+  it.each(['disconnect', 'onShutdown'])('a retry armed before any socket wakes nothing after %s, and a later start connects', (teardown) => {
+    expect(api.retryConnect()).toBe('retrying');
+    expect(createHost).not.toHaveBeenCalled();
+    // Every wake goes through emit, listener or not (a shutdown also drops the listeners).
+    const emit = vi.spyOn(api, 'emit');
+
+    api[teardown]();
+    expect(api.state()).toBe('closed');
+    vi.advanceTimersByTime(600000);
+    expect(emit).not.toHaveBeenCalled();
+    expect(api.state()).toBe('closed');
+    expect(host.close).not.toHaveBeenCalled();
+
+    // A fresh background registers its listener again after a shutdown.
+    if (teardown === 'onShutdown') api.PERSISTENT_EVENTS.onEvent({ fire: { async: async event => { events.push(event); } } });
+    events.length = 0;
+    expect(api.connect('wss://sync.tabmail.ai/ws?pass=synthetic')).toBe('connecting');
+    expect(createHost).toHaveBeenCalledTimes(1);
+    sockets[0].open();
+    expect(api.state()).toBe('open');
+    expect(events).toEqual([{ type: 'open' }]);
+  });
   it('cleans up on addon shutdown and refuses other destinations', () => {
     expect(() => api.connect('wss://example.invalid/ws')).toThrow('Invalid Device Sync endpoint');
     expect(sockets).toHaveLength(0);

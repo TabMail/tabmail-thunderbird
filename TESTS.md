@@ -280,10 +280,13 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-219 | Connection drops after an open | No pass asked before the retry delay; the reconnect asks for a fresh pass and opens | Connect |
 | TB-220 | A pass or a refusal that lands after sync was turned off; off and on while a pass is pending | Nothing opened, no retry armed; one socket, with the fresh pass | Connect |
 | TB-221 | Closed sockets and connects that could not start, mixed; `retryConnect` while open | Each step waits its full doubled delay and wakes once; one shared attempt cap, no close wake past it; an open socket keeps its heartbeat and probes | Connect |
-| TB-222 | A refusal whose body is still arriving | The transfer ends at once (abort or body cancel), not at the deadline; the retry step connects | Connect |
+| TB-222 | A refusal whose body is still arriving | Its body is never read; the transfer ends at once (abort or body cancel), not at the deadline; the retry step connects | Connect |
 | TB-223 | A connect while sync is off, nobody is signed in, the socket is open, its handshake is under way, or the transport waits to retry | No pass asked, no socket | Connect |
 | TB-224 | A refused upgrade (the socket closes without opening) | The retry asks for a fresh pass, not the spent one, and that socket opens | Connect |
 | TB-225 | An account change (sign-in to another account, or sign-out) while the old account's pass is on its way, then that pass or a refusal lands while the new account's is held (`deviceSyncFollowsAccount.test.js`) | No connect as the old account and no retry from it; the new account connects with its own pass and traffic flows both ways with its devices | Connect |
+| TB-226 | Headers that arrive late, then a body that never ends | Aborted at the one deadline counted from the request (no fresh deadline for the body); the retry step connects with a fresh pass | Connect |
+| TB-227 | A second connect while the first pass request is out | One pass request, one socket, with that pass | Connect |
+| TB-228 | A retry armed by a connect that could not start, before any socket or host exists, then disconnect or add-on shutdown (`deviceSyncTransport.test.js`) | No wake at its time or later; a later start makes a host and opens | Connect |
 
 ---
 
