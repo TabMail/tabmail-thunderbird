@@ -492,7 +492,8 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
     expect(label(ui)).toBe('Syncing');
     for (let i = 0; i < 15; i++) await time.tick();
 
-    // Every poll ended, and none asked more than 10 times (two turn-ons answered yes).
+    // Every poll ended, and the two polls (two turn-ons answered yes) asked at most 20 times together; the
+    // cap of 10 for one poll is pinned by the "asks at most 10 times" cases.
     expect(time.live.size).toBe(0);
     const statusRequests = rec.sent.slice(asked).filter((command) => command === 'device-sync-status').length;
     expect(statusRequests).toBeGreaterThan(0);
