@@ -8,15 +8,10 @@
 // pages. A sign-out takes nothing off a page that is open. Only the AI calls and Device Sync need an
 // account. The real pages, on simulated devices.
 
-import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
 import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore, PROMPT_KEYS } from './support/bulletDevices.js';
-import { createRealm } from './support/deviceRealm.js';
+import { loadPage } from './support/addonPage.js';
 import { openPage, settleMany } from './support/promptsPage.js';
-
-const ROOT = new URL('../', import.meta.url);
-const noop = () => {};
 
 async function signedInDevice() {
   const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay()).start();
@@ -32,57 +27,6 @@ async function signOut(a) {
   await a.store.api().local.remove('supabaseSession');
   await a.sync.cleanupDeviceSync();
   await settleMany(5);
-}
-
-/** `browser` for a page: the device's storage, `runtime` from `runtime`, and for anything else an API whose
- * every call resolves to nothing, recorded in `calls`. */
-function pageBrowser(a, runtime, calls) {
-  const any = (path) => new Proxy(function api() {}, {
-    get: (_, name) => (name === 'then' ? undefined : any(`${path}.${String(name)}`)),
-    apply: (_, __, args) => {
-      calls.push([path, ...args]);
-      return Promise.resolve(undefined);
-    },
-  });
-  const known = { storage: a.store.api(), runtime: { getURL: (path) => `moz-extension://synthetic/${path}`, ...runtime } };
-  return new Proxy(known, { get: (target, name) => target[name] ?? any(String(name)) });
-}
-
-/** One of the add-on's pages, its module loaded on device `a` with `stubs` for the imports it needs. */
-async function loadPage(a, { html, files, stubs = {}, runtime = {} }) {
-  const dom = new JSDOM(readFileSync(new URL(html, ROOT), 'utf8'));
-  // JSDOM's own DOMContentLoaded goes by before the page's module is loaded; the test fires the page's.
-  await settleMany(2);
-  const calls = [];
-  const messages = [];
-  const sendMessage = async (message) => {
-    messages.push(message);
-    return { ok: true, connected: false, entries: [] };
-  };
-  const realm = createRealm({
-    files,
-    stubs: {
-      'agent/modules/utils.js': { log: noop },
-      'theme/palette/palette.js': { injectPaletteIntoDocument: async () => {} },
-      ...stubs,
-    },
-    globals: {
-      document: dom.window.document,
-      window: dom.window,
-      navigator: { platform: 'MacIntel' },
-      getComputedStyle: dom.window.getComputedStyle,
-      setTimeout: () => 1,
-      clearTimeout: noop,
-      setInterval: () => 1,
-      clearInterval: noop,
-      console: { log: noop, warn: noop, error: noop, debug: noop, info: noop },
-      browser: pageBrowser(a, { sendMessage, ...runtime }, calls),
-    },
-  });
-  for (const file of files) realm.require(file);
-  dom.window.document.dispatchEvent(new dom.window.Event('DOMContentLoaded'));
-  await settleMany();
-  return { document: dom.window.document, dom, calls, messages };
 }
 
 describe('the prompts page while nobody is signed in', () => {
