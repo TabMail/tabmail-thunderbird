@@ -5,6 +5,7 @@
 // tbAccessAuth.js – Cloudflare Access authentication helper for Thunderbird addon
 import { getBackendUrl, SETTINGS } from "./config.js";
 import { log } from "./utils.js";
+import { ownServerFetch } from "./ownServerFetch.js";
 
 // Cache for maintenance mode check (avoid repeated requests)
 let _maintenanceMode = null;
@@ -26,7 +27,7 @@ export async function isMaintenanceMode() {
     const baseUrl = await getBackendUrl("whoami");
     const configUrl = `${baseUrl}/config/public`;
     
-    const resp = await fetch(configUrl, {
+    const resp = await ownServerFetch(configUrl, {
       method: "GET",
       headers: { "Accept": "application/json" },
     });
@@ -62,7 +63,7 @@ export async function isLoggedIn() {
     // Use whoami endpoint for authentication checks
     const whoamiBase = await getBackendUrl("whoami");
     const whoamiUrl = `${whoamiBase}/whoami?t=${Date.now()}`;
-    const resp = await fetch(whoamiUrl, {
+    const resp = await ownServerFetch(whoamiUrl, {
       method: "GET",
       credentials: "include",
       headers: { 

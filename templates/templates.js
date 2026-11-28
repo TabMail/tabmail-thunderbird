@@ -15,6 +15,7 @@ import { scheduleStatusHide } from "../agent/modules/statusLine.js";
 import { TEMPLATES_BUSY_ERROR } from "../agent/modules/templateManager.js";
 import { log } from "../agent/modules/utils.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
+import { ownServerFetch } from "../agent/modules/ownServerFetch.js";
 
 // Inject TabMail palette CSS
 injectPaletteIntoDocument(document)
@@ -1032,7 +1033,7 @@ async function loadMarketplaceTemplates() {
             params.set("search", marketplaceSearchTerm);
         }
 
-        const response = await fetch(`${baseUrl}/list?${params}`, {
+        const response = await ownServerFetch(`${baseUrl}/list?${params}`, {
             method: "GET",
             headers: {
                 Authorization: `Bearer ${token}`,
@@ -1093,7 +1094,7 @@ async function loadMoreMarketplaceTemplates() {
             params.set("search", marketplaceSearchTerm);
         }
 
-        const response = await fetch(`${baseUrl}/list?${params}`, {
+        const response = await ownServerFetch(`${baseUrl}/list?${params}`, {
             method: "GET",
             headers: {
                 Authorization: `Bearer ${token}`,
@@ -1267,7 +1268,7 @@ async function installTemplate(template) {
         }
 
         const baseUrl = await getTemplateWorkerUrl();
-        const response = await fetch(`${baseUrl}/download/${template.id}`, {
+        const response = await ownServerFetch(`${baseUrl}/download/${template.id}`, {
             method: "POST",
             headers: {
                 Authorization: `Bearer ${token}`,
@@ -1378,7 +1379,7 @@ async function confirmShareTemplate() {
         }
 
         const baseUrl = await getTemplateWorkerUrl();
-        const response = await fetch(`${baseUrl}/upload`, {
+        const response = await ownServerFetch(`${baseUrl}/upload`, {
             method: "POST",
             headers: {
                 Authorization: `Bearer ${token}`,

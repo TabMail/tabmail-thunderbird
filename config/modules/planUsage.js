@@ -4,6 +4,7 @@
 
 import { $ } from "./dom.js";
 import { isZeroQuotaPlan } from "../../agent/modules/billingBanner.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 // Update subscription status display
 // NOTE: Cancellation and downgrade are now shown in the reset label (updateQuotaDisplay)
@@ -97,7 +98,7 @@ export async function updateQuotaDisplay(getBackendUrl) {
 
     // Call /whoami to get quota info
     const whoamiBase = await getBackendUrl("whoami");
-    const resp = await fetch(`${whoamiBase}/whoami?t=${Date.now()}`, {
+    const resp = await ownServerFetch(`${whoamiBase}/whoami?t=${Date.now()}`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${accessToken}`,

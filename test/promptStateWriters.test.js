@@ -120,7 +120,7 @@ function holdIO(store, k = 1) {
 /** supabaseAuth.js on the device's background, for its sign-out. */
 function auth(d) {
   return createRealm({
-    files: ['agent/modules/supabaseAuth.js'],
+    files: ['agent/modules/supabaseAuth.js', 'agent/modules/ownServerFetch.js'],
     stubs: {
       'agent/modules/config.js': { SETTINGS: {}, getBackendUrl: async () => 'https://backend.example.com' },
       'agent/modules/utils.js': { log() {} },

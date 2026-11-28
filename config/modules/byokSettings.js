@@ -17,6 +17,7 @@ import {
   isModelAvailable,
 } from "../../agent/modules/byokStorage.js";
 import { runProviderSmoke } from "./byokSmoke.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 /**
  * BYOK (Bring-Your-Own-Key) Settings Module — Thunderbird.
@@ -75,7 +76,7 @@ export async function fetchByokCatalog() {
   const base = await getBackendUrl();
   const token = await getAccessToken();
   if (!token) throw new Error("Not authenticated");
-  const res = await fetch(`${base}/byok/models`, {
+  const res = await ownServerFetch(`${base}/byok/models`, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -92,7 +93,7 @@ export async function listByokModels(provider, apiKey) {
   const base = await getBackendUrl();
   const token = await getAccessToken();
   if (!token) throw new Error("Not authenticated");
-  const res = await fetch(`${base}/byok/list-models`, {
+  const res = await ownServerFetch(`${base}/byok/list-models`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ provider, api_key: apiKey }),

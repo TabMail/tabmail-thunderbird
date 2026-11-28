@@ -12,6 +12,7 @@ import {
   FTS_HELPER_DOWNLOAD_URL,
   getFtsHelperPrompt,
 } from "../fts/helperPrompt.js";
+import { ownServerFetch } from "../agent/modules/ownServerFetch.js";
 
 // Popup typography: prefer native Thunderbird/system UI font stack + sizing.
 // We still inject TabMail palette colors, but avoid async font-size CSS vars here to prevent flicker.
@@ -123,7 +124,7 @@ async function checkServerHealth() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), SETTINGS.healthCheck.timeoutMs);
     
-    const response = await fetch(healthEndpoint, {
+    const response = await ownServerFetch(healthEndpoint, {
       method: "GET",
       signal: controller.signal,
       headers: {
@@ -566,7 +567,7 @@ async function updateAuthStatus() {
 
     // Call /whoami with Bearer token
     const whoamiBase = await getBackendUrl("whoami");
-    const resp = await fetch(`${whoamiBase}/whoami?t=${Date.now()}`, {
+    const resp = await ownServerFetch(`${whoamiBase}/whoami?t=${Date.now()}`, {
       method: "GET",
       headers: { 
         "Authorization": `Bearer ${accessToken}`,

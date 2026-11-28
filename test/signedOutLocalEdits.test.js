@@ -20,7 +20,7 @@ const gate = () => {
 const MANAGER = 'agent/modules/templateManager.js';
 function authOn(d) {
   return createRealm({
-    files: ['agent/modules/supabaseAuth.js'],
+    files: ['agent/modules/supabaseAuth.js', 'agent/modules/ownServerFetch.js'],
     stubs: {
       'agent/modules/config.js': { SETTINGS: {}, getBackendUrl: async () => 'https://backend.example.com' },
       'agent/modules/utils.js': { log() {} },

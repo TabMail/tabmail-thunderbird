@@ -63,7 +63,7 @@ const PAGES = [
 function openPage(page) {
   const dom = new JSDOM(readFileSync(new URL(page.html, ROOT), 'utf8'));
   const realm = createRealm({
-    files: [page.file, 'agent/modules/statusLine.js'],
+    files: [page.file, 'agent/modules/statusLine.js', 'agent/modules/ownServerFetch.js'],
     stubs: page.stubs,
     expose: page.expose ? { [page.file]: page.expose } : {},
     globals: {
@@ -428,7 +428,7 @@ function openPopup(results) {
   };
   const browser = new Proxy({ tmUpdates }, { get: (target, name) => (name in target ? target[name] : absorb) });
   createRealm({
-    files: ['popup/popup.js', 'agent/modules/statusLine.js'],
+    files: ['popup/popup.js', 'agent/modules/statusLine.js', 'agent/modules/ownServerFetch.js'],
     stubs: {
       'agent/modules/config.js': { getBackendUrl: async () => 'https://backend.example.com', SETTINGS: {} },
       'theme/palette/palette.js': { injectPaletteIntoDocument: async () => {} },

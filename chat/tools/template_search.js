@@ -8,6 +8,7 @@ import { log } from "../../agent/modules/utils.js";
 import { getTemplateWorkerUrl } from "../../agent/modules/config.js";
 import { getAccessToken } from "../../agent/modules/supabaseAuth.js";
 import { getVisibleTemplates } from "../../agent/modules/templateManager.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 export async function run(args = {}, options = {}) {
   try {
@@ -101,7 +102,7 @@ export async function run(args = {}, options = {}) {
         const searchTimeout = setTimeout(() => controller.abort(), 15000);
         let response;
         try {
-          response = await fetch(url, {
+          response = await ownServerFetch(url, {
             headers: { Authorization: `Bearer ${token}` },
             signal: controller.signal,
           });
