@@ -1528,12 +1528,24 @@ async function initSyncToggle() {
     });
 
     document.getElementById("sync-toggle").addEventListener("click", async () => {
-        syncAutoEnabled = !syncAutoEnabled;
-        await browser.storage.local.set({ [SYNC_AUTO_KEY]: syncAutoEnabled });
-        updateSyncToggleUI(syncAutoEnabled, false);
+        // The background stores the setting and opens or closes the socket (setAutoEnabled). The
+        // request goes out before this handler waits on anything, so a page closed right after the
+        // click still turns Device Sync on or off.
+        const enabled = !syncAutoEnabled;
+        syncAutoEnabled = enabled;
+        const reply = browser.runtime.sendMessage({ command: enabled ? "device-sync-enable" : "device-sync-disable" });
+        updateSyncToggleUI(enabled, false);
+        const result = await reply.catch(() => null);
+        if (!result?.ok) {
+            // Not changed, or only part way: show what is stored and whether the socket is open.
+            const stored = await browser.storage.local.get({ [SYNC_AUTO_KEY]: true });
+            syncAutoEnabled = stored[SYNC_AUTO_KEY] !== false;
+            const status = await browser.runtime.sendMessage({ command: "device-sync-status" }).catch(() => null);
+            updateSyncToggleUI(syncAutoEnabled, status?.connected || false);
+            return;
+        }
 
-        if (syncAutoEnabled) {
-            await browser.runtime.sendMessage({ command: "device-sync-enable" }).catch(() => {});
+        if (enabled) {
             let attempts = 0;
             const poll = setInterval(async () => {
                 attempts++;
@@ -1545,8 +1557,6 @@ async function initSyncToggle() {
                     clearInterval(poll);
                 }
             }, 500);
-        } else {
-            await browser.runtime.sendMessage({ command: "device-sync-disable" }).catch(() => {});
         }
     });
 }
