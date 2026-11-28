@@ -28,6 +28,6 @@ export async function redirectServers(status) {
   const first = createServer(recorder(asked, (res) => { res.writeHead(status, { Location: `${secondURL}/elsewhere` }); res.end(); }));
   await new Promise((resolve) => first.listen(0, '127.0.0.1', resolve));
   const firstOrigin = `http://127.0.0.1:${first.address().port}`;
-  const close = () => Promise.all([first, second].map((s) => new Promise((resolve) => s.close(resolve))));
+  const close = () => Promise.all([first, second].map((s) => { s.closeAllConnections(); return new Promise((resolve) => s.close(resolve)); }));
   return { firstOrigin, firstURL: `${firstOrigin}/start`, asked, reached, close };
 }

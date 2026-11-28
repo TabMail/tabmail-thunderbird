@@ -44,6 +44,7 @@ describe('a redirect from our server is not followed', () => {
       const s = await redirectServers(status);
       try {
         await expect(ownServerFetch(s.firstURL, init)).rejects.toThrow(TypeError);
+        expect(s.asked).toHaveLength(1);
         expect(s.reached).toEqual([]);
       } finally { await s.close(); }
     });
@@ -103,7 +104,9 @@ function sourceFiles(dir) {
 
 /* { fetch, own }: uses of the global fetch (the name `fetch` read as a value, called or not, and
    `globalThis|window|self` `.fetch` or `["fetch"]`) and calls of ownServerFetch. A property name, an object
-   key or a method named fetch is not a use. */
+   key or a method named fetch is not a use. Not counted, so not to be written: a renaming destructure
+   (`const { fetch: send } = globalThis`), a longer path (`window.top.fetch`, `globalThis.window.fetch`, a
+   top-level `this.fetch`), `Reflect.get(globalThis, "fetch")` and a computed name (`globalThis[name]`). */
 function fetchUses(source) {
   let ast;
   try { ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); }

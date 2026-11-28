@@ -7,6 +7,11 @@ session cookie. Every such request goes through `ownServerFetch(url, init)` in
 overridden). A redirect answer then rejects the fetch with a `TypeError`, the same as a lost connection, so
 nothing the request carries goes to another address.
 
+Two layers: the add-on's content security policy (`connect-src` in `manifest.json`) already refuses a
+request, a redirected one included, to a host outside its list (`*.tabmail.ai`, `*.supabase.co`); the helper
+also refuses a redirect to a host inside it, where a 307 or 308 would re-send a POST's body, the refresh token
+included.
+
 ## What callers see
 
 A rejected fetch lands in each caller's existing network-error path. Notably the token refresh
@@ -22,7 +27,8 @@ session is kept and the refresh retries (memory 035). Nothing turns a redirect i
 - `web_read`, which reads arbitrary pages through the `tmWebFetch` experiment and must keep following
   redirects (memory 028).
 
-WebSocket connections (Device Sync, ChatLink) are not changed by this.
+WebSocket connections (Device Sync, ChatLink) are not changed by this. The add-on makes no request through
+`XMLHttpRequest`, `EventSource` or `navigator.sendBeacon`; the census covers `fetch` only.
 
 ## The check
 
