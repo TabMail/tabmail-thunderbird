@@ -54,7 +54,7 @@ async function harness({ enabled = true, connectEarly = true, fullStartup = fals
         throw new Error(`Unexpected fixture import: ${path}`);
       },
       window: {}, navigator: {}, setTimeout, clearTimeout, setInterval, clearInterval,
-      log(message){ syncLogs.push(message); }, SETTINGS: { deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000 } }, ...supplied };
+      log(message){ syncLogs.push(message); }, SETTINGS: { deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000, passRequestTimeoutMs: 15000 } }, ...supplied };
     const ast = parse(source, {ecmaVersion:'latest',sourceType:'module'});
     const edits = [];
     for (const node of ast.body) {

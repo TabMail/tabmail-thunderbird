@@ -273,9 +273,13 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |
 | TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT  |
-| TB-096 | Connect: one-time pass from `POST /ws/pass` (token in the Authorization header only), socket opened with `?pass=` only (`deviceSync.test.js`) | No token in the socket's address | Connect |
-| TB-097 | Pass request refused, answered without a pass, or unreachable | No socket; the transport's retry step (`retryConnect`: same backoff and cap as a closed socket, then `reconnect` asks for a new pass) | Connect |
-| TB-098 | Transport refuses an address with no pass, an empty pass, or a `token` (`deviceSyncTransport.test.js`); no `agent/` source puts a token in a Device Sync address | Refused before a host is made; fence empty | Connect |
+| TB-096 | Connect, on both sync hosts: one-time pass from `POST <host>/ws/pass` (token in the Authorization header only, no body), socket opened on the same host with `?pass=` only (`deviceSync.test.js`) | No token in the socket's address | Connect |
+| TB-097 | Pass request refused (even with a pass in its body), answered without a pass (none, null, empty, not text, not JSON), or unreachable | No socket; the transport's retry step (`retryConnect`: same backoff and cap as a closed socket, then `reconnect` asks for a new pass) | Connect |
+| TB-098 | Transport refuses an address with no pass, an empty pass, a `token`, a second pass or any other parameter (`deviceSyncTransport.test.js`); no `agent/` source puts a token in a Device Sync address; the declared `tmDeviceSync` API (schema) is the one the transport exposes | Refused before a host is made; fence empty | Connect |
+| TB-099 | Pass request with no answer, or a body that never ends | Given up at `passRequestTimeoutMs`; the retry step then connects with a fresh pass, no user action | Connect |
+| TB-219 | Connection drops after an open | No pass asked before the retry delay; the reconnect asks for a fresh pass and opens | Connect |
+| TB-220 | A pass or a refusal that lands after sync was turned off; off and on while a pass is pending | Nothing opened, no retry armed; one socket, with the fresh pass | Connect |
+| TB-221 | Closed sockets and connects that could not start, mixed; `retryConnect` while open | One shared attempt cap, no close wake past it; an open socket keeps its heartbeat and probes | Connect |
 
 ---
 

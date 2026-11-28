@@ -286,6 +286,7 @@ export class BulletDevice {
         browser: { storage: this.store.api(), tmDeviceSync, runtime: { getURL: (path) => `moz-extension://synthetic/${path}` }, ...device.options.browser },
         crypto,
         fetch: this.fetch(),
+        AbortController,
         TextEncoder,
         setTimeout, clearTimeout, setInterval, clearInterval,
         console: { log() {}, warn() {}, error() {} },
@@ -319,7 +320,7 @@ export class BulletDevice {
       'agent/modules/utils.js': { log: (message, level = 'info') => device.logs.push({ level, message: String(message) }) },
       'agent/modules/config.js': {
         SETTINGS: {
-          deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
+          deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, passRequestTimeoutMs: 15000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
           promptSemaphore: { leaseMs: device.options.leaseMs ?? 15000, acquireWaitMs: device.options.acquireWaitMs ?? 1000 },
           actionCompaction: { defaultRules: 200, minRules: 100, maxRules: 500, stepRules: 10, defaultChars: 32000, minChars: 16000, maxChars: 80000, stepChars: 1000, legacyDefaultRules: 100, legacyDefaultChars: 16000 },
           ...device.options.settings,

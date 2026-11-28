@@ -64,6 +64,8 @@ describe('parent Device Sync transport', () => {
     'wss://sync.tabmail.ai/ws?token=synthetic',
     'wss://sync.tabmail.ai/ws?pass=synthetic&token=synthetic',
     'wss://sync.tabmail.ai/ws?token=synthetic&pass=synthetic',
+    'wss://sync.tabmail.ai/ws?pass=synthetic&pass=other',
+    'wss://sync.tabmail.ai/ws?pass=synthetic&other=synthetic',
   ])('refuses invalid endpoint %s before allocating a host', url => {
     expect(() => api.connect(url)).toThrow('Invalid Device Sync endpoint');
     expect(createHost).not.toHaveBeenCalled();
@@ -174,6 +176,28 @@ describe('parent Device Sync transport', () => {
     vi.advanceTimersByTime(600000);
     expect(events.filter(event => event.type === 'reconnect')).toEqual([]);
     expect(sockets).toHaveLength(1);
+    // The open socket keeps its heartbeat and its probes.
+    expect(sockets[0].send).toHaveBeenCalledWith('{"type":"ping"}');
+    expect(events.filter(event => event.type === 'probe')).toEqual([{ type: 'probe' }, { type: 'probe' }]);
+  });
+  it('closed sockets and connects that could not start share one attempt cap', () => {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (attempt % 2 === 0) {
+        api.connect('wss://sync.tabmail.ai/ws?pass=synthetic');
+        sockets.at(-1).close();
+      } else {
+        expect(api.retryConnect()).toBe('retrying');
+      }
+      expect(api.state()).toBe('retrying');
+      vi.advanceTimersByTime(Math.min(5000 * 2 ** attempt, 300000));
+    }
+    events.length = 0;
+    expect(api.retryConnect()).toBe('closed');
+    api.connect('wss://sync.tabmail.ai/ws?pass=synthetic');
+    sockets.at(-1).close();
+    vi.advanceTimersByTime(600000);
+    expect(events).toEqual([]);
+    expect(api.state()).toBe('closed');
   });
   it('cleans up on addon shutdown and refuses other destinations', () => {
     expect(() => api.connect('wss://example.invalid/ws')).toThrow('Invalid Device Sync endpoint');

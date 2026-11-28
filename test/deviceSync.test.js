@@ -94,7 +94,7 @@ let passAnswer = issuePass;
 globalThis.fetch = vi.fn(async (url, init) => {
   if (String(url).endsWith('/ws/pass')) {
     passRequests.push({ url: String(url), init });
-    return passAnswer();
+    return passAnswer(init);
   }
   throw new Error(`no network in this test: ${url}`);
 });
@@ -133,7 +133,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 vi.mock('../agent/modules/config.js', async (importOriginal) => ({
   getDeviceSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
   SETTINGS: {
-    deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000 },
+    deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000, passRequestTimeoutMs: 15000 },
     actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
   },
 }));
@@ -1808,24 +1808,36 @@ describe('Device Sync', () => {
     describe('one-time connect pass', () => {
       afterEach(() => { passAnswer = issuePass; });
 
-      it("opens the socket with only a fresh pass; the token goes only in the pass request's Authorization header", async () => {
-        passRequests.length = 0;
-        const ws = await establishConnection();
+      it.each(['https://sync.tabmail.ai', 'https://sync-dev.tabmail.ai'])("asks %s for a fresh pass and opens the socket there with only that pass; the token goes only in the pass request's Authorization header", async (workerUrl) => {
+        const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+        getDeviceSyncUrl.mockImplementation(async () => workerUrl);
+        try {
+          passRequests.length = 0;
+          const ws = await establishConnection();
 
-        expect(passRequests).toHaveLength(1);
-        expect(passRequests[0].url).toBe('https://sync.tabmail.ai/ws/pass');
-        expect(passRequests[0].init.method).toBe('POST');
-        expect(passRequests[0].init.headers.Authorization).toBe('Bearer mock-token');
-        const url = new URL(ws.url);
-        expect(`${url.protocol}//${url.host}${url.pathname}`).toBe('wss://sync.tabmail.ai/ws');
-        expect([...url.searchParams.keys()]).toEqual(['pass']);
-        expect(url.searchParams.get('pass')).toBe('synthetic-pass-1');
-        expect(ws.url).not.toContain('mock-token');
+          expect(passRequests).toHaveLength(1);
+          expect(passRequests[0].url).toBe(`${workerUrl}/ws/pass`);
+          expect(passRequests[0].init.method).toBe('POST');
+          expect(passRequests[0].init.headers).toEqual({ Authorization: 'Bearer mock-token' });
+          expect(passRequests[0].init.body).toBeUndefined();
+          const url = new URL(ws.url);
+          expect(`${url.protocol}//${url.host}${url.pathname}`).toBe(`${workerUrl.replace('https://', 'wss://')}/ws`);
+          expect([...url.searchParams.keys()]).toEqual(['pass']);
+          expect(url.searchParams.get('pass')).toBe('synthetic-pass-1');
+          expect(ws.url).not.toContain('mock-token');
+        } finally {
+          getDeviceSyncUrl.mockImplementation(async () => 'https://sync.tabmail.ai');
+        }
       });
 
       it.each([
         ['refused', () => ({ ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) })],
         ['answered without a pass', () => ({ ok: true, status: 200, json: async () => ({}) })],
+        ['answered with null', () => ({ ok: true, status: 200, json: async () => null })],
+        ['answered with an empty pass', () => ({ ok: true, status: 200, json: async () => ({ pass: '' }) })],
+        ['answered with a pass that is not text', () => ({ ok: true, status: 200, json: async () => ({ pass: 7 }) })],
+        ['answered with a body that is not JSON', () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('synthetic bad JSON'); } })],
+        ['refused with a pass in its body', () => ({ ok: false, status: 503, json: async () => ({ pass: 'synthetic-refused-pass' }) })],
         ['unreachable', () => { throw new TypeError('synthetic network failure'); }],
       ])("a pass request %s opens no socket and takes the transport's retry step", async (_label, answer) => {
         passAnswer = answer;
@@ -1857,6 +1869,116 @@ describe('Device Sync', () => {
         } finally {
           vi.useRealTimers();
         }
+      });
+
+      // An answer that never finishes (no headers, or headers and a body that never ends) is aborted at the
+      // pass deadline, as fetch aborts a request whose signal fires, and the retry step then recovers with
+      // no user action.
+      it.each([
+        ['no answer', (init) => new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new DOMException('synthetic abort', 'AbortError')));
+        })],
+        ['a body that never ends', (init) => ({ ok: true, status: 200, json: () => new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new DOMException('synthetic abort', 'AbortError')));
+        }) })],
+      ])('a pass request with %s is given up at its deadline, and the retry step connects', async (_label, stall) => {
+        vi.useFakeTimers();
+        try {
+          passRequests.length = 0;
+          passAnswer = stall;
+          setStorage({ device_sync_auto_enabled: true });
+          const before = mockWebSocketInstances.length;
+          const pending = deviceSync.connect();
+          // The check passes once the request is out; it moves the clock 50 ms past the request.
+          await vi.waitFor(() => expect(passRequests).toHaveLength(1));
+
+          await vi.advanceTimersByTimeAsync(14900);
+          expect(await browserMock.tmDeviceSync.getState()).toBe('closed');
+          passAnswer = issuePass;
+          await vi.advanceTimersByTimeAsync(100);
+          await pending;
+          expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
+          expect(mockWebSocketInstances.length).toBe(before);
+
+          await vi.advanceTimersByTimeAsync(5000);
+          await vi.waitFor(() => expect(mockWebSocketInstances.length).toBe(before + 1));
+          expect(passRequests).toHaveLength(2);
+          expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('after a connection drops, the next connect asks for a fresh pass, not before its retry', async () => {
+        vi.useFakeTimers();
+        try {
+          passRequests.length = 0;
+          const first = await establishConnection();
+          expect(deviceSync.isConnected()).toBe(true);
+          first.close();
+
+          await vi.advanceTimersByTimeAsync(4999);
+          expect(passRequests).toHaveLength(1);
+          await vi.advanceTimersByTimeAsync(1);
+          await vi.waitFor(() => expect(mockWebSocketInstances.at(-1)).not.toBe(first));
+
+          expect(passRequests).toHaveLength(2);
+          const second = mockWebSocketInstances.at(-1);
+          expect(new URL(second.url).searchParams.get('pass')).toBe('synthetic-pass-2');
+          second.readyState = WebSocket.OPEN;
+          second.onopen();
+          await vi.waitFor(() => expect(deviceSync.isConnected()).toBe(true));
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it.each([
+        ['a pass', () => ({ ok: true, status: 200, json: async () => ({ pass: 'synthetic-late-pass' }) })],
+        ['a refusal', () => ({ ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) })],
+      ])('%s that lands after sync was turned off opens nothing and arms no retry', async (_label, late) => {
+        let release;
+        passAnswer = () => new Promise((resolve) => { release = () => resolve(late()); });
+        setStorage({ device_sync_auto_enabled: true });
+        const before = mockWebSocketInstances.length;
+        const stale = deviceSync.connect();
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+
+        setStorage({ device_sync_auto_enabled: false });
+        await deviceSync.disconnect();
+        release();
+        await stale;
+
+        expect(mockWebSocketInstances.length).toBe(before);
+        expect(await browserMock.tmDeviceSync.getState()).toBe('closed');
+        expect(deviceSync.isConnected()).toBe(false);
+      });
+
+      it('turning sync off and on while a pass is pending leaves one socket, with the fresh pass', async () => {
+        passRequests.length = 0;
+        let release;
+        passAnswer = () => new Promise((resolve) => { release = () => resolve({ ok: true, status: 200, json: async () => ({ pass: 'synthetic-stale-pass' }) }); });
+        setStorage({ device_sync_auto_enabled: true });
+        const before = mockWebSocketInstances.length;
+        const stale = deviceSync.connect();
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+
+        await deviceSync.disconnect();
+        passAnswer = issuePass;
+        await deviceSync.connect();
+        release();
+        await stale;
+
+        expect(mockWebSocketInstances.length).toBe(before + 1);
+        expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+      });
+
+      it('the declared API is the one the transport exposes', () => {
+        const [schema] = JSON.parse(readFileSync(new URL('../agent/experiments/tmDeviceSync/schema.json', import.meta.url), 'utf8'));
+        const declared = schema.functions.map((fn) => fn.name).sort();
+        expect(declared).toEqual(Object.keys(transportApi).filter((name) => name !== 'onEvent').sort());
+        expect(schema.events.map((event) => event.name)).toEqual(['onEvent']);
+        expect(schema.functions.find((fn) => fn.name === 'retryConnect')).toMatchObject({ async: true, parameters: [] });
       });
 
       it('no add-on source puts a token in a Device Sync address', () => {

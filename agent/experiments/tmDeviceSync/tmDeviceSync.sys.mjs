@@ -81,23 +81,25 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
       if (this.socket !== socket) return;
       this.socket = null;
       this.clearTimers();
-      this.scheduleRetry();
+      // Failed handshakes already report disconnected. Do not wake startup
+      // again after exhausting retries, which would start an unbounded loop.
+      if (!this.scheduleRetry()) return;
       this.emit({ type: "close" });
     };
     return this.state();
   }
 
-  // The one retry step: the next `reconnect` after a doubling delay, up to the attempt cap.
+  // The one retry step: the next `reconnect` after a doubling delay, up to the attempt cap. false once the
+  // attempts are used up (nothing armed).
   scheduleRetry() {
-    // Failed handshakes already report disconnected. Do not wake startup
-    // again after exhausting retries, which would start an unbounded loop.
-    if (this.attempts >= tmDeviceSync.CONFIG.maxRetryAttempts) return;
+    if (this.attempts >= tmDeviceSync.CONFIG.maxRetryAttempts) return false;
     const delay = Math.min(tmDeviceSync.CONFIG.retryBaseMs * 2 ** this.attempts++, tmDeviceSync.CONFIG.retryMaxMs);
     this.retry = syncSetTimeout(() => {
       this.retry = null;
       // The background obtains fresh credentials for each reconnect.
       this.emit({ type: "reconnect" });
     }, delay);
+    return true;
   }
 
   // A connect that could not start (the background got no connect pass) takes the same retry step as a

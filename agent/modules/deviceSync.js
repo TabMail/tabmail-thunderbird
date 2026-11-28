@@ -9,8 +9,9 @@
  * auto-syncing prompt settings between TabMail instances (TB ↔ iOS).
  *
  * Protocol:
- * 1. Connect to sync relay worker via WebSocket (wss://sync[-dev].tabmail.ai/ws)
- * 2. Authenticate with Supabase JWT token
+ * 1. Ask the sync relay worker for a one-time connect pass over HTTPS (POST /ws/pass, the Supabase JWT
+ *    in the Authorization header)
+ * 2. Connect via WebSocket with that pass only (wss://sync[-dev].tabmail.ai/ws?pass=...)
  * 3. The knowledge base, composition rules and action rules sync as labelled bullets
  *    (`bullet_state`, promptStore.js): each is sent on connect, after a local change, and after a
  *    merge of a peer's state that differed from this device's.
@@ -1063,11 +1064,17 @@ async function connectOnce(generation) {
  * pass is good for one connect, for a few seconds. null on any failure.
  */
 async function requestConnectPass(workerUrl, accessToken) {
+  // One deadline for the whole request, headers AND body: an answer that never finishes would hold this
+  // connect, and every connect call waiting on it, with no retry armed. Expiry aborts the request and
+  // takes the failure path below.
+  const abortController = new AbortController();
+  const deadline = setTimeout(() => abortController.abort(), SETTINGS.deviceSync.passRequestTimeoutMs);
   try {
     const resp = await fetch(`${workerUrl}/ws/pass`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${accessToken}` },
       cache: "no-store",
+      signal: abortController.signal,
     });
     if (!resp.ok) {
       log(`${PFX}Connect pass refused: status=${resp.status}`);
@@ -1078,6 +1085,8 @@ async function requestConnectPass(workerUrl, accessToken) {
   } catch (e) {
     log(`${PFX}Connect pass request failed: ${e}`);
     return null;
+  } finally {
+    clearTimeout(deadline);
   }
 }
 
