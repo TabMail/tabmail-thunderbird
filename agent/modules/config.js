@@ -280,6 +280,7 @@ export const SETTINGS = {
         busyReapplyMs: 2 * 1000,  // Wait before a received message whose apply found the prompt semaphore busy is applied again
         maxWaitingReceives: 256,  // Most received messages waiting to be applied on one connection, counting parts of incomplete snapshots held; past it the connection is renewed
         historyDebounceMs: 2 * 1000, // Quiet time after a local prompt edit before its history entry is recorded
+        passRequestTimeoutMs: 15 * 1000, // Deadline for one connect-pass request (headers and body); expiry is a failed pass and takes the retry step
     },
     // The one prompt semaphore per device (promptStore.js): every read and change of the three prompt fields holds it.
     promptSemaphore: {

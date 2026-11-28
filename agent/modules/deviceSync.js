@@ -9,8 +9,9 @@
  * auto-syncing prompt settings between TabMail instances (TB ↔ iOS).
  *
  * Protocol:
- * 1. Connect to sync relay worker via WebSocket (wss://sync[-dev].tabmail.ai/ws)
- * 2. Authenticate with Supabase JWT token
+ * 1. Ask the sync relay worker for a one-time connect pass over HTTPS (POST /ws/pass, the Supabase JWT
+ *    in the Authorization header)
+ * 2. Connect via WebSocket with that pass only (wss://sync[-dev].tabmail.ai/ws?pass=...)
  * 3. The knowledge base, composition rules and action rules sync as labelled bullets
  *    (`bullet_state`, promptStore.js): each is sent on connect, after a local change, and after a
  *    merge of a peer's state that differed from this device's.
@@ -1042,10 +1043,54 @@ async function connectOnce(generation) {
   const enabled = await isAutoEnabled();
   const workerUrl = await getDeviceSyncUrl();
   if (!enabled || generation !== connectionGeneration) return;
-  const result = await browser.tmDeviceSync.connect(`${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`);
+  // A fresh one-time pass for this connect; the token never goes in the socket's address.
+  const pass = await requestConnectPass(workerUrl, accessToken);
+  if (generation !== connectionGeneration) return;
+  if (!pass) {
+    // No pass takes the transport's own retry step, as a closed socket does (same backoff and cap,
+    // then `reconnect`).
+    await browser.tmDeviceSync.retryConnect();
+    return;
+  }
+  const result = await browser.tmDeviceSync.connect(`${workerUrl.replace("https://", "wss://")}/ws?pass=${encodeURIComponent(pass)}`);
   if (generation !== connectionGeneration) return;
   connected = result === "open";
   notifyStatusListeners();
+}
+
+/**
+ * A one-time pass for one Device Sync connect. The WebSocket API sends no Authorization header, so the
+ * sign-in token goes in the header of this HTTPS request instead, and the socket opens with the pass. The
+ * pass is good for one connect, for a few seconds. null on any failure.
+ */
+async function requestConnectPass(workerUrl, accessToken) {
+  // One deadline for the whole request, headers AND body: an answer that never finishes would hold this
+  // connect, and every connect call waiting on it, with no retry armed. Expiry aborts the request and
+  // takes the failure path below.
+  const abortController = new AbortController();
+  const deadline = setTimeout(() => abortController.abort(), SETTINGS.deviceSync.passRequestTimeoutMs);
+  try {
+    const resp = await fetch(`${workerUrl}/ws/pass`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}` },
+      cache: "no-store",
+      signal: abortController.signal,
+    });
+    if (!resp.ok) {
+      // The refusal's body is not read: end its transfer now, so nothing of this request outlives its
+      // answer (the deadline below is cleared on return).
+      abortController.abort();
+      log(`${PFX}Connect pass refused: status=${resp.status}`);
+      return null;
+    }
+    const body = await resp.json();
+    return typeof body?.pass === "string" && body.pass ? body.pass : null;
+  } catch (e) {
+    log(`${PFX}Connect pass request failed: ${e}`);
+    return null;
+  } finally {
+    clearTimeout(deadline);
+  }
 }
 
 /** Explicit sync-off/signout disconnect. Idle suspension leaves the parent socket intact. */

@@ -53,7 +53,8 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
 
   connect(url) {
     const uri = Services.io.newURI(url);
-    if (uri.scheme !== "wss" || !["sync.tabmail.ai", "sync-dev.tabmail.ai"].includes(uri.host) || uri.filePath !== "/ws" || uri.userPass) {
+    // The socket opens with a one-time connect pass and nothing else in its address.
+    if (uri.scheme !== "wss" || !["sync.tabmail.ai", "sync-dev.tabmail.ai"].includes(uri.host) || uri.filePath !== "/ws" || uri.userPass || !/^pass=[^&]+$/.test(uri.query)) {
       throw new DeviceSyncExtensionCommon.ExtensionError("Invalid Device Sync endpoint");
     }
     if (this.state() !== "closed") return this.state();
@@ -82,15 +83,31 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
       this.clearTimers();
       // Failed handshakes already report disconnected. Do not wake startup
       // again after exhausting retries, which would start an unbounded loop.
-      if (this.attempts >= tmDeviceSync.CONFIG.maxRetryAttempts) return;
-      const delay = Math.min(tmDeviceSync.CONFIG.retryBaseMs * 2 ** this.attempts++, tmDeviceSync.CONFIG.retryMaxMs);
-      this.retry = syncSetTimeout(() => {
-        this.retry = null;
-        // The background obtains fresh credentials for each reconnect.
-        this.emit({ type: "reconnect" });
-      }, delay);
+      if (!this.scheduleRetry()) return;
       this.emit({ type: "close" });
     };
+    return this.state();
+  }
+
+  // The one retry step: the next `reconnect` after a doubling delay, up to the attempt cap. false once the
+  // attempts are used up (nothing armed).
+  scheduleRetry() {
+    if (this.attempts >= tmDeviceSync.CONFIG.maxRetryAttempts) return false;
+    const delay = Math.min(tmDeviceSync.CONFIG.retryBaseMs * 2 ** this.attempts++, tmDeviceSync.CONFIG.retryMaxMs);
+    this.retry = syncSetTimeout(() => {
+      this.retry = null;
+      // The background obtains fresh credentials for each reconnect.
+      this.emit({ type: "reconnect" });
+    }, delay);
+    return true;
+  }
+
+  // A connect that could not start (the background got no connect pass) takes the same retry step as a
+  // closed socket. Only while closed: an open, connecting or retrying transport already has its own path.
+  retryConnect() {
+    if (this.state() !== "closed") return this.state();
+    this.clearTimers();
+    this.scheduleRetry();
     return this.state();
   }
 
@@ -113,6 +130,7 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
     return { tmDeviceSync: {
       onEvent: new DeviceSyncExtensionCommon.EventManager({ context, module: "tmDeviceSync", event: "onEvent", extensionApi: this }).api(),
       connect: url => this.connect(url),
+      retryConnect: () => this.retryConnect(),
       getState: () => this.state(),
       send: data => {
         if (this.state() !== "open") throw new DeviceSyncExtensionCommon.ExtensionError("Device Sync is disconnected");

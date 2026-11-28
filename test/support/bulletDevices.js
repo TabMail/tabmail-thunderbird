@@ -189,8 +189,25 @@ export class BulletRelay {
   }
 }
 
+/** The sign-in token each connect pass was asked for with, as the worker keeps it: a connect with the pass
+ * joins that token's account. */
+const passTokens = new Map();
+
+/** The sign-in token the connect pass `pass` was asked for with (POST /ws/pass), or undefined. */
+export function tokenOfPass(pass) {
+  return passTokens.get(pass);
+}
+
 export function bundledFetch(catalog) {
-  return async (url) => {
+  return async (url, init) => {
+    // The Device Sync worker's one-time connect pass: the token in the Authorization header only.
+    if (String(url).endsWith('/ws/pass') && init?.method === 'POST') {
+      const token = /^Bearer (.+)$/.exec(init.headers?.Authorization ?? '')?.[1];
+      if (!token) return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) };
+      const pass = `synthetic-pass-${passTokens.size + 1}`;
+      passTokens.set(pass, token);
+      return { ok: true, status: 200, json: async () => ({ pass }) };
+    }
     const path = String(url).replace(/^moz-extension:\/\/[^/]+\//, '');
     const text = path === CATALOG_FILE ? JSON.stringify(catalog) : readFileSync(new URL(path, ROOT), 'utf8');
     return { ok: true, status: 200, text: async () => text, json: async () => JSON.parse(text) };
@@ -208,7 +225,8 @@ function stubsFor(stubs, files) {
  * files (more of the add-on's modules to load, such as the writers), stubs (more stubs, or
  * replacements, by path), settings (more SETTINGS), browser (more browser APIs, for the background and
  * its pages), globals (more globals), fetch(url, init, bundled) (in place of the bundled files' fetch),
- * groupFor(url) → the relay a connect to `url` joins (the Device Sync group of its token's account) }
+ * groupFor(url) → the relay a connect to `url` joins (the Device Sync group of the account its pass was
+ * asked for: `tokenOfPass`) }
  * Given agent/modules/supabaseAuth.js as a file, the background stores the session, as background.js
  * makes it (initSessionHost), and its pages ask it to.
  */
@@ -220,6 +238,9 @@ export class BulletDevice {
     this.options = options;
     this.names = 0;
     this.logs = [];
+    /** Every socket address the device connected to, and how many retry steps it took. */
+    this.connects = [];
+    this.retries = 0;
     this.store.values.device_sync_auto_enabled ??= true;
     this.store.values.supabaseSession ??= structuredClone(SIGNED_IN);
   }
@@ -232,11 +253,14 @@ export class BulletDevice {
     const tmDeviceSync = {
       getState: async () => (device.relay.isConnected(device.id) ? 'open' : 'closed'),
       connect: async (url) => {
+        device.connects.push(url);
         if (device.options.groupFor) device.relay = device.options.groupFor(url);
         device.relay.join(device.id, (text) => listener?.({ type: 'message', data: text }));
         return 'open';
       },
       disconnect: async () => device.relay.leave(device.id),
+      // A connect that got no pass takes the parent's retry step; the test counts them.
+      retryConnect: async () => { device.retries += 1; return 'retrying'; },
       // The parent's send throws on a socket that isn't open; the relay records the attempt.
       send: async (text) => {
         if (!device.relay.isConnected(device.id)) {
@@ -268,6 +292,7 @@ export class BulletDevice {
         browser: { storage: this.store.api(), tmDeviceSync, runtime: { getURL: (path) => `moz-extension://synthetic/${path}` }, ...device.options.browser },
         crypto,
         fetch: this.fetch(),
+        AbortController,
         TextEncoder,
         setTimeout, clearTimeout, setInterval, clearInterval,
         console: { log() {}, warn() {}, error() {} },
@@ -301,7 +326,7 @@ export class BulletDevice {
       'agent/modules/utils.js': { log: (message, level = 'info') => device.logs.push({ level, message: String(message) }) },
       'agent/modules/config.js': {
         SETTINGS: {
-          deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
+          deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, passRequestTimeoutMs: 15000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
           promptSemaphore: { leaseMs: device.options.leaseMs ?? 15000, acquireWaitMs: device.options.acquireWaitMs ?? 1000 },
           actionCompaction: { defaultRules: 200, minRules: 100, maxRules: 500, stepRules: 10, defaultChars: 32000, minChars: 16000, maxChars: 80000, stepChars: 1000, legacyDefaultRules: 100, legacyDefaultChars: 16000 },
           ...device.options.settings,

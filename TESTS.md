@@ -273,6 +273,20 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |
 | TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT  |
+| TB-096 | Connect, on both sync hosts: one-time pass from `POST <host>/ws/pass` (token in the Authorization header only, no body), socket opened on the same host with `?pass=` only (`deviceSync.test.js`) | No token in the socket's address | Connect |
+| TB-097 | Pass request refused (even with a pass in its body), answered without a pass (none, null, empty, not text, not JSON), or unreachable | No socket; the transport's retry step (`retryConnect`: same backoff and cap as a closed socket, then `reconnect` asks for a new pass) | Connect |
+| TB-098 | Transport refuses an address with no pass, an empty pass, a `token`, a second pass or any other parameter (`deviceSyncTransport.test.js`); no `agent/` source puts a token in a Device Sync address; the declared `tmDeviceSync` API (schema) is the one the transport exposes | Refused before a host is made; fence empty | Connect |
+| TB-099 | Pass request with no answer, or a body that never ends | Given up at `passRequestTimeoutMs` (the add-on's own setting), not before; the retry step then connects with a fresh pass and the socket opens, no user action; that pass is never aborted later | Connect |
+| TB-219 | Connection drops after an open | No pass asked before the retry delay; the reconnect asks for a fresh pass and opens | Connect |
+| TB-220 | A pass or a refusal that lands after sync was turned off; off and on while a pass is pending | Nothing opened, no retry armed; one socket, with the fresh pass | Connect |
+| TB-221 | Closed sockets and connects that could not start, mixed; `retryConnect` while open | Each step waits its full doubled delay and wakes once; one shared attempt cap, no close wake past it; an open socket keeps its heartbeat and probes | Connect |
+| TB-222 | A refusal whose body is still arriving | Its body is never read; the transfer ends at once (abort or body cancel), not at the deadline; the retry step connects | Connect |
+| TB-223 | A connect while sync is off, nobody is signed in, the socket is open, its handshake is under way, or the transport waits to retry | No pass asked, no socket | Connect |
+| TB-224 | A refused upgrade (the socket closes without opening) | The retry asks for a fresh pass, not the spent one, and that socket opens | Connect |
+| TB-225 | An account change (sign-in to another account, or sign-out) while the old account's pass is on its way, then that pass or a refusal lands while the new account's is held (`deviceSyncFollowsAccount.test.js`) | No connect as the old account and no retry from it; the new account connects with its own pass and traffic flows both ways with its devices | Connect |
+| TB-226 | Headers that arrive late, then a body that never ends | Aborted at the one deadline counted from the request (no fresh deadline for the body); the retry step connects with a fresh pass | Connect |
+| TB-227 | A second connect while the first pass request is out | One pass request, one socket, with that pass | Connect |
+| TB-228 | A retry armed by a connect that could not start, before any socket or host exists, then disconnect or add-on shutdown (`deviceSyncTransport.test.js`) | No wake at its time or later; a later start makes a host and opens | Connect |
 
 ---
 
