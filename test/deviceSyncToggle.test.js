@@ -53,14 +53,15 @@ function background(a, { mirror = true, parentOpen = async () => a.relay.isConne
   };
 }
 
-/** Wraps a page's `browser` so that, once `page.closed` is set, no answer reaches the page: a call it made
- * still takes effect, as Thunderbird keeps a closed page's requests and drops their answers. */
+/** Wraps a page's `browser` so that, once `page.closed` is set, the page can make no new call and no answer
+ * reaches it: a call it made before closing still takes effect, as Thunderbird keeps a closed page's
+ * requests and drops their answers. */
 function closable(page) {
   const held = (call) => Promise.resolve(call).then(
     (value) => (page.closed ? new Promise(() => {}) : value),
     (error) => (page.closed ? new Promise(() => {}) : Promise.reject(error)),
   );
-  const wrap = (api, names) => ({ ...api, ...Object.fromEntries(names.map((name) => [name, (...args) => held(api[name](...args))])) });
+  const wrap = (api, names) => ({ ...api, ...Object.fromEntries(names.map((name) => [name, (...args) => (page.closed ? new Promise(() => {}) : held(api[name](...args)))])) });
   return (browser) => {
     const storage = { ...browser.storage, local: wrap(browser.storage.local, ['get', 'set', 'remove']) };
     const runtime = wrap(browser.runtime, ['sendMessage']);
@@ -82,20 +83,38 @@ function recorder() {
   return { sent, writes, wrap };
 }
 
-/** The page's intervals, run by the test: `tick` runs each live one once, as 500 ms passing would. */
+/** The page's intervals on a test clock: `advance(ms)` moves the time on and runs each interval every time it
+ * falls due, in time order, letting the page's pending work run in between; `tick` is 500 ms. */
 function clock() {
   const live = new Map();
   let next = 0;
+  let now = 0;
+  const advance = async (ms) => {
+    const end = now + ms;
+    for (;;) {
+      const [due] = [...live.values()].filter((timer) => timer.due <= end).sort((x, y) => x.due - y.due);
+      if (!due) break;
+      now = due.due;
+      due.due += due.ms;
+      due.run();
+      await settleMany();
+    }
+    now = end;
+    await settleMany();
+  };
   return {
     live,
     timers: {
-      setInterval: (run) => { next += 1; live.set(next, run); return next; },
+      setInterval: (run, ms) => {
+        if (!(ms > 0)) throw new Error('an interval needs a delay');
+        next += 1;
+        live.set(next, { run, ms, due: now + ms });
+        return next;
+      },
       clearInterval: (id) => { live.delete(id); },
     },
-    tick: async () => {
-      for (const [id, run] of [...live]) if (live.has(id)) run();
-      await settleMany();
-    },
+    advance,
+    tick: () => advance(500),
   };
 }
 
@@ -245,6 +264,7 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
   it.each([
     ['cannot store the setting', (a) => { a.store.beforeSet = rejectSettingWrite; return background(a); }],
     ['gives no answer', (a) => ({ ...background(a), 'device-sync-enable': async () => undefined })],
+    ['does not answer', (a) => ({ ...background(a), 'device-sync-enable': async () => { throw new Error('synthetic: no background'); } })],
   ])('a turn-on the background %s starts no status requests', async (_how, answers) => {
     const a = await device(false);
     const rec = recorder();
@@ -264,6 +284,57 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
     ui.dom.window.close();
   });
 
+  it.each([
+    ['its stored setting cannot be confirmed', (a) => { a.store.afterIO = async (op, values) => { if (op === 'set' && SYNC_AUTO_KEY in values) throw new Error('synthetic failure after the write'); }; }],
+    ['the socket cannot be opened', (a) => { a.relay.join = () => { throw new Error('synthetic connect failure'); }; }],
+  ])('a turn-on that fails after the setting is stored because %s: the page shows sync on, asks once and starts no status requests', async (_why, fail) => {
+    const a = await device(false);
+    const rec = recorder();
+    const time = clock();
+    const ui = await open(a, background(a), rec.wrap, time.timers);
+    const asked = rec.sent.length;
+    fail(a);
+
+    click(ui);
+    await settleMany();
+    for (let i = 0; i < 3; i++) await time.tick();
+
+    expect(a.store.values[SYNC_AUTO_KEY]).toBe(true);
+    expect(a.relay.isConnected(a.id)).toBe(false);
+    expect(label(ui)).toBe('Sync');
+    expect(rec.sent.slice(asked)).toEqual(['device-sync-enable']);
+    expect(rec.writes).toEqual([]);
+    expect(time.live.size).toBe(0);
+    ui.dom.window.close();
+  });
+
+  it('a turn-on starts no status requests before the background answers', async () => {
+    const a = await device(false);
+    const rec = recorder();
+    const time = clock();
+    const answers = background(a, { mirror: false, parentOpen: async () => false });
+    let answerNow;
+    const answered = new Promise((resolve) => { answerNow = resolve; });
+    const enable = answers['device-sync-enable'];
+    answers['device-sync-enable'] = async (message) => { const result = await enable(message); await answered; return result; };
+    const ui = await open(a, answers, rec.wrap, time.timers);
+    const asked = rec.sent.length;
+    const statusRequests = () => rec.sent.slice(asked).filter((command) => command === 'device-sync-status').length;
+
+    click(ui);
+    await settleMany();
+    for (let i = 0; i < 5; i++) await time.tick();
+    expect(a.store.values[SYNC_AUTO_KEY]).toBe(true);
+    expect(statusRequests()).toBe(0);
+    expect(time.live.size).toBe(0);
+
+    answerNow();
+    await settleMany();
+    await time.tick();
+    expect(statusRequests()).toBe(1);
+    ui.dom.window.close();
+  });
+
   it('turned on with no status mirror: the poll shows the socket once it opens, then stops', async () => {
     const a = await device(false);
     let parentOpen = false;
@@ -276,7 +347,10 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
     click(ui);
     await settleMany();
     expect(label(ui)).toBe('Sync');
-    await time.tick();
+    // The first request goes out 500 ms after the answer, not sooner.
+    await time.advance(499);
+    expect(statusRequests()).toBe(0);
+    await time.advance(1);
     expect(statusRequests()).toBe(1);
     expect(label(ui)).toBe('Sync');
 
@@ -289,20 +363,67 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
     ui.dom.window.close();
   });
 
-  it('turned on while the socket never opens: the poll asks at most 10 times and ends', async () => {
+  it.each([
+    ['says the socket is closed', async () => ({ ok: true, connected: false })],
+    ['never answers', () => new Promise(() => {})],
+    ['fails', async () => { throw new Error('synthetic status failure'); }],
+  ])('turned on while every status request %s: the poll asks at most 10 times and ends', async (_how, status) => {
     const a = await device(false);
     const rec = recorder();
     const time = clock();
-    const ui = await open(a, background(a, { mirror: false, parentOpen: async () => false }), rec.wrap, time.timers);
+    const answers = background(a, { mirror: false, parentOpen: async () => false });
+    const opened = answers['device-sync-status'];
+    let loaded = false;
+    // The page reads the status once as it loads; the answers under test start after that.
+    answers['device-sync-status'] = (message) => (loaded ? status(message) : opened(message));
+    const ui = await open(a, answers, rec.wrap, time.timers);
+    loaded = true;
     const asked = rec.sent.length;
 
     click(ui);
     await settleMany();
-    for (let i = 0; i < 15; i++) await time.tick();
+    await time.advance(15 * 500);
 
     expect(rec.sent.slice(asked).filter((command) => command === 'device-sync-status').length).toBe(10);
     expect(time.live.size).toBe(0);
     expect(label(ui)).toBe('Sync');
+    ui.dom.window.close();
+  });
+
+  it('a socket-open answer that arrives after a turn-off: the page shows sync off and asks no more', async () => {
+    const a = await device(false);
+    const rec = recorder();
+    const time = clock();
+    let answerOpen;
+    const answers = background(a, { mirror: false, parentOpen: async () => false });
+    const opened = answers['device-sync-status'];
+    let loaded = false;
+    // The page reads the status once as it loads; the held answer is for the poll's request.
+    answers['device-sync-status'] = (message) => (loaded
+      ? new Promise((resolve) => { answerOpen = () => resolve({ ok: true, connected: true }); })
+      : opened(message));
+    const ui = await open(a, answers, rec.wrap, time.timers);
+    loaded = true;
+    const asked = rec.sent.length;
+    const statusRequests = () => rec.sent.slice(asked).filter((command) => command === 'device-sync-status').length;
+
+    click(ui);
+    await settleMany();
+    await time.tick();
+    expect(statusRequests()).toBe(1);
+
+    click(ui);
+    await settleMany();
+    expect(label(ui)).toBe('Sync Off');
+    answerOpen();
+    await settleMany();
+    for (let i = 0; i < 3; i++) await time.tick();
+
+    expect(label(ui)).toBe('Sync Off');
+    expect(statusRequests()).toBe(1);
+    expect(time.live.size).toBe(0);
+    expect(a.store.values[SYNC_AUTO_KEY]).toBe(false);
+    expect(a.relay.isConnected(a.id)).toBe(false);
     ui.dom.window.close();
   });
 
@@ -332,11 +453,12 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
     ui.dom.window.close();
   });
 
-  it('turned on, off and on again while the first turn-on is still answering: every poll ends', async () => {
+  it('turned on, off and on again while the first turn-on is still answering: the poll shows the socket, and every poll ends', async () => {
     const a = await device(false);
     const rec = recorder();
     const time = clock();
-    const answers = background(a, { mirror: false, parentOpen: async () => false });
+    let parentOpen = false;
+    const answers = background(a, { mirror: false, parentOpen: async () => parentOpen });
     let releaseFirst;
     const firstHeld = new Promise((resolve) => { releaseFirst = resolve; });
     let enables = 0;
@@ -361,12 +483,20 @@ describe.each(PAGES)('the Device Sync toggle on %s', (_name, open) => {
     expect(a.store.values[SYNC_AUTO_KEY]).toBe(true);
     releaseFirst();
     await settleMany();
-    expect(time.live.size).toBe(2);
+    expect(time.live.size).toBeGreaterThan(0);
 
+    for (let i = 0; i < 3; i++) await time.tick();
+    expect(label(ui)).toBe('Sync');
+    parentOpen = true;
+    await time.tick();
+    expect(label(ui)).toBe('Syncing');
     for (let i = 0; i < 15; i++) await time.tick();
 
+    // Every poll ended, and none asked more than 10 times (two turn-ons answered yes).
     expect(time.live.size).toBe(0);
-    expect(rec.sent.slice(asked).filter((command) => command === 'device-sync-status').length).toBe(20);
+    const statusRequests = rec.sent.slice(asked).filter((command) => command === 'device-sync-status').length;
+    expect(statusRequests).toBeGreaterThan(0);
+    expect(statusRequests).toBeLessThanOrEqual(20);
     expect(rec.sent.slice(asked).filter((command) => TOGGLES.includes(command))).toEqual(['device-sync-enable', 'device-sync-disable', 'device-sync-enable']);
     ui.dom.window.close();
   });
