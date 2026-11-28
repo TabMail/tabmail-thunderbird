@@ -1077,6 +1077,9 @@ async function requestConnectPass(workerUrl, accessToken) {
       signal: abortController.signal,
     });
     if (!resp.ok) {
+      // The refusal's body is not read: end its transfer now, so nothing of this request outlives its
+      // answer (the deadline below is cleared on return).
+      abortController.abort();
       log(`${PFX}Connect pass refused: status=${resp.status}`);
       return null;
     }

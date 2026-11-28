@@ -133,7 +133,8 @@ vi.mock('../agent/modules/utils.js', () => ({
 vi.mock('../agent/modules/config.js', async (importOriginal) => ({
   getDeviceSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
   SETTINGS: {
-    deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000, passRequestTimeoutMs: 15000 },
+    // The pass request's deadline is the add-on's own setting, so a test of it covers the shipped value.
+    deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000, passRequestTimeoutMs: (await importOriginal()).SETTINGS.deviceSync.passRequestTimeoutMs },
     actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
   },
 }));
@@ -335,6 +336,15 @@ async function establishConnection() {
     ws.onopen();
   }
 
+  return ws;
+}
+
+/** The newest socket's handshake completes, and Device Sync reports itself connected. */
+async function openLatestSocket() {
+  const ws = mockWebSocketInstances.at(-1);
+  ws.readyState = WebSocket.OPEN;
+  ws.onopen();
+  await vi.waitFor(() => expect(deviceSync.isConnected()).toBe(true));
   return ws;
 }
 
@@ -1866,14 +1876,56 @@ describe('Device Sync', () => {
           await vi.waitFor(() => expect(mockWebSocketInstances.length).toBe(before + 1));
           expect(passRequests).toHaveLength(2);
           expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+          await openLatestSocket();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      // A refusal whose headers are in while its body is still arriving: the transfer ends at once (as fetch
+      // ends a response whose request is aborted, or whose body is cancelled), not at the deadline, and the
+      // retry step recovers. The pass that then arrives in time leaves no deadline behind to end it later.
+      it('a refusal whose body is still arriving is ended at once, and the retry step connects', async () => {
+        vi.useFakeTimers();
+        try {
+          const { SETTINGS } = await import('../agent/modules/config.js');
+          const deadline = SETTINGS.deviceSync.passRequestTimeoutMs;
+          passRequests.length = 0;
+          let transferEnded = false;
+          passAnswer = (init) => {
+            init.signal.addEventListener('abort', () => { transferEnded = true; });
+            return {
+              ok: false, status: 503,
+              body: new ReadableStream({ cancel() { transferEnded = true; } }),
+              json: () => new Promise((_resolve, reject) => {
+                init.signal.addEventListener('abort', () => reject(new DOMException('synthetic abort', 'AbortError')));
+              }),
+            };
+          };
+          setStorage({ device_sync_auto_enabled: true });
+          const before = mockWebSocketInstances.length;
+
+          await deviceSync.connect();
+
+          expect(transferEnded).toBe(true);
+          expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
+          expect(mockWebSocketInstances.length).toBe(before);
+
+          passAnswer = issuePass;
+          await vi.advanceTimersByTimeAsync(5000);
+          await vi.waitFor(() => expect(mockWebSocketInstances.length).toBe(before + 1));
+          expect(passRequests).toHaveLength(2);
+          await openLatestSocket();
+          await vi.advanceTimersByTimeAsync(deadline);
+          expect(passRequests[1].init.signal.aborted).toBe(false);
         } finally {
           vi.useRealTimers();
         }
       });
 
       // An answer that never finishes (no headers, or headers and a body that never ends) is aborted at the
-      // pass deadline, as fetch aborts a request whose signal fires, and the retry step then recovers with
-      // no user action.
+      // pass deadline (the add-on's own setting), as fetch aborts a request whose signal fires, and the retry
+      // step then recovers with no user action; the pass that then arrives in time is never aborted later.
       it.each([
         ['no answer', (init) => new Promise((_resolve, reject) => {
           init.signal.addEventListener('abort', () => reject(new DOMException('synthetic abort', 'AbortError')));
@@ -1884,6 +1936,9 @@ describe('Device Sync', () => {
       ])('a pass request with %s is given up at its deadline, and the retry step connects', async (_label, stall) => {
         vi.useFakeTimers();
         try {
+          const { SETTINGS } = await import('../agent/modules/config.js');
+          const deadline = SETTINGS.deviceSync.passRequestTimeoutMs;
+          expect(Number.isFinite(deadline) && deadline > 1000).toBe(true);
           passRequests.length = 0;
           passAnswer = stall;
           setStorage({ device_sync_auto_enabled: true });
@@ -1892,11 +1947,13 @@ describe('Device Sync', () => {
           // The check passes once the request is out; it moves the clock 50 ms past the request.
           await vi.waitFor(() => expect(passRequests).toHaveLength(1));
 
-          await vi.advanceTimersByTimeAsync(14900);
+          await vi.advanceTimersByTimeAsync(deadline - 100);
+          expect(passRequests[0].init.signal.aborted).toBe(false);
           expect(await browserMock.tmDeviceSync.getState()).toBe('closed');
           passAnswer = issuePass;
           await vi.advanceTimersByTimeAsync(100);
           await pending;
+          expect(passRequests[0].init.signal.aborted).toBe(true);
           expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
           expect(mockWebSocketInstances.length).toBe(before);
 
@@ -1904,6 +1961,9 @@ describe('Device Sync', () => {
           await vi.waitFor(() => expect(mockWebSocketInstances.length).toBe(before + 1));
           expect(passRequests).toHaveLength(2);
           expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+          await openLatestSocket();
+          await vi.advanceTimersByTimeAsync(deadline);
+          expect(passRequests[1].init.signal.aborted).toBe(false);
         } finally {
           vi.useRealTimers();
         }
@@ -1971,6 +2031,64 @@ describe('Device Sync', () => {
 
         expect(mockWebSocketInstances.length).toBe(before + 1);
         expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+      });
+
+      // A connect that has nothing to do asks the worker for nothing: no pass is made for it.
+      it.each([
+        ['sync is off', async () => { setStorage({ device_sync_auto_enabled: false }); }],
+        ['nobody is signed in', async () => {
+          const { getAccessToken } = await import('../agent/modules/supabaseAuth.js');
+          setStorage({ device_sync_auto_enabled: true });
+          getAccessToken.mockResolvedValueOnce(null);
+        }],
+        ['the socket is open', async () => { await establishConnection(); }],
+        ['the handshake is under way', async () => {
+          setStorage({ device_sync_auto_enabled: true });
+          await deviceSync.connect();
+          expect(mockWebSocketInstances.at(-1).readyState).toBe(WebSocket.CONNECTING);
+        }],
+        ['the transport is waiting to retry', async () => {
+          const ws = await establishConnection();
+          ws.readyState = WebSocket.CLOSED;
+          ws.onclose({ code: 1006, reason: 'network drop' });
+        }],
+      ])('a connect while %s asks for no pass and opens nothing', async (_label, arrange) => {
+        await arrange();
+        passRequests.length = 0;
+        const before = mockWebSocketInstances.length;
+
+        await deviceSync.connect();
+
+        expect(passRequests).toHaveLength(0);
+        expect(mockWebSocketInstances.length).toBe(before);
+      });
+
+      it('a refused upgrade is a failed handshake: the retry asks for a fresh pass, and that socket opens', async () => {
+        vi.useFakeTimers();
+        try {
+          passRequests.length = 0;
+          setStorage({ device_sync_auto_enabled: true });
+          await deviceSync.connect();
+          const refused = mockWebSocketInstances.at(-1);
+          const firstPass = new URL(refused.url).searchParams.get('pass');
+          // The worker refuses the upgrade (an expired or spent pass): the socket closes without opening.
+          refused.readyState = WebSocket.CLOSED;
+          refused.onclose({ code: 1006, reason: 'upgrade refused' });
+          expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
+
+          await vi.advanceTimersByTimeAsync(4999);
+          expect(passRequests).toHaveLength(1);
+          await vi.advanceTimersByTimeAsync(1);
+          await vi.waitFor(() => expect(mockWebSocketInstances.at(-1)).not.toBe(refused));
+
+          expect(passRequests).toHaveLength(2);
+          const freshPass = new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass');
+          expect(freshPass).not.toBe(firstPass);
+          expect(freshPass).toBe('synthetic-pass-2');
+          await openLatestSocket();
+        } finally {
+          vi.useRealTimers();
+        }
       });
 
       it('the declared API is the one the transport exposes', () => {

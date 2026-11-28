@@ -238,6 +238,9 @@ export class BulletDevice {
     this.options = options;
     this.names = 0;
     this.logs = [];
+    /** Every socket address the device connected to, and how many retry steps it took. */
+    this.connects = [];
+    this.retries = 0;
     this.store.values.device_sync_auto_enabled ??= true;
     this.store.values.supabaseSession ??= structuredClone(SIGNED_IN);
   }
@@ -250,11 +253,14 @@ export class BulletDevice {
     const tmDeviceSync = {
       getState: async () => (device.relay.isConnected(device.id) ? 'open' : 'closed'),
       connect: async (url) => {
+        device.connects.push(url);
         if (device.options.groupFor) device.relay = device.options.groupFor(url);
         device.relay.join(device.id, (text) => listener?.({ type: 'message', data: text }));
         return 'open';
       },
       disconnect: async () => device.relay.leave(device.id),
+      // A connect that got no pass takes the parent's retry step; the test counts them.
+      retryConnect: async () => { device.retries += 1; return 'retrying'; },
       // The parent's send throws on a socket that isn't open; the relay records the attempt.
       send: async (text) => {
         if (!device.relay.isConnected(device.id)) {

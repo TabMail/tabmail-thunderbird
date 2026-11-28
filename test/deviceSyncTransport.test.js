@@ -189,7 +189,13 @@ describe('parent Device Sync transport', () => {
         expect(api.retryConnect()).toBe('retrying');
       }
       expect(api.state()).toBe('retrying');
-      vi.advanceTimersByTime(Math.min(5000 * 2 ** attempt, 300000));
+      // Each step waits its full doubled delay whichever kind of failure came before it, then wakes once.
+      events.length = 0;
+      const delay = Math.min(5000 * 2 ** attempt, 300000);
+      vi.advanceTimersByTime(delay - 1);
+      expect(events).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(events).toEqual([{ type: 'reconnect' }]);
     }
     events.length = 0;
     expect(api.retryConnect()).toBe('closed');

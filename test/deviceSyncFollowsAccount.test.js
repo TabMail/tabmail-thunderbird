@@ -71,9 +71,16 @@ async function start({ refreshRetries = 1 } = {}) {
   // sent. refreshGate: a promise every refresh's reply waits for (a slow refresh), or a function of the
   // refresh token sent returning one. refreshes: how many refreshes were sent; sent: their refresh tokens.
   // atDone: called when the sign-in reaches its last step.
-  const world = { signInAs: null, refreshAs: null, refreshGate: null, refreshes: 0, sent: [], atDone: null };
+  // holdPasses: each connect pass request waits in `held` ({ token, release(refuse) }) until the test
+  // releases it; release(true) answers it with a refusal.
+  const world = { signInAs: null, refreshAs: null, refreshGate: null, refreshes: 0, sent: [], atDone: null, holdPasses: false, held: [] };
   const fetch = async (url, init, bundled) => {
     const href = String(url);
+    if (href.endsWith('/ws/pass') && world.holdPasses) {
+      const held = { token: /^Bearer (.+)$/.exec(init.headers.Authorization)[1] };
+      const refuse = await new Promise((resolve) => { held.release = resolve; world.held.push(held); });
+      if (refuse) return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) };
+    }
     if (href.startsWith(`${SUPABASE}/auth/v1/token`)) {
       const sent = JSON.parse(init.body).refresh_token;
       world.refreshes += 1;
@@ -262,6 +269,63 @@ async function endsOn(ctx, to) {
   expect(sentBy(groups.A, d)).toEqual(sentOnA);
   expect(await kb(peerA)).not.toContain('Fact after the change');
 }
+
+describe('an account change while a connect pass is on its way (DS-DEVICE)', () => {
+  it.each([
+    { name: 'a sign-in to another account; the old account\'s pass then arrives', to: 'B', refuse: false },
+    { name: 'a sign-in to another account; the old account\'s pass request is then refused', to: 'B', refuse: true },
+    { name: 'a sign-out; the old account\'s pass then arrives (control: no new account)', to: null, refuse: false },
+    { name: 'a sign-out; the old account\'s pass request is then refused (control: no new account)', to: null, refuse: true },
+  ])('$name: it connects nothing and arms no retry, and the new account connects with its own pass', async (path) => {
+    const ctx = await start();
+    const { groups, world, d, peerB } = ctx;
+    // D's connection to A drops; its reconnect asks for a pass with A's token, which stays on its way.
+    world.holdPasses = true;
+    groups.A.leave('D');
+    const connectsBefore = d.connects.length;
+    const reconnect = d.sync.connect();
+    await vi.waitFor(() => expect(world.held).toHaveLength(1));
+    expect(accountOf(world.held[0].token)).toBe('A');
+
+    world.signInAs = session('B');
+    expect(await (path.to ? d.auth.ensureSignedIn() : d.auth.signOut())).toBe(true);
+    if (path.to) {
+      // The new account's connect asks for its own pass, also held.
+      await vi.waitFor(() => expect(world.held).toHaveLength(2));
+      expect(accountOf(world.held[1].token)).toBe('B');
+    }
+
+    // A's answer lands while B's is still on its way.
+    world.held[0].release(path.refuse);
+    await reconnect;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(d.connects.slice(connectsBefore)).toEqual([]);
+    expect(d.retries).toBe(0);
+    expect(groups.A.isConnected('D')).toBe(false);
+    expect(groups.B.isConnected('D')).toBe(false);
+
+    if (path.to) {
+      world.held[1].release(false);
+      await vi.waitFor(() => expect(groups.B.isConnected('D')).toBe(true));
+      const connected = d.connects.slice(connectsBefore);
+      expect(connected).toHaveLength(1);
+      expect(accountOf(tokenOfPass(new URL(connected[0]).searchParams.get('pass')))).toBe('B');
+      expect(world.held).toHaveLength(2);
+    }
+    await endsOn(ctx, path.to);
+    expect(d.retries).toBe(0);
+    if (path.to) {
+      // Real traffic both ways with the new account's devices.
+      expect(await kb(peerB)).toContain('Fact after the change');
+      await peerB.add('kb', '', 'Fact from B after the change');
+      await quiesce([groups.A, groups.B]);
+      expect(await kb(d)).toContain('Fact from B after the change');
+    } else {
+      expect(world.held).toHaveLength(1);
+      expect(d.connects.slice(connectsBefore)).toEqual([]);
+    }
+  });
+});
 
 describe('an account change is one step: nothing connects as the old account during it, and every write lands in order', () => {
   it.each([
