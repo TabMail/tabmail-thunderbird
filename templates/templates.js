@@ -1528,36 +1528,25 @@ async function initSyncToggle() {
     });
 
     document.getElementById("sync-toggle").addEventListener("click", async () => {
-        // The background stores the setting and opens or closes the socket (setAutoEnabled). The
-        // request goes out before this handler waits on anything, so a page closed right after the
-        // click still turns Device Sync on or off.
+        // The background alone stores the setting and opens or closes the socket (setAutoEnabled); the
+        // button follows the stored setting through storage.onChanged above, so it never shows a change
+        // the background did not make. The request goes out before this handler waits on anything, so a
+        // page closed right after the click still turns Device Sync on or off.
         const enabled = !syncAutoEnabled;
-        syncAutoEnabled = enabled;
-        const reply = browser.runtime.sendMessage({ command: enabled ? "device-sync-enable" : "device-sync-disable" });
-        updateSyncToggleUI(enabled, false);
-        const result = await reply.catch(() => null);
-        if (!result?.ok) {
-            // Not changed, or only part way: show what is stored and whether the socket is open.
-            const stored = await browser.storage.local.get({ [SYNC_AUTO_KEY]: true });
-            syncAutoEnabled = stored[SYNC_AUTO_KEY] !== false;
-            const status = await browser.runtime.sendMessage({ command: "device-sync-status" }).catch(() => null);
-            updateSyncToggleUI(syncAutoEnabled, status?.connected || false);
-            return;
-        }
+        const result = await browser.runtime.sendMessage({ command: enabled ? "device-sync-enable" : "device-sync-disable" }).catch(() => null);
+        if (!enabled || !result?.ok) return;
 
-        if (enabled) {
-            let attempts = 0;
-            const poll = setInterval(async () => {
-                attempts++;
-                const status = await browser.runtime.sendMessage({ command: "device-sync-status" }).catch(() => null);
-                if (status?.connected) {
-                    updateSyncToggleUI(true, true);
-                    clearInterval(poll);
-                } else if (attempts >= 10) {
-                    clearInterval(poll);
-                }
-            }, 500);
-        }
+        // Turned on: the socket can open a moment later. Ask at most 10 times, every 500 ms; this poll
+        // stops itself once the socket is open or the setting is off again.
+        let attempts = 0;
+        const poll = setInterval(async () => {
+            if (++attempts > 10 || !syncAutoEnabled) { clearInterval(poll); return; }
+            const status = await browser.runtime.sendMessage({ command: "device-sync-status" }).catch(() => null);
+            if (status?.connected) {
+                clearInterval(poll);
+                updateSyncToggleUI(syncAutoEnabled, true);
+            }
+        }, 500);
     });
 }
 

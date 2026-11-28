@@ -29,9 +29,10 @@ const AFTER_STATUS_SETTLES = 20;
  * the prompt store's (Compact Now, Compress, Sync Now), each recorded in `ui.commands`; `beforeStore`
  * runs before each prompt-store message reaches the background, with the message; `afterStore` runs
  * after the background answered it, with the message, before the page gets the answer; `wrapBrowser`
- * returns the `browser` the page gets, given the one built here.
+ * returns the `browser` the page gets, given the one built here; `timers` replaces the page's
+ * `setInterval` and `clearInterval` (by default an interval never runs).
  */
-export async function openPage(a, { commands = {}, beforeStore = async () => {}, afterStore = async () => {}, wrapBrowser = (browser) => browser } = {}) {
+export async function openPage(a, { commands = {}, beforeStore = async () => {}, afterStore = async () => {}, wrapBrowser = (browser) => browser, timers = {} } = {}) {
   const dom = new JSDOM(readFileSync(new URL('prompts/prompts.html', ROOT), 'utf8'));
   await settle();
   const document = dom.window.document;
@@ -62,6 +63,7 @@ export async function openPage(a, { commands = {}, beforeStore = async () => {},
       clearTimeout: noop,
       setInterval: () => 1,
       clearInterval: noop,
+      ...timers,
       TextEncoder,
       crypto: globalThis.crypto,
       fetch: bundledFetch(defaultCatalog),

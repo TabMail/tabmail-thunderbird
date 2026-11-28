@@ -28,8 +28,9 @@ function pageBrowser(a, runtime, calls) {
 }
 
 /** One of the add-on's pages, its module loaded on device `a` with `stubs` for the imports it needs.
- * `wrapBrowser` returns the `browser` the page gets, given the one built here. */
-export async function loadPage(a, { html, files, stubs = {}, runtime = {}, wrapBrowser = (browser) => browser }) {
+ * `wrapBrowser` returns the `browser` the page gets, given the one built here; `timers` replaces the
+ * page's `setInterval` and `clearInterval` (by default an interval never runs). */
+export async function loadPage(a, { html, files, stubs = {}, runtime = {}, wrapBrowser = (browser) => browser, timers = {} }) {
   const dom = new JSDOM(readFileSync(new URL(html, ROOT), 'utf8'));
   // JSDOM's own DOMContentLoaded goes by before the page's module is loaded; the test fires the page's.
   await settleMany(2);
@@ -55,6 +56,7 @@ export async function loadPage(a, { html, files, stubs = {}, runtime = {}, wrapB
       clearTimeout: noop,
       setInterval: () => 1,
       clearInterval: noop,
+      ...timers,
       console: { log: noop, warn: noop, error: noop, debug: noop, info: noop },
       browser: wrapBrowser(pageBrowser(a, { sendMessage, ...runtime }, calls)),
     },
