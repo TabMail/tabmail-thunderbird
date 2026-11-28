@@ -273,6 +273,9 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |
 | TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT  |
+| TB-096 | Connect: one-time pass from `POST /ws/pass` (token in the Authorization header only), socket opened with `?pass=` only (`deviceSync.test.js`) | No token in the socket's address | Connect |
+| TB-097 | Pass request refused, answered without a pass, or unreachable | No socket; the transport's retry step (`retryConnect`: same backoff and cap as a closed socket, then `reconnect` asks for a new pass) | Connect |
+| TB-098 | Transport refuses an address with no pass, an empty pass, or a `token` (`deviceSyncTransport.test.js`); no `agent/` source puts a token in a Device Sync address | Refused before a host is made; fence empty | Connect |
 
 ---
 

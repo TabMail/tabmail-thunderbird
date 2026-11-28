@@ -11,7 +11,7 @@ function fixture() {
   }});
   class Socket { static OPEN=1; constructor(){this.readyState=0;this.sent=[];sockets.push(this);} open(){this.readyState=1;this.onopen();} close(){this.readyState=3;this.onclose?.();} send(data){this.sent.push(data);} }
   h.Services.appShell={createWindowlessBrowser:()=>({document:{defaultView:{WebSocket:Socket}},close(){}})};
-  h.Services.io.newURI=raw=>{const u=new URL(raw);return {scheme:u.protocol.slice(0,-1),host:u.hostname,filePath:u.pathname,userPass:u.username};};
+  h.Services.io.newURI=raw=>{const u=new URL(raw);return {scheme:u.protocol.slice(0,-1),host:u.hostname,filePath:u.pathname,userPass:u.username,query:u.search.slice(1)};};
   return {...h,intervals,timeouts,sockets};
 }
 describe('Device Sync exposed lifecycle',()=>{
@@ -26,7 +26,7 @@ describe('Device Sync exposed lifecycle',()=>{
       const durable=[];
       const awake=async event=>{if(event.type==='message') durable.push(JSON.parse(event.data).payload);};
       exposed.onEvent.addListener(awake);
-      exposed.connect('wss://sync.tabmail.ai/ws?token=synthetic');h.sockets[0].open();
+      exposed.connect('wss://sync.tabmail.ai/ws?pass=synthetic');h.sockets[0].open();
       h.sockets[0].onmessage({data:JSON.stringify({type:'peer_payload',payload:'before-suspend'})});
       await Promise.resolve();expect(durable).toEqual(['before-suspend']);
       exposed.onEvent.close();
@@ -51,7 +51,7 @@ describe('Device Sync exposed lifecycle',()=>{
     const h=fixture(); const resourceCounts=[]; let activeHeartbeats=0;
     try {
       for(let cycle=0;cycle<12;cycle++) {
-        h.api.connect('wss://sync.tabmail.ai/ws?token=synthetic'); const socket=h.sockets.at(-1); socket.open();
+        h.api.connect('wss://sync.tabmail.ai/ws?pass=synthetic'); const socket=h.sockets.at(-1); socket.open();
         for(const t of [...h.intervals.values()]) if(t.ms===30000)t.cb();
         expect(socket.sent).toEqual(['{"type":"ping"}']);activeHeartbeats++;
         if(cycle%3===0)socket.close();

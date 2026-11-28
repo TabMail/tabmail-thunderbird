@@ -1042,10 +1042,43 @@ async function connectOnce(generation) {
   const enabled = await isAutoEnabled();
   const workerUrl = await getDeviceSyncUrl();
   if (!enabled || generation !== connectionGeneration) return;
-  const result = await browser.tmDeviceSync.connect(`${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`);
+  // A fresh one-time pass for this connect; the token never goes in the socket's address.
+  const pass = await requestConnectPass(workerUrl, accessToken);
+  if (generation !== connectionGeneration) return;
+  if (!pass) {
+    // No pass takes the transport's own retry step, as a closed socket does (same backoff and cap,
+    // then `reconnect`).
+    await browser.tmDeviceSync.retryConnect();
+    return;
+  }
+  const result = await browser.tmDeviceSync.connect(`${workerUrl.replace("https://", "wss://")}/ws?pass=${encodeURIComponent(pass)}`);
   if (generation !== connectionGeneration) return;
   connected = result === "open";
   notifyStatusListeners();
+}
+
+/**
+ * A one-time pass for one Device Sync connect. The WebSocket API sends no Authorization header, so the
+ * sign-in token goes in the header of this HTTPS request instead, and the socket opens with the pass. The
+ * pass is good for one connect, for a few seconds. null on any failure.
+ */
+async function requestConnectPass(workerUrl, accessToken) {
+  try {
+    const resp = await fetch(`${workerUrl}/ws/pass`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!resp.ok) {
+      log(`${PFX}Connect pass refused: status=${resp.status}`);
+      return null;
+    }
+    const body = await resp.json();
+    return typeof body?.pass === "string" && body.pass ? body.pass : null;
+  } catch (e) {
+    log(`${PFX}Connect pass request failed: ${e}`);
+    return null;
+  }
 }
 
 /** Explicit sync-off/signout disconnect. Idle suspension leaves the parent socket intact. */

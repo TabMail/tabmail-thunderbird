@@ -13,7 +13,7 @@
 // or test exported functions that exercise the merge logic.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
 // ─── Browser Mock ────────────────────────────────────────────────────────────
@@ -85,6 +85,20 @@ globalThis.WebSocket = class MockWebSocket {
 };
 globalThis.atob = (str) => Buffer.from(str, 'base64').toString('binary');
 
+// The Device Sync worker's one-time connect pass (POST /ws/pass), which every connect asks for. Requests
+// are recorded; `passAnswer` is what the worker answers (a fresh pass unless a test says otherwise). No
+// other request leaves the test.
+const passRequests = [];
+const issuePass = () => ({ ok: true, status: 200, json: async () => ({ pass: `synthetic-pass-${passRequests.length}` }) });
+let passAnswer = issuePass;
+globalThis.fetch = vi.fn(async (url, init) => {
+  if (String(url).endsWith('/ws/pass')) {
+    passRequests.push({ url: String(url), init });
+    return passAnswer();
+  }
+  throw new Error(`no network in this test: ${url}`);
+});
+
 // Exercise the real parent transport, with only the Gecko host/network mocked.
 const parentSource = readFileSync(new URL('../agent/experiments/tmDeviceSync/tmDeviceSync.sys.mjs', import.meta.url), 'utf8');
 const ParentTransport = runInNewContext(parentSource + '\n tmDeviceSync;', {
@@ -93,13 +107,14 @@ const ParentTransport = runInNewContext(parentSource + '\n tmDeviceSync;', {
     : { ExtensionCommon: { ExtensionAPIPersistent: class {}, ExtensionError: Error, EventManager: class { api() { return {}; } } } } },
   Services: {
     appShell: { createWindowlessBrowser: () => ({ document: { defaultView: { WebSocket: globalThis.WebSocket } }, close() {} }) },
-    io: { newURI: raw => { const u = new URL(raw); return { scheme: u.protocol.slice(0, -1), host: u.hostname, filePath: u.pathname, userPass: u.username }; } },
+    io: { newURI: raw => { const u = new URL(raw); return { scheme: u.protocol.slice(0, -1), host: u.hostname, filePath: u.pathname, userPass: u.username, query: u.search.slice(1) }; } },
   },
 });
 const parentTransport = new ParentTransport({});
 const transportApi = parentTransport.getAPI({}).tmDeviceSync;
 browserMock.tmDeviceSync = {
   connect: async url => transportApi.connect(url),
+  retryConnect: async () => transportApi.retryConnect(),
   getState: async () => transportApi.getState(),
   send: async data => transportApi.send(data),
   disconnect: async () => transportApi.disconnect(),
@@ -1790,6 +1805,69 @@ describe('Device Sync', () => {
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
+    describe('one-time connect pass', () => {
+      afterEach(() => { passAnswer = issuePass; });
+
+      it("opens the socket with only a fresh pass; the token goes only in the pass request's Authorization header", async () => {
+        passRequests.length = 0;
+        const ws = await establishConnection();
+
+        expect(passRequests).toHaveLength(1);
+        expect(passRequests[0].url).toBe('https://sync.tabmail.ai/ws/pass');
+        expect(passRequests[0].init.method).toBe('POST');
+        expect(passRequests[0].init.headers.Authorization).toBe('Bearer mock-token');
+        const url = new URL(ws.url);
+        expect(`${url.protocol}//${url.host}${url.pathname}`).toBe('wss://sync.tabmail.ai/ws');
+        expect([...url.searchParams.keys()]).toEqual(['pass']);
+        expect(url.searchParams.get('pass')).toBe('synthetic-pass-1');
+        expect(ws.url).not.toContain('mock-token');
+      });
+
+      it.each([
+        ['refused', () => ({ ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) })],
+        ['answered without a pass', () => ({ ok: true, status: 200, json: async () => ({}) })],
+        ['unreachable', () => { throw new TypeError('synthetic network failure'); }],
+      ])("a pass request %s opens no socket and takes the transport's retry step", async (_label, answer) => {
+        passAnswer = answer;
+        setStorage({ device_sync_auto_enabled: true });
+        const before = mockWebSocketInstances.length;
+
+        await deviceSync.connect();
+
+        expect(mockWebSocketInstances.length).toBe(before);
+        expect(await browserMock.tmDeviceSync.getState()).toBe('retrying');
+        expect(deviceSync.isConnected()).toBe(false);
+      });
+
+      it('the retry step asks for a new pass, and the socket opens with it', async () => {
+        vi.useFakeTimers();
+        try {
+          passRequests.length = 0;
+          passAnswer = () => ({ ok: false, status: 503, json: async () => ({ error: 'consent_check_unavailable' }) });
+          setStorage({ device_sync_auto_enabled: true });
+          const before = mockWebSocketInstances.length;
+          await deviceSync.connect();
+          passAnswer = issuePass;
+
+          await vi.advanceTimersByTimeAsync(5000);
+
+          await vi.waitFor(() => expect(mockWebSocketInstances.length).toBe(before + 1));
+          expect(passRequests).toHaveLength(2);
+          expect(new URL(mockWebSocketInstances.at(-1).url).searchParams.get('pass')).toBe('synthetic-pass-2');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('no add-on source puts a token in a Device Sync address', () => {
+        const root = new URL('../agent/', import.meta.url);
+        const files = readdirSync(root, { recursive: true }).filter((name) => /\.(m?js)$/.test(name));
+        expect(files.length).toBeGreaterThan(20);
+        const offenders = files.filter((name) => /\/ws\?token=|[?&]token=\$\{/.test(readFileSync(new URL(name, root), 'utf8')));
+        expect(offenders).toEqual([]);
+      });
+    });
+
     it('a fresh background accepts a replayed message before connecting again', async () => {
       const oldListeners = new Set(parentTransport.listeners);
       parentTransport.listeners.clear();

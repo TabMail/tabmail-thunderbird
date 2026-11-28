@@ -16,7 +16,7 @@
 // group of its token's account.
 
 import { describe, expect, it, vi } from 'vitest';
-import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
+import { BulletDevice, BulletRelay, DeviceStore, tokenOfPass } from './support/bulletDevices.js';
 
 const AUTH = 'agent/modules/supabaseAuth.js';
 const SUPABASE = 'https://auth.example.com';
@@ -107,7 +107,7 @@ async function start({ refreshRetries = 1 } = {}) {
   const d = await new BulletDevice('D', new DeviceStore({ supabaseSession: session('A') }), groups.A, {
     files: [AUTH], settings, browser, fetch,
     globals: { atob: globalThis.atob, AbortController },
-    groupFor: (url) => groups[accountOf(new URL(url).searchParams.get('token'))],
+    groupFor: (url) => groups[accountOf(tokenOfPass(new URL(url).searchParams.get('pass')))],
   }).start();
   const peerA = await new BulletDevice('PA', new DeviceStore(), groups.A).start();
   const peerB = await new BulletDevice('PB', new DeviceStore(), groups.B).start();

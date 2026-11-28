@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 import { describe, expect, it, vi } from 'vitest';
-import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
+import { BulletDevice, BulletRelay, DeviceStore, tokenOfPass } from './support/bulletDevices.js';
 
 const ROOT = new URL('../', import.meta.url);
 const AUTH = 'agent/modules/supabaseAuth.js';
@@ -70,7 +70,7 @@ describe('the background stores the session for every page', () => {
       files: [AUTH], fetch,
       settings: { supabaseUrl: SUPABASE, supabaseAnonKey: 'synthetic-anon', authTokenRefreshRetries: 1, authTokenRefreshTimeoutMs: 5000 },
       globals: { atob: globalThis.atob, AbortController },
-      groupFor: (url) => groups[accountOf(new URL(url).searchParams.get('token'))],
+      groupFor: (url) => groups[accountOf(tokenOfPass(new URL(url).searchParams.get('pass')))],
     }).start();
     await d.connect();
     expect(groups.A.isConnected('D')).toBe(true);

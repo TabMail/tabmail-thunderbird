@@ -18,6 +18,15 @@
         }
       },
       {
+        "name": "retryConnect",
+        "type": "function",
+        "async": true,
+        "parameters": [],
+        "returns": {
+          "type": "string"
+        }
+      },
+      {
         "name": "getState",
         "type": "function",
         "async": true,
