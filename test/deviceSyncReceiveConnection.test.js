@@ -38,7 +38,7 @@ async function connected(options = {}) {
 /** The real supabaseAuth on device `d`, as its background page runs it (the one place the session is stored). */
 function authOn(d) {
   const auth = createRealm({
-    files: ['agent/modules/supabaseAuth.js'],
+    files: ['agent/modules/supabaseAuth.js', 'agent/modules/ownServerFetch.js'],
     stubs: {
       'agent/modules/config.js': { SETTINGS: {}, getBackendUrl: async () => 'https://backend.example.com' },
       'agent/modules/utils.js': { log() {} },

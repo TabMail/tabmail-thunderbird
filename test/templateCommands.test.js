@@ -93,7 +93,7 @@ async function templatesPage(store, request, onSent = async () => {}) {
     },
   }, { get: (target, name) => target[name] ?? absorb });
   const realm = createRealm({
-    files: [PAGE, MANAGER, 'agent/modules/statusLine.js'],
+    files: [PAGE, MANAGER, 'agent/modules/statusLine.js', 'agent/modules/ownServerFetch.js'],
     stubs: {
       'agent/modules/utils.js': { log() {} },
       'theme/palette/palette.js': { injectPaletteIntoDocument: async () => {} },

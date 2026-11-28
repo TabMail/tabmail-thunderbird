@@ -5,12 +5,12 @@
 // the helper's options, a live redirect between two loopback servers, and a source check that every
 // request to our servers goes through the helper.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createServer } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'acorn';
 import { ownServerFetch } from '../agent/modules/ownServerFetch.js';
+import { redirectServers } from './support/redirectServers.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -22,35 +22,15 @@ describe('ownServerFetch options', () => {
     vi.stubGlobal('fetch', async (url, init) => { seen.push([url, init]); return new Response('ok'); });
     const signal = new AbortController().signal;
     await ownServerFetch('https://api.example.com/x', {
-      method: 'POST', headers: { Authorization: 'Bearer t' }, body: '{"a":1}', signal, redirect: 'follow',
+      method: 'POST', headers: { Authorization: 'Bearer t' }, body: '{"a":1}', signal, credentials: 'include', redirect: 'follow',
     });
     await ownServerFetch('https://api.example.com/y');
     expect(seen).toEqual([
-      ['https://api.example.com/x', { method: 'POST', headers: { Authorization: 'Bearer t' }, body: '{"a":1}', signal, redirect: 'error' }],
+      ['https://api.example.com/x', { method: 'POST', headers: { Authorization: 'Bearer t' }, body: '{"a":1}', signal, credentials: 'include', redirect: 'error' }],
       ['https://api.example.com/y', { redirect: 'error' }],
     ]);
   });
 });
-
-/* two loopback servers: `first` answers every request with `status` and a Location on `second`; `second`
-   records what reaches it and answers 200 "landed" */
-async function servers(status) {
-  const reached = [];
-  const second = createServer((req, res) => {
-    let body = '';
-    req.on('data', c => { body += c; });
-    req.on('end', () => { reached.push({ method: req.method, url: req.url, body, auth: req.headers.authorization }); res.end('landed'); });
-  });
-  await new Promise(r => second.listen(0, '127.0.0.1', r));
-  const secondURL = `http://127.0.0.1:${second.address().port}`;
-  const first = createServer((req, res) => {
-    req.resume();
-    req.on('end', () => { res.writeHead(status, { Location: `${secondURL}/elsewhere` }); res.end(); });
-  });
-  await new Promise(r => first.listen(0, '127.0.0.1', r));
-  const close = () => Promise.all([first, second].map(s => new Promise(r => s.close(r))));
-  return { firstURL: `http://127.0.0.1:${first.address().port}/start`, reached, close };
-}
 
 const REDIRECTS = [301, 302, 303, 307, 308];
 const REQUESTS = {
@@ -61,7 +41,7 @@ const REQUESTS = {
 describe('a redirect from our server is not followed', () => {
   for (const status of REDIRECTS) for (const [name, init] of Object.entries(REQUESTS)) {
     it(`${status}, ${name}: the request fails and the other server sees nothing`, async () => {
-      const s = await servers(status);
+      const s = await redirectServers(status);
       try {
         await expect(ownServerFetch(s.firstURL, init)).rejects.toThrow(TypeError);
         expect(s.reached).toEqual([]);
@@ -69,7 +49,7 @@ describe('a redirect from our server is not followed', () => {
     });
 
     it(`${status}, ${name}: control, plain fetch follows the same redirect`, async () => {
-      const s = await servers(status);
+      const s = await redirectServers(status);
       try {
         const res = await fetch(s.firstURL, init);
         expect(await res.text()).toBe('landed');
@@ -79,9 +59,9 @@ describe('a redirect from our server is not followed', () => {
   }
 });
 
-/* every call of the global fetch in the add-on's own code, by file. A request to TabMail's own servers goes
-   through ownServerFetch; only these call fetch directly. */
-const BARE_FETCH_ALLOWED = {
+/* every use of the global fetch in the add-on's own code, by file. A request to TabMail's own servers goes
+   through ownServerFetch; only these use fetch directly. */
+const GLOBAL_FETCH_ALLOWED = {
   'agent/modules/ownServerFetch.js': 1,     // the helper itself
   'agent/modules/promptStore.js': 1,        // an add-on file (runtime.getURL)
   'agent/modules/templateManager.js': 1,    // an add-on file (runtime.getURL)
@@ -91,7 +71,26 @@ const BARE_FETCH_ALLOWED = {
   'fts/nativeEngine.js': 1,                 // the search helper's signed update manifest on the CDN, no token
   'prompts/modules/developer.js': 1,        // a developer page talking to a local backend
 };
+/* the requests to TabMail's own servers, by file: the census must find each of them (a skipped folder or a
+   request moved back to plain fetch changes this map) */
+const OWN_SERVER_FETCH_USES = {
+  'agent/modules/accessAuth.js': 2,
+  'agent/modules/llm.js': 3,
+  'agent/modules/supabaseAuth.js': 4,
+  'chat/fsm/templateDownload.js': 1,
+  'chat/fsm/templateShare.js': 1,
+  'chat/tools/template_read.js': 1,
+  'chat/tools/template_search.js': 1,
+  'chatlink/modules/core.js': 3,
+  'config/modules/byokSettings.js': 2,
+  'config/modules/chatlink.js': 4,
+  'config/modules/planUsage.js': 1,
+  'marketplace/marketplace.js': 5,
+  'popup/popup.js': 2,
+  'templates/templates.js': 4,
+};
 const SKIP_DIRS = new Set(['node_modules', 'test', '.git', 'coverage', 'libs']);
+const GLOBALS = new Set(['globalThis', 'window', 'self']);
 
 function sourceFiles(dir) {
   const out = [];
@@ -102,20 +101,31 @@ function sourceFiles(dir) {
   return out;
 }
 
-/* calls of the global fetch: `fetch(...)` and `globalThis|window|self.fetch(...)` */
-function bareFetchCalls(source, file) {
+/* { fetch, own }: uses of the global fetch (the name `fetch` read as a value, called or not, and
+   `globalThis|window|self` `.fetch` or `["fetch"]`) and calls of ownServerFetch. A property name, an object
+   key or a method named fetch is not a use. */
+function fetchUses(source) {
   let ast;
   try { ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); }
   catch { ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true }); }
-  let n = 0;
-  const walk = node => {
+  const n = { fetch: 0, own: 0 };
+  const walk = (node) => {
     if (!node || typeof node.type !== 'string') return;
-    if (node.type === 'CallExpression') {
-      const c = node.callee;
-      if (c.type === 'Identifier' && c.name === 'fetch') n++;
-      if (c.type === 'MemberExpression' && !c.computed && c.property.name === 'fetch'
-        && c.object.type === 'Identifier' && ['globalThis', 'window', 'self'].includes(c.object.name)) n++;
+    if (node.type === 'Identifier') { if (node.name === 'fetch') n.fetch++; return; }
+    if (node.type === 'MemberExpression') {
+      const p = node.property;
+      const named = node.computed ? (p.type === 'Literal' && p.value === 'fetch') : p.name === 'fetch';
+      if (named && node.object.type === 'Identifier' && GLOBALS.has(node.object.name)) { n.fetch++; return; }
+      walk(node.object);
+      if (node.computed) walk(p);
+      return;
     }
+    if (node.type === 'Property' || node.type === 'MethodDefinition' || node.type === 'PropertyDefinition') {
+      if (node.computed) walk(node.key);
+      walk(node.value);
+      return;
+    }
+    if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'ownServerFetch') n.own++;
     for (const k in node) {
       if (k === 'type' || k === 'start' || k === 'end') continue;
       const v = node[k];
@@ -127,17 +137,38 @@ function bareFetchCalls(source, file) {
 }
 
 describe('every request to our servers goes through ownServerFetch', () => {
-  it('the add-on calls fetch directly only where the list says', () => {
-    const counted = {};
+  it('the add-on uses fetch directly only where the list says, and each request to our servers is found', () => {
+    const direct = {};
+    const own = {};
     for (const f of sourceFiles(ROOT)) {
-      const n = bareFetchCalls(readFileSync(f, 'utf8'), f);
-      if (n) counted[relative(ROOT, f).split('\\').join('/')] = n;
+      const n = fetchUses(readFileSync(f, 'utf8'));
+      const path = relative(ROOT, f).split('\\').join('/');
+      if (n.fetch) direct[path] = n.fetch;
+      if (n.own) own[path] = n.own;
     }
-    expect(counted).toEqual(BARE_FETCH_ALLOWED);
+    expect(direct).toEqual(GLOBAL_FETCH_ALLOWED);
+    expect(own).toEqual(OWN_SERVER_FETCH_USES);
   });
 
-  it('the census sees a call it should count', () => {
-    expect(bareFetchCalls('async function f(u) { await fetch(u, {}); return globalThis.fetch(u); }')).toBe(2);
-    expect(bareFetchCalls('browser.tmWebFetch.fetch(u); ownServerFetch(u); const o = { fetch(u) {} };')).toBe(0);
+  it.each([
+    ['a call', 'await fetch(u, {});', 1],
+    ['a global object\'s fetch', 'globalThis.fetch(u); window.fetch(u); self.fetch(u);', 3],
+    ['a computed global fetch', 'globalThis["fetch"](u); window[\'fetch\'](u);', 2],
+    ['fetch kept under another name', 'const send = fetch; send(u);', 1],
+    ['fetch handed on', 'run(fetch); const o = { fetch };', 2],
+  ])('the census counts %s', (_, code, count) => {
+    expect(fetchUses(code).fetch).toBe(count);
+  });
+
+  it.each([
+    ['the web tool\'s experiment', 'browser.tmWebFetch.fetch(u);'],
+    ['the helper', 'ownServerFetch(u, {});'],
+    ['a method, a key and a property named fetch', 'const o = { fetch(u) {}, fetch2: 1 }; class C { fetch() {} } o.fetch(u); const k = { fetch: 1 };'],
+  ])('the census does not count %s', (_, code) => {
+    expect(fetchUses(code).fetch).toBe(0);
+  });
+
+  it('the census counts the helper\'s calls', () => {
+    expect(fetchUses('ownServerFetch(a); await ownServerFetch(b, {});').own).toBe(2);
   });
 });

@@ -27,9 +27,19 @@ WebSocket connections (Device Sync, ChatLink) are not changed by this.
 ## The check
 
 `test/ownServerFetch.test.js`:
-- the helper's options;
-- two loopback servers, 301/302/303/307/308 for a GET and for a POST with a body: the request fails and the
-  second server sees nothing, while plain `fetch` follows the same redirect (control);
-- a source check (acorn) that counts every call of the global `fetch` per file and expects exactly the list
-  above. A new request to our servers must use `ownServerFetch`, or the check fails. A new plain fetch to
-  something else gets a line in `BARE_FETCH_ALLOWED` with its reason.
+- the helper's options (method, headers, body, signal and `credentials` pass through; `redirect` is forced);
+- two loopback servers (`test/support/redirectServers.js`), 301/302/303/307/308 for a GET and for a POST with
+  a body: the request fails and the second server sees nothing, while plain `fetch` follows the same redirect
+  (control);
+- a source census (acorn) of every use of the global `fetch` per file (a call, `globalThis|window|self`
+  `.fetch` or `["fetch"]`, the name kept or handed on), expected to equal `GLOBAL_FETCH_ALLOWED`, and of the
+  `ownServerFetch` calls per file, expected to equal `OWN_SERVER_FETCH_USES`, with positive controls for each
+  counted shape. A new request to our servers must use `ownServerFetch` and gets a line in the second map; a
+  new plain fetch to something else gets a line in the first, with its reason.
+
+`test/ownServerFetchRefresh.test.js`: the real token refresh against a sign-in server answering 307 or 308:
+the refresh token reaches no other address, the bounded retries all fail as transient, the session is kept.
+
+Test realms that load a converted module (`test/support/deviceRealm.js` `createRealm` lists, the device
+realm's `FILES` in `test/support/bulletDevices.js`) list `agent/modules/ownServerFetch.js` too: a realm only
+resolves the files it is given.

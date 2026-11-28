@@ -13,7 +13,7 @@ import { parse, render } from '../../agent/modules/bullets.js';
 import { createRealm } from './deviceRealm.js';
 
 const ROOT = new URL('../../', import.meta.url);
-const FILES = ['agent/modules/bullets.js', 'agent/modules/bulletSync.js', 'agent/modules/promptStore.js', 'agent/modules/deviceSync.js'];
+const FILES = ['agent/modules/bullets.js', 'agent/modules/bulletSync.js', 'agent/modules/promptStore.js', 'agent/modules/deviceSync.js', 'agent/modules/ownServerFetch.js'];
 /** A stored sign-in session: Device Sync connects only while signed in; the prompt store never asks
  * (DS-DEVICE). */
 export const SIGNED_IN = { access_token: 'synthetic-access', refresh_token: 'synthetic-refresh', expires_at: 0 };

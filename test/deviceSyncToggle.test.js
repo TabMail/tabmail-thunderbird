@@ -141,7 +141,7 @@ const PAGES = [
   })],
   ['the templates page', (a, answers, wrapBrowser, timers) => loadPage(a, {
     html: 'templates/templates.html',
-    files: ['templates/templates.js', 'agent/modules/templateManager.js', 'agent/modules/statusLine.js'],
+    files: ['templates/templates.js', 'agent/modules/templateManager.js', 'agent/modules/statusLine.js', 'agent/modules/ownServerFetch.js'],
     stubs: { 'agent/modules/config.js': { getTemplateWorkerUrl: async () => 'https://templates.example.com' } },
     runtime: { sendMessage: answering(answers) },
     wrapBrowser,
