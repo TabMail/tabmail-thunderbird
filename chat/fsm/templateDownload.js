@@ -13,6 +13,7 @@ import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { streamText } from "../modules/helpers.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 export async function runStateDownloadTemplateList() {
   const agentBubble = await createNewAgentBubble("Fetching template from marketplace...");
@@ -54,7 +55,7 @@ export async function runStateDownloadTemplateList() {
     const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
     try {
-      response = await fetch(`${baseUrl}/download/${downloadArgs.templateId}`, {
+      response = await ownServerFetch(`${baseUrl}/download/${downloadArgs.templateId}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,

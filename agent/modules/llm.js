@@ -11,6 +11,7 @@ import { assertAiBackendAllowed } from "../../chat/modules/privacySettings.js";
 import { SETTINGS, getBackendUrl } from "./config.js";
 import { setThink } from "./thinkBuffer.js";
 import { log, normalizeUnicode } from "./utils.js";
+import { ownServerFetch } from "./ownServerFetch.js";
 
 // 403 exponential backoff state — shared across all completions requests.
 // When the backend returns 403 (unauthorized/dev-access-denied), we back off
@@ -650,7 +651,7 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
       signal: effectiveSignal,
     };
 
-    response = await fetch(url, fetchOptions);
+    response = await ownServerFetch(url, fetchOptions);
 
     // Connection established — clear the connect timeout.
     // From here, SSE stream timeout (STREAM_TIMEOUT_MS) + keepalives take over.
@@ -728,7 +729,7 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
             }, CONNECT_TIMEOUT_MS);
           }
 
-          response = await fetch(url, {
+          response = await ownServerFetch(url, {
             method: "POST",
             headers: requestHeaders(retryAccessToken),
             body: JSON.stringify(payloadWithOptions),
@@ -801,7 +802,7 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
           // this check and the resend waits.
           await assertAiBackendAllowed(`llm.sendChatCompletions re-auth retry endpoint=${endpointType}`);
 
-          response = await fetch(url, {
+          response = await ownServerFetch(url, {
             method: "POST",
             headers: requestHeaders(newAccessToken),
             body: JSON.stringify(payloadWithOptions),

@@ -9,6 +9,7 @@
 
 import { $ } from "./dom.js";
 import { getChatLinkUrl } from "../../chatlink/modules/config.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 // WhatsApp linking is temporarily disabled in the settings page. The inbound
 // WhatsApp → ChatLink path is broken because of Meta/WhatsApp Business
@@ -54,7 +55,7 @@ export async function loadChatLinkStatus() {
     }
 
     const workerUrl = await getChatLinkUrl();
-    const response = await fetch(`${workerUrl}/chatlink/link`, {
+    const response = await ownServerFetch(`${workerUrl}/chatlink/link`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -222,7 +223,7 @@ export async function generateWhatsAppLinkCode() {
     }
 
     const workerUrl = await getChatLinkUrl();
-    const response = await fetch(`${workerUrl}/chatlink/link`, {
+    const response = await ownServerFetch(`${workerUrl}/chatlink/link`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -352,7 +353,7 @@ async function startLinkPolling(accessToken) {
   const pollForLink = async () => {
     try {
       const workerUrl = await getChatLinkUrl();
-      const response = await fetch(`${workerUrl}/chatlink/link`, {
+      const response = await ownServerFetch(`${workerUrl}/chatlink/link`, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -401,7 +402,7 @@ export async function disconnectWhatsApp() {
     if (accessToken) {
       // Call the unlink endpoint
       const workerUrl = await getChatLinkUrl();
-      await fetch(`${workerUrl}/chatlink/link`, {
+      await ownServerFetch(`${workerUrl}/chatlink/link`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",

@@ -21,6 +21,7 @@ import { log } from "../../agent/modules/utils.js";
 import { getChatLinkUrl } from "./config.js";
 import { ctx } from "../../chat/modules/context.js";
 import { renderToPlainText } from "../../chat/modules/helpers.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 // ChatLink state
 let chatLinkEnabled = false;
@@ -276,7 +277,7 @@ export async function relayResponse(assistantText, options = {}) {
     log(`[ChatLink] Sending to worker: ${JSON.stringify(requestBody).substring(0, 500)}`, 'debug');
 
     const workerUrl = await getChatLinkUrl();
-    const response = await fetch(`${workerUrl}/chatlink/respond`, {
+    const response = await ownServerFetch(`${workerUrl}/chatlink/respond`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -390,7 +391,7 @@ export async function relayProactiveMessage(text) {
 
     // Send to worker - platform_chat_id will be looked up from user's link
     const workerUrl = await getChatLinkUrl();
-    const response = await fetch(`${workerUrl}/chatlink/respond`, {
+    const response = await ownServerFetch(`${workerUrl}/chatlink/respond`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -488,7 +489,7 @@ export async function generateLinkingCode() {
     const deviceId = await getDeviceId();
 
     const workerUrl = await getChatLinkUrl();
-    const response = await fetch(`${workerUrl}/chatlink/link`, {
+    const response = await ownServerFetch(`${workerUrl}/chatlink/link`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -12,6 +12,7 @@ import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { streamText } from "../modules/helpers.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
+import { ownServerFetch } from "../../agent/modules/ownServerFetch.js";
 
 export async function runStateShareTemplateList() {
   const agentBubble = await createNewAgentBubble("Preparing share preview...");
@@ -132,7 +133,7 @@ export async function runStateShareTemplateExec() {
     const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
     try {
-      response = await fetch(`${baseUrl}/upload`, {
+      response = await ownServerFetch(`${baseUrl}/upload`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,

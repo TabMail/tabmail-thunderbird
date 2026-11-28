@@ -5,6 +5,7 @@
 // supabaseAuth.js – Supabase authentication helper for Thunderbird addon
 import { getBackendUrl, SETTINGS } from "./config.js";
 import { log } from "./utils.js";
+import { ownServerFetch } from "./ownServerFetch.js";
 
 // Supabase client will be initialized via CDN script in the OAuth window
 // For the addon itself, we manage tokens manually for better control
@@ -270,7 +271,7 @@ async function refreshAccessToken(refreshToken) {
   }, SETTINGS.authTokenRefreshTimeoutMs);
   try {
     log("[SupabaseAuth] Refreshing access token...");
-    const response = await fetch(`${SETTINGS.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+    const response = await ownServerFetch(`${SETTINGS.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -342,7 +343,7 @@ export async function isLoggedIn() {
     // Verify token with the Unified Backend's /whoami endpoint
     const whoamiBase = await getBackendUrl("whoami");
     const whoamiUrl = `${whoamiBase}/whoami?t=${Date.now()}`;
-    const resp = await fetch(whoamiUrl, {
+    const resp = await ownServerFetch(whoamiUrl, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
@@ -402,7 +403,7 @@ export async function ensureConsentSatisfied() {
     const whoamiUrl = `${whoamiBase}/whoami?t=${Date.now()}`;
 
     log(`[SupabaseAuth] ensureConsentSatisfied: Checking whoami at ${whoamiUrl}`);
-    const resp = await fetch(whoamiUrl, {
+    const resp = await ownServerFetch(whoamiUrl, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${accessToken}`,
@@ -474,7 +475,7 @@ export async function ensureConsentSatisfied() {
         break;
       }
 
-      const checkResp = await fetch(`${whoamiBase}/whoami?t=${Date.now()}`, {
+      const checkResp = await ownServerFetch(`${whoamiBase}/whoami?t=${Date.now()}`, {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${at}`,
